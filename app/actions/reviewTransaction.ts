@@ -1,18 +1,10 @@
 // app/actions/reviewTransaction.ts
 // Two Server Actions: confirmTransaction and correctTransaction.
-//
-// KEY FIX in this version: the auth check now logs UNCONDITIONALLY,
-// before branching on whether user exists. Previously, a null user
-// caused a silent early return with zero console output — which is
-// indistinguishable from the function never running at all. Now you'll
-// always see exactly one of these two lines for every click:
-//   "[confirmTransaction] auth.getUser() resolved to: <id>"
-//   "[confirmTransaction] auth.getUser() resolved to: null — session not found"
 
 "use server";
 
 import { cookies } from "next/headers";
-import { createServerActionClient } from "@supabase/auth-helpers-nextjs";
+import { createServerClient } from "@supabase/ssr";
 import { revalidatePath } from "next/cache";
 
 interface ConfirmTransactionArgs {
@@ -25,13 +17,22 @@ export async function confirmTransaction({
   clientId,
 }: ConfirmTransactionArgs): Promise<{ success: boolean; error?: string }> {
   const cookieStore = cookies();
-  const supabase = createServerActionClient({ cookies: () => cookieStore });
+  const supabase = createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      cookies: {
+        get(name: string) {
+          return cookieStore.get(name)?.value;
+        },
+      },
+    }
+  );
 
   const {
     data: { user },
   } = await supabase.auth.getUser();
 
-  // Unconditional log — fires no matter which branch we take next.
   console.log(`[confirmTransaction] auth.getUser() resolved to: ${user?.id ?? "null — session not found"}`);
 
   if (!user) {
@@ -75,7 +76,17 @@ export async function correctTransaction({
   toCategoryId,
 }: CorrectTransactionArgs): Promise<{ success: boolean; error?: string }> {
   const cookieStore = cookies();
-  const supabase = createServerActionClient({ cookies: () => cookieStore });
+  const supabase = createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      cookies: {
+        get(name: string) {
+          return cookieStore.get(name)?.value;
+        },
+      },
+    }
+  );
 
   const {
     data: { user },
