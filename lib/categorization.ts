@@ -1,12 +1,18 @@
 // lib/categorization.ts
+// This is the part of LedgerAI that actually compounds in value per client:
+// every correction a bookkeeper makes strengthens category_mapping_rules,
+// so accuracy for THIS client's vendors improves over time and a competitor
+// starting from zero can't replicate it on day one.
+
 import Anthropic from "@anthropic-ai/sdk";
 import { createClient } from "@supabase/supabase-js";
+
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 function supabaseAdmin() {
   return createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
-    { auth: { persistSession: false } }
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
   );
 }
 
@@ -18,24 +24,10 @@ interface PendingTxn {
 }
 
 /**
- * Builds a database-ready transaction record from a Plaid transaction object.
+ * Runs after every sync. For each pending_review transaction:
+ *  1. Check category_mapping_rules first (learned, client-specific, free/instant)
+ *  2. Fall back to Claude only for merchants with no confident learned rule
  */
-export function buildTransactionRecord(plaidTx: any, clientId: string) {
-  return {
-    client_id: clientId,
-    plaid_transaction_id: plaidTx.transaction_id,
-    amount: plaidTx.amount,
-    date: plaidTx.date,
-    merchant_name: plaidTx.merchant_name || plaidTx.name || "Unknown Merchant",
-    raw_plaid_category: Array.isArray(plaidTx.category)
-      ? plaidTx.category.join(" > ")
-      : plaidTx.category || null,
-    status: "pending_review",
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  };
-}
-
 export async function categorizePendingTransactions(clientId: string) {
   const supabase = supabaseAdmin();
 
@@ -65,6 +57,7 @@ export async function categorizePendingTransactions(clientId: string) {
   for (const txn of pending as PendingTxn[]) {
     const key = normalizeMerchant(txn.merchant_name ?? "");
     const rule = ruleMap.get(key);
+    // High-confidence learned rule → apply directly, skip the API call entirely.
     if (rule && rule.confidence_score >= 0.85) {
       await applyCategory(supabase, txn.id, rule.category_id, rule.confidence_score);
       await bumpRuleUsage(supabase, clientId, key);
@@ -101,43 +94,75 @@ async function bumpRuleUsage(supabase: ReturnType<typeof supabaseAdmin>, clientI
   });
 }
 
+/**
+ * Batches remaining transactions to Claude for categorization, using the
+ * client's actual chart of accounts as the option set — never inventing
+ * categories that don't exist in the client's books.
+ */
 async function categorizeBatchWithClaude(
   supabase: ReturnType<typeof supabaseAdmin>,
   clientId: string,
   txns: PendingTxn[],
   categories: { id: string; name: string; coa_code: string | null }[]
 ) {
-  const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
   const categoryList = categories.map((c) => `- ${c.id}: ${c.name}${c.coa_code ? ` (${c.coa_code})` : ""}`).join("\n");
-  const txnList = txns.map((t, i) => `${i}. merchant="${t.merchant_name ?? "unknown"}", amount=${t.amount}, plaid_category="${t.raw_plaid_category ?? "none"}"`).join("\n");
+
+  const txnList = txns
+    .map((t, i) => `${i}. merchant="${t.merchant_name ?? "unknown"}", amount=${t.amount}, plaid_category="${t.raw_plaid_category ?? "none"}"`)
+    .join("\n");
 
   const response = await anthropic.messages.create({
     model: "claude-sonnet-4-6",
-    max_tokens: 1000,
-    system: "You are a bookkeeping categorization engine. Choose exactly one category_id from the provided list for each transaction. Never invent a category_id. Respond ONLY with a JSON array, no prose, no markdown.",
-    messages: [{
-      role: "user",
-      content: `Chart of accounts:\n${categoryList}\n\nTransactions:\n${txnList}\n\nRespond: [{"index": 0, "category_id": "...", "confidence": 0.0-1.0}]`,
-    }],
+    max_tokens: 2000,
+    system:
+      "You are a bookkeeping categorization engine. You must choose exactly one category_id from " +
+      "the provided list for each transaction. Never invent a category_id. Respond ONLY with a JSON " +
+      "array, no prose, no markdown fences.",
+    messages: [
+      {
+        role: "user",
+        content:
+          `Chart of accounts:\n${categoryList}\n\n` +
+          `Transactions to categorize:\n${txnList}\n\n` +
+          `Respond with a JSON array like: ` +
+          `[{"index": 0, "category_id": "...", "confidence": 0.0-1.0}]`,
+      },
+    ],
   });
 
   const textBlock = response.content.find((b) => b.type === "text");
   if (!textBlock || textBlock.type !== "text") throw new Error("No text response from Claude");
+
   const results: { index: number; category_id: string; confidence: number }[] = JSON.parse(textBlock.text);
 
   for (const r of results) {
     const txn = txns[r.index];
     if (!txn) continue;
     await applyCategory(supabase, txn.id, r.category_id, r.confidence);
+
+    // Seed a new learned rule at moderate confidence — it strengthens
+    // (confidence_score rises) each time a bookkeeper confirms rather than
+    // corrects it. See category_corrections trigger in schema/003_triggers.sql.
     if (txn.merchant_name) {
       await supabase.from("category_mapping_rules").upsert(
-        { client_id: clientId, merchant_pattern: normalizeMerchant(txn.merchant_name), category_id: r.category_id, confidence_score: r.confidence },
+        {
+          client_id: clientId,
+          merchant_pattern: normalizeMerchant(txn.merchant_name),
+          category_id: r.category_id,
+          confidence_score: r.confidence,
+        },
         { onConflict: "client_id,merchant_pattern" }
       );
     }
   }
 }
 
+/**
+ * Called from the "correct this transaction" UI action. Writes the
+ * correction to memory and updates (or lowers) the learned rule's
+ * confidence — this is the compounding mechanism referenced throughout
+ * the blueprint's retention design.
+ */
 export async function recordCorrection(
   transactionId: string,
   clientId: string,
@@ -146,6 +171,7 @@ export async function recordCorrection(
   correctedBy: string
 ) {
   const supabase = supabaseAdmin();
+
   await supabase.from("category_corrections").insert({
     transaction_id: transactionId,
     client_id: clientId,
@@ -153,137 +179,31 @@ export async function recordCorrection(
     to_category_id: toCategoryId,
     corrected_by: correctedBy,
   });
-  const { data: txn } = await supabase.from("transactions").select("merchant_name").eq("id", transactionId).single();
+
+  const { data: txn } = await supabase
+    .from("transactions")
+    .select("merchant_name")
+    .eq("id", transactionId)
+    .single();
+
   if (txn?.merchant_name) {
     const key = normalizeMerchant(txn.merchant_name);
+    // A correction means our previous guess was wrong for this merchant —
+    // move the rule toward the corrected category and reset confidence
+    // conservatively so it has to re-earn trust via confirmations.
     await supabase.from("category_mapping_rules").upsert(
-      { client_id: clientId, merchant_pattern: key, category_id: toCategoryId, confidence_score: 0.6 },
+      {
+        client_id: clientId,
+        merchant_pattern: key,
+        category_id: toCategoryId,
+        confidence_score: 0.6,
+      },
       { onConflict: "client_id,merchant_pattern" }
     );
   }
+
   await supabase
     .from("transactions")
     .update({ ai_category_id: toCategoryId, status: "confirmed", updated_at: new Date().toISOString() })
     .eq("id", transactionId);
-}
-
-// ============================================================
-// LOCAL RULE-BASED CATEGORIZER — no API cost, for testing only.
-// ============================================================
-
-const LOCAL_KEYWORD_RULES: { pattern: RegExp; categoryNameHints: string[] }[] = [
-  { pattern: /credit card.*payment|card.*payment/i, categoryNameHints: ["credit card", "card payment", "payment"] },
-  { pattern: /intrst|interest/i, categoryNameHints: ["interest", "interest expense", "interest income", "transfer"] },
-  { pattern: /aws|cloud|hosting|azure|gcp|digitalocean/i, categoryNameHints: ["software", "subscriptions", "software & subscriptions", "cloud"] },
-  { pattern: /office depot|staples|office|supplies/i, categoryNameHints: ["office supplies", "office"] },
-  { pattern: /payroll|salary|wages/i, categoryNameHints: ["payroll", "wages", "salaries"] },
-  { pattern: /rent\b/i, categoryNameHints: ["rent", "rent expense"] },
-  { pattern: /software|saas|subscription/i, categoryNameHints: ["software", "subscriptions"] },
-  { pattern: /travel|airline|hotel|uber|lyft/i, categoryNameHints: ["travel", "travel expense"] },
-  { pattern: /transfer/i, categoryNameHints: ["transfer", "transfers"] },
-  { pattern: /fee|charge|bank/i, categoryNameHints: ["bank fees", "fees"] },
-  { pattern: /payment.*credit card/i, categoryNameHints: ["credit card", "payment"] },
-  { pattern: /transfer.*credit/i, categoryNameHints: ["transfer", "interest income"] },
-];
-
-export async function categorizeWithLocalRules(clientId: string | null): Promise<{ categorized: number; skipped: number }> {
-  const supabase = supabaseAdmin();
-
-  let query = supabase
-    .from("transactions")
-    .select("id, merchant_name, raw_plaid_category")
-    .eq("status", "pending_review")
-    .is("ai_category_id", null);
-
-  if (clientId) {
-    query = query.eq("client_id", clientId);
-  }
-
-  const { data: pending, error } = await query;
-  if (error) throw error;
-  if (!pending?.length) return { categorized: 0, skipped: 0 };
-
-  let categoriesQuery = supabase.from("categories").select("id, name");
-  if (clientId) {
-    categoriesQuery = categoriesQuery.or(`client_id.eq.${clientId},is_default.eq.true`);
-  }
-
-  const { data: categories } = await categoriesQuery;
-  if (!categories?.length) return { categorized: 0, skipped: pending.length };
-
-  let categorized = 0;
-  let skipped = 0;
-
-  for (const txn of pending) {
-    const searchText = `${txn.merchant_name ?? ""} ${txn.raw_plaid_category ?? ""}`;
-    let matchedCategoryId: string | null = null;
-
-    for (const rule of LOCAL_KEYWORD_RULES) {
-      if (!rule.pattern.test(searchText)) continue;
-      const hit = categories.find((c) =>
-        rule.categoryNameHints.some((hint) =>
-          c.name.toLowerCase().includes(hint.toLowerCase())
-        )
-      );
-      if (hit) {
-        matchedCategoryId = hit.id;
-        break;
-      }
-    }
-
-    if (matchedCategoryId) {
-      await supabase
-        .from("transactions")
-        .update({ ai_category_id: matchedCategoryId, ai_confidence: 1.0 })
-        .eq("id", txn.id);
-      categorized++;
-    } else {
-      skipped++;
-    }
-  }
-
-  console.log(`[categorize-local] client ${clientId ?? "all"}: categorized=${categorized}, skipped=${skipped}`);
-  return { categorized, skipped };
-}
-
-// ============================================================
-// HELPER UTILITIES FOR MERCHANT SANITIZATION & DIRECT RULES
-// ============================================================
-
-export function sanitizeMerchantName(rawName: string): string {
-  if (!rawName) return '';
-  return rawName
-    .toLowerCase()
-    .replace(/[0-9*#\-]/g, ' ')
-    .replace(/\b(inc|llc|co|corp|ltd|store|pvt)\b/gi, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-export async function saveCategoryRule(
-  clientId: string,
-  merchantName: string,
-  categoryId: string,
-  confidenceScore = 1.0
-) {
-  const supabase = supabaseAdmin();
-  const pattern = sanitizeMerchantName(merchantName);
-
-  if (!pattern) throw new Error("Invalid merchant pattern");
-
-  const { data, error } = await supabase
-    .from("category_mapping_rules")
-    .upsert(
-      {
-        client_id: clientId,
-        merchant_pattern: pattern,
-        category_id: categoryId,
-        confidence_score: confidenceScore,
-      },
-      { onConflict: "client_id,merchant_pattern" }
-    )
-    .select();
-
-  if (error) throw error;
-  return data;
 }

@@ -3,17 +3,17 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "cross-env NODE_OPTIONS=\"--dns-result-order=ipv4first\" next dev",
+    "dev": "next dev",
     "build": "next build",
     "start": "next start",
     "lint": "next lint"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "0.27.3",
-    "@supabase/auth-helpers-nextjs": "^0.15.0",
-    "@supabase/ssr": "^0.12.4",
-    "@supabase/supabase-js": "^2.112.3",
-    "next": "^14.1.0",
+    "@supabase/auth-helpers-nextjs": "0.10.0",
+    "@supabase/ssr": "^0.12.3",
+    "@supabase/supabase-js": "^2.45.4",
+    "next": "14.2.5",
     "plaid": "26.0.0",
     "react": "18.3.1",
     "react-dom": "18.3.1",
@@ -23,7 +23,6 @@
     "@types/node": "20.14.15",
     "@types/react": "18.3.3",
     "@types/react-dom": "18.3.0",
-    "cross-env": "^10.1.0",
-    "typescript": "^5.5.4"
+    "typescript": "5.5.4"
   }
 }
