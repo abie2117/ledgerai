@@ -40,3 +40,6 @@ export function createRouteHandlerClient() {
     }
   )
 }
+
+// Alias to satisfy API route imports expecting createServerSupabaseClient
+export const createServerSupabaseClient = createRouteHandlerClient;
