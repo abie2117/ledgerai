@@ -2,8 +2,8 @@ import { createServerClient, type CookieOptions } from '@supabase/ssr'
 import { cookies } from 'next/headers'
 
 // For Server Components (read-only cookies)
-export function createServerComponentClient() {
-  const cookieStore = cookies()
+export async function createServerComponentClient() {
+  const cookieStore = await cookies()
 
   return createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -19,8 +19,8 @@ export function createServerComponentClient() {
 }
 
 // For Route Handlers / Server Actions (read, set, and remove cookies)
-export function createRouteHandlerClient() {
-  const cookieStore = cookies()
+export async function createRouteHandlerClient() {
+  const cookieStore = await cookies()
 
   return createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
