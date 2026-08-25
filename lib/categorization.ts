@@ -215,23 +215,18 @@ export async function categorizeWithLocalRules(clientId: string): Promise<{ cate
     process.env.SUPABASE_SERVICE_ROLE_KEY!,
     { auth: { persistSession: false } }
   );
-
-  const { data: pending, error } = await supabase
+  const { data: pending } = await supabase
     .from('transactions')
     .select('id, merchant_name, raw_plaid_category')
     .eq('client_id', clientId)
     .eq('status', 'pending_review')
     .is('ai_category_id', null);
-  if (error) throw error;
   if (!pending?.length) return { categorized: 0, skipped: 0 };
-
   const { data: categories } = await supabase
     .from('categories')
     .select('id, name')
     .or(`client_id.eq.${clientId},is_default.eq.true`);
-
   if (!categories?.length) return { categorized: 0, skipped: pending.length };
-
   const rules = [
     { pattern: /credit card.*payment|card.*payment/i, hints: ['credit card', 'payment'] },
     { pattern: /intrst|interest/i, hints: ['interest', 'transfer'] },
@@ -241,11 +236,9 @@ export async function categorizeWithLocalRules(clientId: string): Promise<{ cate
     { pattern: /payment.*credit card/i, hints: ['credit card', 'payment'] },
     { pattern: /transfer.*credit/i, hints: ['transfer', 'interest'] },
   ];
-
   let categorized = 0, skipped = 0;
-
   for (const txn of pending) {
-    const searchText = `${txn.merchant_name ?? ''} ${txn.raw_plaid_category ?? ''}`;
+    const searchText = `${txn.merchant_name ?? ''} `${txn.raw_plaid_category ?? ''}`;
     let matchedId: string | null = null;
     for (const rule of rules) {
       if (!rule.pattern.test(searchText)) continue;
@@ -257,6 +250,5 @@ export async function categorizeWithLocalRules(clientId: string): Promise<{ cate
       categorized++;
     } else { skipped++; }
   }
-
   return { categorized, skipped };
 }
