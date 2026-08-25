@@ -1,87 +1,56 @@
-"use client";
-
-import { useState } from "react";
-import { createClientComponentClient } from "@supabase/auth-helpers-nextjs";
-import { useRouter } from "next/navigation";
+'use client';
+import { useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { createBrowserSupabaseClient } from '../../lib/supabase-browser';
 
 export default function LoginPage() {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [errorMsg, setErrorMsg] = useState("");
-  const [loading, setLoading] = useState(false);
-
-  const supabase = createClientComponentClient();
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
-  const handleLogin = async (e: React.FormEvent) => {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    setLoading(true);
-    setErrorMsg("");
+    setSubmitting(true);
+    setError(null);
 
-    const { error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
+    const supabase = createBrowserSupabaseClient();
+    const { error: signInError } = await supabase.auth.signInWithPassword({ email, password });
 
-    if (error) {
-      setErrorMsg(error.message);
-      setLoading(false);
-    } else {
-      router.push("/");
-      router.refresh();
+    if (signInError) {
+      setError("Couldn't log in — check your email and password.");
+      setSubmitting(false);
+      return;
     }
-  };
+
+    router.refresh();
+    router.push(searchParams.get('redirectedFrom') || '/');
+  }
 
   return (
-    <div style={{ display: "flex", minHeight: "100vh", alignItems: "center", justifyContent: "center", backgroundColor: "#f9fafb", padding: "16px" }}>
-      <div style={{ width: "100%", maxWidth: "400px", borderRadius: "8px", backgroundColor: "white", padding: "32px", boxShadow: "0 4px 6px rgba(0,0,0,0.1)" }}>
-        <h2 style={{ marginBottom: "24px", fontSize: "24px", fontWeight: "bold", textAlign: "center" }}>
-          Sign In to LedgerAI
-        </h2>
-
-        {errorMsg && (
-          <div style={{ marginBottom: "16px", borderRadius: "4px", backgroundColor: "#fef2f2", padding: "12px", fontSize: "14px", color: "#dc2626" }}>
-            {errorMsg}
-          </div>
-        )}
-
-        <form onSubmit={handleLogin} style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-          <div>
-            <label style={{ display: "block", fontSize: "14px", fontWeight: "500", color: "#374151" }}>
-              Email
-            </label>
-            <input
-              type="email"
-              required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              style={{ marginTop: "4px", display: "block", width: "100%", borderRadius: "4px", border: "1px solid #d1d5db", padding: "8px" }}
-              placeholder="you@example.com"
-            />
-          </div>
-
-          <div>
-            <label style={{ display: "block", fontSize: "14px", fontWeight: "500", color: "#374151" }}>
-              Password
-            </label>
-            <input
-              type="password"
-              required
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              style={{ marginTop: "4px", display: "block", width: "100%", borderRadius: "4px", border: "1px solid #d1d5db", padding: "8px" }}
-              placeholder="••••••••"
-            />
-          </div>
-
-          <button
-            type="submit"
-            disabled={loading}
-            style={{ width: "100%", borderRadius: "4px", backgroundColor: "#2563eb", padding: "10px", color: "white", fontWeight: "500", cursor: "pointer" }}
-          >
-            {loading ? "Signing in..." : "Sign In"}
-          </button>
-        </form>
+    <div style={{ maxWidth: 400, margin: '0 auto', padding: '64px 24px' }}>
+      <h1 style={{ marginBottom: 24 }}>LedgerAI — Log in</h1>
+      <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13 }}>
+          Email
+          <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required
+            style={{ padding: '10px 12px', border: '1px solid #cbd5e1', borderRadius: 4, fontSize: 14 }} />
+        </label>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13 }}>
+          Password
+          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required
+            style={{ padding: '10px 12px', border: '1px solid #cbd5e1', borderRadius: 4, fontSize: 14 }} />
+        </label>
+        {error && <div style={{ color: '#dc2626', fontSize: 13 }}>{error}</div>}
+        <button type="submit" disabled={submitting}
+          style={{ padding: '12px 0', borderRadius: 4, border: 'none', background: '#16a34a', color: 'white', fontWeight: 600, fontSize: 14, cursor: 'pointer' }}>
+          {submitting ? 'Logging in…' : 'Log in'}
+        </button>
+      </form>
+      <div style={{ marginTop: 20, fontSize: 13, color: '#64748b' }}>
+        No account? <a href="/signup" style={{ color: '#16a34a' }}>Sign up</a>
       </div>
     </div>
   );
