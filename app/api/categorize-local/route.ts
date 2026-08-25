@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import { createRouteHandlerClient } from "../../../lib/supabase-server";
 import { createClient } from "@supabase/supabase-js";
 
-// We embedded this directly to completely bypass Vercel import cache errors
 async function categorizeWithLocalRules(clientId: string): Promise<{ categorized: number; skipped: number }> {
   const supabase = createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -11,46 +10,57 @@ async function categorizeWithLocalRules(clientId: string): Promise<{ categorized
   );
 
   const { data: pending, error } = await supabase
-    .from('transactions')
-    .select('id, merchant_name, raw_plaid_category')
-    .eq('client_id', clientId)
-    .eq('status', 'pending_review')
-    .is('ai_category_id', null);
-    
+    .from("transactions")
+    .select("id, merchant_name, raw_plaid_category")
+    .eq("client_id", clientId)
+    .eq("status", "pending_review")
+    .is("ai_category_id", null);
+
   if (error) throw error;
   if (!pending?.length) return { categorized: 0, skipped: 0 };
 
   const { data: categories } = await supabase
-    .from('categories')
-    .select('id, name')
+    .from("categories")
+    .select("id, name")
     .or(`client_id.eq.${clientId},is_default.eq.true`);
 
   if (!categories?.length) return { categorized: 0, skipped: pending.length };
 
   const rules = [
-    { pattern: /credit card.*payment|card.*payment/i, hints: ['credit card', 'payment'] },
-    { pattern: /intrst|interest/i, hints: ['interest', 'transfer'] },
-    { pattern: /aws|cloud|hosting/i, hints: ['software', 'subscriptions'] },
-    { pattern: /office depot|supplies/i, hints: ['office'] },
-    { pattern: /transfer/i, hints: ['transfer'] },
-    { pattern: /payment.*credit card/i, hints: ['credit card', 'payment'] },
-    { pattern: /transfer.*credit/i, hints: ['transfer', 'interest'] },
+    { pattern: /credit card.*payment|card.*payment/i, hints: ["credit card", "payment"] },
+    { pattern: /intrst|interest/i, hints: ["interest", "transfer"] },
+    { pattern: /aws|cloud|hosting/i, hints: ["software", "subscriptions"] },
+    { pattern: /office depot|supplies/i, hints: ["office"] },
+    { pattern: /transfer/i, hints: ["transfer"] },
+    { pattern: /payment.*credit card/i, hints: ["credit card", "payment"] },
+    { pattern: /transfer.*credit/i, hints: ["transfer", "interest"] },
   ];
 
-  let categorized = 0, skipped = 0;
+  let categorized = 0;
+  let skipped = 0;
 
   for (const txn of pending) {
-    const searchText = `${txn.merchant_name ?? ''} ${txn.raw_plaid_category ?? ''}`;
+    const searchText = `${txn.merchant_name ?? ""} ${txn.raw_plaid_category ?? ""}`;
     let matchedId: string | null = null;
+
     for (const rule of rules) {
       if (!rule.pattern.test(searchText)) continue;
-      const hit = categories.find(c => rule.hints.some(h => c.name.toLowerCase().includes(h)));
-      if (hit) { matchedId = hit.id; break; }
+      const hit = categories.find((c) => rule.hints.some((h) => c.name.toLowerCase().includes(h)));
+      if (hit) {
+        matchedId = hit.id;
+        break;
+      }
     }
+
     if (matchedId) {
-      await supabase.from('transactions').update({ ai_category_id: matchedId, ai_confidence: 1.0 }).eq('id', txn.id);
+      await supabase
+        .from("transactions")
+        .update({ ai_category_id: matchedId, ai_confidence: 1.0 })
+        .eq("id", txn.id);
       categorized++;
-    } else { skipped++; }
+    } else {
+      skipped++;
+    }
   }
 
   return { categorized, skipped };
@@ -59,7 +69,9 @@ async function categorizeWithLocalRules(clientId: string): Promise<{ categorized
 export async function POST(req: Request) {
   try {
     const supabase = await createRouteHandlerClient();
-    const { data: { user } } = await supabase.auth.getUser();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
     if (!user) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
 
     const body = await req.json().catch(() => ({}));
@@ -68,9 +80,14 @@ export async function POST(req: Request) {
     let targetClientId: string | null = uuidRegex.test(rawId ?? "") ? rawId : null;
 
     if (!targetClientId && (body.client_name || rawId)) {
-      const { data: matched } = await supabase.from("clients").select("id").eq("business_name", body.client_name || rawId).maybeSingle();
+      const { data: matched } = await supabase
+        .from("clients")
+        .select("id")
+        .eq("business_name", body.client_name || rawId)
+        .maybeSingle();
       targetClientId = matched?.id || null;
     }
+
     if (!targetClientId) return NextResponse.json({ error: "Could not resolve clientId" }, { status: 400 });
 
     console.log("[categorize-local] Running for clientId:", targetClientId);
