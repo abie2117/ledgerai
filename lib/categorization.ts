@@ -17,6 +17,12 @@ interface PendingTxn {
   raw_plaid_category: string | null;
 }
 
+interface MappingRule {
+  merchant_pattern: string;
+  category_id: string;
+  confidence_score: number;
+}
+
 export async function categorizePendingTransactions(clientId: string) {
   const supabase = supabaseAdmin();
   const { data: pending, error } = await supabase
@@ -38,7 +44,9 @@ export async function categorizePendingTransactions(clientId: string) {
     .select('merchant_pattern, category_id, confidence_score')
     .eq('client_id', clientId);
 
-  const ruleMap = new Map((rules ?? []).map((r: any) => [normalizeMerchant(r.merchant_pattern), r]));
+  const ruleMap = new Map<string, MappingRule>(
+    (rules ?? []).map((r: any) => [normalizeMerchant(r.merchant_pattern), r as MappingRule])
+  );
   const needsClaude: PendingTxn[] = [];
 
   for (const txn of pending as PendingTxn[]) {
