@@ -51,7 +51,7 @@ function isSafeQuery(sql: string, clientId: string): boolean {
 }
 
 export async function POST(req: Request) {
-  const authClient = createRouteHandlerClient();
+  const authClient = await createRouteHandlerClient();
   const { data: { user } } = await authClient.auth.getUser();
   if (!user) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
 
