@@ -90,7 +90,7 @@ export default function DashboardPage() {
 
       <div className="flex gap-4 mb-8">
         <PlaidLinkButton 
-          selectedClient={selectedClient} 
+          selectedClientId={selectedClient} 
           onBankConnected={loadTransactions} 
         />
         <button
