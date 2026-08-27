@@ -12,7 +12,7 @@ export async function getServerUser(_req: NextRequest) {
   const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
   if (!url || !key) {
-    return null;
+    return null; // Safe fallback during build prerendering
   }
 
   const cookieStore = cookies();
