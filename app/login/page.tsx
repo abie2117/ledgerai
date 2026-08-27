@@ -1,9 +1,10 @@
 'use client';
-import { useState } from 'react';
+
+import { useState, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { createBrowserSupabaseClient } from '../../lib/supabase-browser';
 
-export default function LoginPage() {
+function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [email, setEmail] = useState('');
@@ -53,5 +54,13 @@ export default function LoginPage() {
         No account? <a href="/signup" style={{ color: '#16a34a' }}>Sign up</a>
       </div>
     </div>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={<div style={{ textAlign: 'center', padding: '64px' }}>Loading...</div>}>
+      <LoginForm />
+    </Suspense>
   );
 }
