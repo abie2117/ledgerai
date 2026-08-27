@@ -7,7 +7,7 @@ export async function POST(req: Request) {
   try {
     const body = await req.json().catch(() => ({}));
     const clientId = body.client_id || body.client_name;
-    const supabase = createServerComponentClient();
+    const supabase = await createServerComponentClient();
 
     // 1. First attempt: Query transactions matching client identifier
     let transactions: any[] = [];
