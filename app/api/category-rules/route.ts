@@ -4,7 +4,7 @@ import { saveCategoryRule } from '@/lib/categorization';
 
 export async function POST(request: Request) {
   try {
-    const supabase = createServerSupabaseClient();
+    const supabase = await createServerSupabaseClient();
     
     // 1. Verify user session
     const {
