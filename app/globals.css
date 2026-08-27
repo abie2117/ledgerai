@@ -1,3 +1,7 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
 /* app/globals.css
    LedgerAI design tokens — a ledger console, not a marketing surface.
    Every number is monospace and every column aligns, on purpose. */
