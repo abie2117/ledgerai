@@ -174,6 +174,31 @@ export async function recordCorrection(
     .eq('id', transactionId);
 }
 
+export async function saveCategoryRule(
+  clientId: string,
+  merchantPattern: string,
+  categoryId: string,
+  confidenceScore: number = 0.85
+) {
+  const supabase = supabaseAdmin();
+  const { data, error } = await supabase
+    .from('category_mapping_rules')
+    .upsert(
+      {
+        client_id: clientId,
+        merchant_pattern: normalizeMerchant(merchantPattern),
+        category_id: categoryId,
+        confidence_score: confidenceScore,
+      },
+      { onConflict: 'client_id,merchant_pattern' }
+    )
+    .select()
+    .single();
+
+  if (error) throw error;
+  return data;
+}
+
 export async function categorizeWithLocalRules(clientId: string): Promise<{ categorized: number; skipped: number }> {
   const supabase = supabaseAdmin();
   const { data: pending } = await supabase
