@@ -64,6 +64,14 @@ body {
   outline-offset: 2px;
 }
 
+input, select, textarea {
+  color: var(--ink);
+  background-color: var(--paper-raised);
+}
+
 @media (prefers-reduced-motion: reduce) {
-  * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+  * { 
+    animation-duration: 0.01ms !important; 
+    transition-duration: 0.01ms !important; 
+  }
 }
