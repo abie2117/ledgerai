@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
-import { createServerSupabaseClient } from '@/lib/supabase-server';
-import { saveCategoryRule } from '@/lib/categorization';
+import { createServerSupabaseClient } from '../../../lib/supabase-server';
+import { saveCategoryRule } from '../../../lib/categorization';
 
 export async function POST(request: Request) {
   try {
