@@ -23,7 +23,7 @@ export default function LoginPage() {
 
     if (isSignUp) {
       // Handle Sign Up
-      const { error } = await supabase.auth.signUp({
+      const { data, error } = await supabase.auth.signUp({
         email,
         password,
         options: {
@@ -37,7 +37,13 @@ export default function LoginPage() {
         return;
       }
 
-      setSuccessMsg('Account created successfully! Check your email to confirm or log in below if email confirmation is disabled.');
+      // If email confirmation is disabled in Supabase, a session is returned immediately
+      if (data?.session) {
+        window.location.href = '/';
+        return;
+      }
+
+      setSuccessMsg('Account created successfully! Check your email to confirm or log in below.');
       setLoading(false);
     } else {
       // Handle Log In
