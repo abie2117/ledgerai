@@ -17,6 +17,7 @@ export default function LoginPage() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    console.log("handleSubmit triggered for:", email); // Debug log to track form execution
     setLoading(true);
     setErrorMsg(null);
     setSuccessMsg(null);
@@ -37,7 +38,6 @@ export default function LoginPage() {
         return;
       }
 
-      // If email confirmation is disabled in Supabase, a session is returned immediately
       if (data?.session) {
         window.location.href = '/';
         return;
@@ -58,7 +58,7 @@ export default function LoginPage() {
         return;
       }
 
-      // Successful login -> Force full browser redirect to bypass cache/middleware blocks
+      // Successful login -> Force full browser redirect
       window.location.href = '/';
     }
   }
