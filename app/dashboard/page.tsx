@@ -320,11 +320,10 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          {/* Action Group: Connect Bank, Categorize, and Export CSV */}
+          {/* Action Group: Connect Bank, Categorize, Export CSV, and Sign Out */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             <button
               onClick={() => {
-                // Plaid Link trigger handler placeholder
                 alert('Triggering Plaid Link flow...');
               }}
               style={{
@@ -348,7 +347,6 @@ export default function DashboardPage() {
 
             <button
               onClick={() => {
-                // Free/Local Categorization trigger handler placeholder
                 alert('Running local rule categorization engine...');
               }}
               style={{
@@ -400,6 +398,30 @@ export default function DashboardPage() {
               >
                 {filteredTransactions.length}
               </span>
+            </button>
+
+            <button
+              onClick={async () => {
+                await supabase.auth.signOut();
+                router.push('/login');
+              }}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 8,
+                padding: '11px 18px',
+                backgroundColor: '#1e293b',
+                color: '#f87171',
+                borderRadius: 10,
+                border: '1px solid rgba(248, 113, 113, 0.3)',
+                fontWeight: 600,
+                cursor: 'pointer',
+                fontSize: 14,
+                boxShadow: '0 4px 14px rgba(248, 113, 113, 0.1)',
+                transition: 'all 0.2s ease',
+              }}
+            >
+              <span>Sign Out</span>
             </button>
           </div>
         </div>
