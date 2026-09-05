@@ -52,9 +52,8 @@ export default function LoginPage() {
         return;
       }
 
-      // Successful login -> Route directly to dashboard
-      router.push('/');
-      router.refresh();
+      // Successful login -> Force full browser redirect to bypass cache/middleware blocks
+      window.location.href = '/';
     }
   }
 
