@@ -29,7 +29,7 @@ function serviceRole() {
 
 export async function POST(req: Request) {
   // Auth check — confirm user is logged in
-  const authClient = createRouteHandlerClient();
+  const authClient = await createRouteHandlerClient();
   const { data: { user } } = await authClient.auth.getUser();
   if (!user) {
     return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });

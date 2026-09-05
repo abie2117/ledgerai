@@ -1,3 +1,4 @@
+```tsx
 'use client';
 
 import { useState, useEffect, useMemo } from 'react';
@@ -218,7 +219,7 @@ export default function DashboardPage() {
     >
       <div style={{ maxWidth: 1160, margin: '0 auto' }}>
         
-        {/* Header Bar with Sophisticated Glowing Unique Logo */}
+        {/* Header Bar with Sophisticated Glowing Unique Logo & Action Controls */}
         <div
           style={{
             display: 'flex',
@@ -230,7 +231,6 @@ export default function DashboardPage() {
           }}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-            {/* Unique Custom Quantum-Ledger Logo with Glowing Neon Border */}
             <div
               style={{
                 width: 50,
@@ -263,7 +263,6 @@ export default function DashboardPage() {
                     <feComposite in="SourceGraphic" in2="blur" operator="over" />
                   </filter>
                 </defs>
-                {/* Abstract Quantum Ledger Nodes */}
                 <path
                   d="M16 3L28 9.5V22.5L16 29L4 22.5V9.5L16 3Z"
                   stroke="url(#neon-glow)"
@@ -322,37 +321,110 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          <button
-            onClick={exportToCSV}
-            disabled={filteredTransactions.length === 0}
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 8,
-              padding: '11px 20px',
-              backgroundColor: filteredTransactions.length === 0 ? '#1e293b' : '#0284c7',
-              color: '#ffffff',
-              borderRadius: 10,
-              border: '1px solid rgba(255, 255, 255, 0.1)',
-              fontWeight: 600,
-              cursor: filteredTransactions.length === 0 ? 'not-allowed' : 'pointer',
-              fontSize: 14,
-              boxShadow: '0 4px 14px rgba(2, 132, 199, 0.3)',
-              transition: 'all 0.2s ease',
-            }}
-          >
-            <span>Export CSV Report</span>
-            <span
+          {/* Action Group: Connect Bank, Categorize, Export CSV, and Sign Out */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <button
+              onClick={() => {
+                alert('Triggering Plaid Link flow...');
+              }}
               style={{
-                backgroundColor: 'rgba(255, 255, 255, 0.2)',
-                padding: '2px 6px',
-                borderRadius: 4,
-                fontSize: 12,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 8,
+                padding: '11px 18px',
+                backgroundColor: '#0f172a',
+                color: '#38bdf8',
+                borderRadius: 10,
+                border: '1px solid rgba(56, 189, 248, 0.4)',
+                fontWeight: 600,
+                cursor: 'pointer',
+                fontSize: 14,
+                boxShadow: '0 4px 14px rgba(56, 189, 248, 0.15)',
+                transition: 'all 0.2s ease',
               }}
             >
-              {filteredTransactions.length}
-            </span>
-          </button>
+              <span>Connect Your Bank</span>
+            </button>
+
+            <button
+              onClick={() => {
+                alert('Running local rule categorization engine...');
+              }}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 8,
+                padding: '11px 18px',
+                backgroundColor: '#0f172a',
+                color: '#818cf8',
+                borderRadius: 10,
+                border: '1px solid rgba(129, 140, 248, 0.4)',
+                fontWeight: 600,
+                cursor: 'pointer',
+                fontSize: 14,
+                boxShadow: '0 4px 14px rgba(129, 140, 248, 0.15)',
+                transition: 'all 0.2s ease',
+              }}
+            >
+              <span>Categorize (Free/Local)</span>
+            </button>
+
+            <button
+              onClick={exportToCSV}
+              disabled={filteredTransactions.length === 0}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 8,
+                padding: '11px 20px',
+                backgroundColor: filteredTransactions.length === 0 ? '#1e293b' : '#0284c7',
+                color: '#ffffff',
+                borderRadius: 10,
+                border: '1px solid rgba(255, 255, 255, 0.1)',
+                fontWeight: 600,
+                cursor: filteredTransactions.length === 0 ? 'not-allowed' : 'pointer',
+                fontSize: 14,
+                boxShadow: '0 4px 14px rgba(2, 132, 199, 0.3)',
+                transition: 'all 0.2s ease',
+              }}
+            >
+              <span>Export CSV Report</span>
+              <span
+                style={{
+                  backgroundColor: 'rgba(255, 255, 255, 0.2)',
+                  padding: '2px 6px',
+                  borderRadius: 4,
+                  fontSize: 12,
+                }}
+              >
+                {filteredTransactions.length}
+              </span>
+            </button>
+
+            <button
+              onClick={async () => {
+                await supabase.auth.signOut();
+                router.push('/login');
+              }}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 8,
+                padding: '11px 18px',
+                backgroundColor: '#1e293b',
+                color: '#f87171',
+                borderRadius: 10,
+                border: '1px solid rgba(248, 113, 113, 0.3)',
+                fontWeight: 600,
+                cursor: 'pointer',
+                fontSize: 14,
+                boxShadow: '0 4px 14px rgba(248, 113, 113, 0.1)',
+                transition: 'all 0.2s ease',
+              }}
+            >
+              <span>Sign Out</span>
+            </button>
+          </div>
         </div>
 
         {/* Filter Controls Bar */}
