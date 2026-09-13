@@ -39,7 +39,7 @@ export default function LoginPage() {
       }
 
       if (data?.session) {
-        window.location.href = '/';
+        window.location.href = '/dashboard';
         return;
       }
 
@@ -59,7 +59,7 @@ export default function LoginPage() {
       }
 
       // Successful login -> Force full browser redirect
-      window.location.href = '/';
+      window.location.href = '/dashboard';
     }
   }
 
