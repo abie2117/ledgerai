@@ -3,6 +3,10 @@
 import { useState } from 'react';
 import { supabase } from '@/lib/supabase-browser';
 
+const SITE_URL =
+  process.env.NEXT_PUBLIC_SITE_URL ||
+  'https://ledgerai-tawny.vercel.app';
+
 export default function LoginPage() {
   const [isSignUp, setIsSignUp] = useState(false);
   const [email, setEmail] = useState('');
@@ -19,55 +23,75 @@ export default function LoginPage() {
     setSuccessMsg(null);
 
     try {
+      /*
+       * SIGN UP
+       */
       if (isSignUp) {
+        console.log('📝 Starting signup...');
+
+        const redirectUrl = `${SITE_URL}/auth/callback`;
+
+        console.log('📧 Email confirmation redirect:', redirectUrl);
+
         const { data, error } = await supabase.auth.signUp({
-          email,
+          email: email.trim(),
           password,
           options: {
-            emailRedirectTo: `${window.location.origin}/auth/callback`,
+            emailRedirectTo: redirectUrl,
           },
         });
 
-        console.log('📝 SIGN UP RESULT:', {
+        console.log('🔥 SIGNUP RESULT:', {
           data,
           error,
-          session: data?.session,
           user: data?.user,
+          session: data?.session,
         });
 
         if (error) {
-          console.error('❌ SIGN UP ERROR:', error);
+          console.error('❌ SIGNUP ERROR:', error);
           setErrorMsg(error.message);
           return;
         }
 
+        /*
+         * If Supabase immediately created a session,
+         * send the user directly to the dashboard.
+         */
         if (data.session) {
           console.log(
-            '✅ SIGN UP SESSION CREATED:',
+            '✅ Signup created an active session:',
             data.session.user.id
-          );
-
-          console.log(
-            '🚀 Redirecting to dashboard...'
           );
 
           window.location.assign('/dashboard');
           return;
         }
 
+        /*
+         * Normal behavior when email confirmation is enabled:
+         * user exists, but session is null until email is confirmed.
+         */
+        console.log(
+          '📧 Signup successful. Waiting for email confirmation.'
+        );
+
         setSuccessMsg(
-          'Account created successfully! Check your email to confirm your account, then log in below.'
+          'Account created successfully! Check your email and click the confirmation link to activate your account.'
         );
 
         setIsSignUp(false);
         return;
       }
 
-      console.log('🔐 Starting Supabase login...');
+      /*
+       * LOGIN
+       */
+      console.log('🔐 Starting login...');
 
       const { data, error } =
         await supabase.auth.signInWithPassword({
-          email,
+          email: email.trim(),
           password,
         });
 
@@ -79,10 +103,7 @@ export default function LoginPage() {
       });
 
       if (error) {
-        console.error(
-          '❌ LOGIN ERROR:',
-          error
-        );
+        console.error('❌ LOGIN ERROR:', error);
 
         setErrorMsg(error.message);
         return;
@@ -106,67 +127,14 @@ export default function LoginPage() {
         data.session.user.id
       );
 
-      /*
-       * Verify that the browser client can immediately
-       * read the session after login.
-       */
-      const {
-        data: sessionCheck,
-        error: sessionError,
-      } = await supabase.auth.getSession();
-
-      console.log('🔎 SESSION CHECK:', {
-        session: sessionCheck?.session,
-        error: sessionError,
-      });
-
-      if (sessionError) {
-        console.error(
-          '❌ SESSION CHECK FAILED:',
-          sessionError
-        );
-
-        setErrorMsg(
-          'Login succeeded, but the browser could not verify the session.'
-        );
-
-        return;
-      }
-
-      if (!sessionCheck.session) {
-        console.error(
-          '❌ SESSION DISAPPEARED AFTER LOGIN'
-        );
-
-        setErrorMsg(
-          'Login succeeded, but the session was not persisted in the browser.'
-        );
-
-        return;
-      }
-
-      console.log(
-        '✅ SESSION VERIFIED IN BROWSER:',
-        sessionCheck.session.user.id
-      );
-
       console.log(
         '🚀 Redirecting to dashboard...'
       );
 
-      /*
-       * Give Supabase's browser client a moment to persist
-       * the authentication session before performing the
-       * full navigation through Next.js middleware.
-       */
-      await new Promise((resolve) =>
-        setTimeout(resolve, 300)
-      );
-
-      window.location.href = '/dashboard';
+      window.location.assign('/dashboard');
     } catch (error) {
       console.error(
-        '❌ AUTHENTICATION EXCEPTION:',
+        '💥 Authentication error:',
         error
       );
 
@@ -198,8 +166,10 @@ export default function LoginPage() {
           maxWidth: 420,
           backgroundColor: '#0f172a',
           borderRadius: 16,
-          border: '1px solid rgba(255, 255, 255, 0.08)',
-          boxShadow: '0 12px 32px rgba(0, 0, 0, 0.5)',
+          border:
+            '1px solid rgba(255,255,255,0.08)',
+          boxShadow:
+            '0 12px 32px rgba(0,0,0,0.5)',
           padding: '40px 32px',
         }}
       >
@@ -215,14 +185,14 @@ export default function LoginPage() {
               height: 50,
               borderRadius: 14,
               background:
-                'linear-gradient(135deg, #0b1329 0%, #030712 100%)',
+                'linear-gradient(135deg,#0b1329 0%,#030712 100%)',
               display: 'inline-flex',
               alignItems: 'center',
               justifyContent: 'center',
               boxShadow:
-                '0 0 22px rgba(56, 189, 248, 0.4), inset 0 0 10px rgba(129, 140, 248, 0.2)',
+                '0 0 22px rgba(56,189,248,0.4), inset 0 0 10px rgba(129,140,248,0.2)',
               border:
-                '1.5px solid rgba(56, 189, 248, 0.6)',
+                '1.5px solid rgba(56,189,248,0.6)',
               marginBottom: 16,
             }}
           >
@@ -304,9 +274,9 @@ export default function LoginPage() {
             style={{
               padding: '12px 16px',
               backgroundColor:
-                'rgba(248, 113, 113, 0.1)',
+                'rgba(248,113,113,0.1)',
               border:
-                '1px solid rgba(248, 113, 113, 0.3)',
+                '1px solid rgba(248,113,113,0.3)',
               borderRadius: 8,
               color: '#f87171',
               fontSize: 13,
@@ -323,9 +293,9 @@ export default function LoginPage() {
             style={{
               padding: '12px 16px',
               backgroundColor:
-                'rgba(74, 222, 128, 0.1)',
+                'rgba(74,222,128,0.1)',
               border:
-                '1px solid rgba(74, 222, 128, 0.3)',
+                '1px solid rgba(74,222,128,0.3)',
               borderRadius: 8,
               color: '#4ade80',
               fontSize: 13,
@@ -374,7 +344,7 @@ export default function LoginPage() {
                 padding: '11px 14px',
                 borderRadius: 8,
                 border:
-                  '1px solid rgba(255, 255, 255, 0.1)',
+                  '1px solid rgba(255,255,255,0.1)',
                 backgroundColor: '#1e293b',
                 color: '#fff',
                 fontSize: 14,
@@ -417,7 +387,7 @@ export default function LoginPage() {
                 padding: '11px 14px',
                 borderRadius: 8,
                 border:
-                  '1px solid rgba(255, 255, 255, 0.1)',
+                  '1px solid rgba(255,255,255,0.1)',
                 backgroundColor: '#1e293b',
                 color: '#fff',
                 fontSize: 14,
@@ -434,9 +404,10 @@ export default function LoginPage() {
               marginTop: 8,
               width: '100%',
               padding: '12px',
-              backgroundColor: loading
-                ? '#334155'
-                : '#0284c7',
+              backgroundColor:
+                loading
+                  ? '#334155'
+                  : '#0284c7',
               color: '#ffffff',
               borderRadius: 8,
               border: 'none',
@@ -446,7 +417,7 @@ export default function LoginPage() {
                 ? 'not-allowed'
                 : 'pointer',
               boxShadow:
-                '0 4px 14px rgba(2, 132, 199, 0.3)',
+                '0 4px 14px rgba(2,132,199,0.3)',
               transition:
                 'background-color 0.2s',
             }}
