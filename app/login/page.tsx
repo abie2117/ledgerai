@@ -28,12 +28,29 @@ export default function LoginPage() {
           },
         });
 
+        console.log('📝 SIGN UP RESULT:', {
+          data,
+          error,
+          session: data?.session,
+          user: data?.user,
+        });
+
         if (error) {
+          console.error('❌ SIGN UP ERROR:', error);
           setErrorMsg(error.message);
           return;
         }
 
         if (data.session) {
+          console.log(
+            '✅ SIGN UP SESSION CREATED:',
+            data.session.user.id
+          );
+
+          console.log(
+            '🚀 Redirecting to dashboard...'
+          );
+
           window.location.assign('/dashboard');
           return;
         }
@@ -41,31 +58,121 @@ export default function LoginPage() {
         setSuccessMsg(
           'Account created successfully! Check your email to confirm your account, then log in below.'
         );
+
         setIsSignUp(false);
         return;
       }
 
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email,
-        password,
+      console.log('🔐 Starting Supabase login...');
+
+      const { data, error } =
+        await supabase.auth.signInWithPassword({
+          email,
+          password,
+        });
+
+      console.log('🔥 LOGIN RESULT:', {
+        data,
+        error,
+        session: data?.session,
+        user: data?.user,
       });
 
       if (error) {
+        console.error(
+          '❌ LOGIN ERROR:',
+          error
+        );
+
         setErrorMsg(error.message);
         return;
       }
 
       if (!data.session) {
-        setErrorMsg('Login succeeded, but no active session was created.');
+        console.error(
+          '❌ LOGIN SUCCEEDED BUT NO SESSION:',
+          data
+        );
+
+        setErrorMsg(
+          'Login succeeded, but Supabase did not create a session.'
+        );
+
         return;
       }
 
-      // Full navigation ensures the dashboard request
-      // goes through Next.js middleware with the Supabase session.
-      window.location.assign('/dashboard');
+      console.log(
+        '✅ LOGIN SESSION CREATED:',
+        data.session.user.id
+      );
+
+      /*
+       * Verify that the browser client can immediately
+       * read the session after login.
+       */
+      const {
+        data: sessionCheck,
+        error: sessionError,
+      } = await supabase.auth.getSession();
+
+      console.log('🔎 SESSION CHECK:', {
+        session: sessionCheck?.session,
+        error: sessionError,
+      });
+
+      if (sessionError) {
+        console.error(
+          '❌ SESSION CHECK FAILED:',
+          sessionError
+        );
+
+        setErrorMsg(
+          'Login succeeded, but the browser could not verify the session.'
+        );
+
+        return;
+      }
+
+      if (!sessionCheck.session) {
+        console.error(
+          '❌ SESSION DISAPPEARED AFTER LOGIN'
+        );
+
+        setErrorMsg(
+          'Login succeeded, but the session was not persisted in the browser.'
+        );
+
+        return;
+      }
+
+      console.log(
+        '✅ SESSION VERIFIED IN BROWSER:',
+        sessionCheck.session.user.id
+      );
+
+      console.log(
+        '🚀 Redirecting to dashboard...'
+      );
+
+      /*
+       * Give Supabase's browser client a moment to persist
+       * the authentication session before performing the
+       * full navigation through Next.js middleware.
+       */
+      await new Promise((resolve) =>
+        setTimeout(resolve, 300)
+      );
+
+      window.location.href = '/dashboard';
     } catch (error) {
-      console.error('Authentication error:', error);
-      setErrorMsg('Something went wrong while authenticating. Please try again.');
+      console.error(
+        '❌ AUTHENTICATION EXCEPTION:',
+        error
+      );
+
+      setErrorMsg(
+        'Something went wrong while authenticating. Please try again.'
+      );
     } finally {
       setLoading(false);
     }
@@ -96,7 +203,12 @@ export default function LoginPage() {
           padding: '40px 32px',
         }}
       >
-        <div style={{ textAlign: 'center', marginBottom: 32 }}>
+        <div
+          style={{
+            textAlign: 'center',
+            marginBottom: 32,
+          }}
+        >
           <div
             style={{
               width: 50,
@@ -109,7 +221,8 @@ export default function LoginPage() {
               justifyContent: 'center',
               boxShadow:
                 '0 0 22px rgba(56, 189, 248, 0.4), inset 0 0 10px rgba(129, 140, 248, 0.2)',
-              border: '1.5px solid rgba(56, 189, 248, 0.6)',
+              border:
+                '1.5px solid rgba(56, 189, 248, 0.6)',
               marginBottom: 16,
             }}
           >
@@ -130,8 +243,14 @@ export default function LoginPage() {
                   gradientUnits="userSpaceOnUse"
                 >
                   <stop stopColor="#38bdf8" />
-                  <stop offset="0.5" stopColor="#818cf8" />
-                  <stop offset="1" stopColor="#c084fc" />
+                  <stop
+                    offset="0.5"
+                    stopColor="#818cf8"
+                  />
+                  <stop
+                    offset="1"
+                    stopColor="#c084fc"
+                  />
                 </linearGradient>
               </defs>
 
@@ -142,7 +261,12 @@ export default function LoginPage() {
                 strokeLinejoin="round"
               />
 
-              <circle cx="16" cy="16" r="3" fill="#818cf8" />
+              <circle
+                cx="16"
+                cy="16"
+                r="3"
+                fill="#818cf8"
+              />
             </svg>
           </div>
 
@@ -155,7 +279,10 @@ export default function LoginPage() {
               letterSpacing: '-0.03em',
             }}
           >
-            Ledger<span style={{ color: '#38bdf8' }}>AI</span>
+            Ledger
+            <span style={{ color: '#38bdf8' }}>
+              AI
+            </span>
           </h1>
 
           <p
@@ -176,8 +303,10 @@ export default function LoginPage() {
           <div
             style={{
               padding: '12px 16px',
-              backgroundColor: 'rgba(248, 113, 113, 0.1)',
-              border: '1px solid rgba(248, 113, 113, 0.3)',
+              backgroundColor:
+                'rgba(248, 113, 113, 0.1)',
+              border:
+                '1px solid rgba(248, 113, 113, 0.3)',
               borderRadius: 8,
               color: '#f87171',
               fontSize: 13,
@@ -193,8 +322,10 @@ export default function LoginPage() {
           <div
             style={{
               padding: '12px 16px',
-              backgroundColor: 'rgba(74, 222, 128, 0.1)',
-              border: '1px solid rgba(74, 222, 128, 0.3)',
+              backgroundColor:
+                'rgba(74, 222, 128, 0.1)',
+              border:
+                '1px solid rgba(74, 222, 128, 0.3)',
               borderRadius: 8,
               color: '#4ade80',
               fontSize: 13,
@@ -233,14 +364,17 @@ export default function LoginPage() {
               type="email"
               required
               value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              onChange={(e) =>
+                setEmail(e.target.value)
+              }
               placeholder="name@example.com"
               autoComplete="email"
               style={{
                 width: '100%',
                 padding: '11px 14px',
                 borderRadius: 8,
-                border: '1px solid rgba(255, 255, 255, 0.1)',
+                border:
+                  '1px solid rgba(255, 255, 255, 0.1)',
                 backgroundColor: '#1e293b',
                 color: '#fff',
                 fontSize: 14,
@@ -269,14 +403,21 @@ export default function LoginPage() {
               type="password"
               required
               value={password}
-              onChange={(e) => setPassword(e.target.value)}
+              onChange={(e) =>
+                setPassword(e.target.value)
+              }
               placeholder="••••••••"
-              autoComplete={isSignUp ? 'new-password' : 'current-password'}
+              autoComplete={
+                isSignUp
+                  ? 'new-password'
+                  : 'current-password'
+              }
               style={{
                 width: '100%',
                 padding: '11px 14px',
                 borderRadius: 8,
-                border: '1px solid rgba(255, 255, 255, 0.1)',
+                border:
+                  '1px solid rgba(255, 255, 255, 0.1)',
                 backgroundColor: '#1e293b',
                 color: '#fff',
                 fontSize: 14,
@@ -293,15 +434,21 @@ export default function LoginPage() {
               marginTop: 8,
               width: '100%',
               padding: '12px',
-              backgroundColor: loading ? '#334155' : '#0284c7',
+              backgroundColor: loading
+                ? '#334155'
+                : '#0284c7',
               color: '#ffffff',
               borderRadius: 8,
               border: 'none',
               fontWeight: 600,
               fontSize: 14,
-              cursor: loading ? 'not-allowed' : 'pointer',
-              boxShadow: '0 4px 14px rgba(2, 132, 199, 0.3)',
-              transition: 'background-color 0.2s',
+              cursor: loading
+                ? 'not-allowed'
+                : 'pointer',
+              boxShadow:
+                '0 4px 14px rgba(2, 132, 199, 0.3)',
+              transition:
+                'background-color 0.2s',
             }}
           >
             {loading
@@ -341,7 +488,9 @@ export default function LoginPage() {
               padding: 0,
             }}
           >
-            {isSignUp ? 'Log in' : 'Sign up'}
+            {isSignUp
+              ? 'Log in'
+              : 'Sign up'}
           </button>
         </div>
       </div>
