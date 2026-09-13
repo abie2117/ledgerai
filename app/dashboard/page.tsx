@@ -22,6 +22,8 @@ type DateFilterType =
   | 'custom';
 
 export default function DashboardPage() {
+  console.log('🔥 DASHBOARD PAGE LOADED');
+
   const router = useRouter();
 
   const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -31,8 +33,12 @@ export default function DashboardPage() {
   // Date Range State
   const [dateFilter, setDateFilter] =
     useState<DateFilterType>('all_time');
-  const [customStartDate, setCustomStartDate] = useState<string>('');
-  const [customEndDate, setCustomEndDate] = useState<string>('');
+
+  const [customStartDate, setCustomStartDate] =
+    useState<string>('');
+
+  const [customEndDate, setCustomEndDate] =
+    useState<string>('');
 
   useEffect(() => {
     let mounted = true;
@@ -247,6 +253,7 @@ export default function DashboardPage() {
     const link = document.createElement('a');
 
     link.setAttribute('href', url);
+
     link.setAttribute(
       'download',
       `LedgerAI_Report_${dateFilter}_${new Date()
@@ -263,7 +270,10 @@ export default function DashboardPage() {
 
   const analytics = useMemo(() => {
     const totalSpend = filteredTransactions
-      .filter((transaction) => transaction.amount > 0)
+      .filter(
+        (transaction) =>
+          transaction.amount > 0
+      )
       .reduce(
         (sum, transaction) =>
           sum + transaction.amount,
@@ -271,7 +281,10 @@ export default function DashboardPage() {
       );
 
     const totalIncome = filteredTransactions
-      .filter((transaction) => transaction.amount < 0)
+      .filter(
+        (transaction) =>
+          transaction.amount < 0
+      )
       .reduce(
         (sum, transaction) =>
           sum + Math.abs(transaction.amount),
@@ -283,20 +296,22 @@ export default function DashboardPage() {
 
     const categoryTotals: Record<string, number> = {};
 
-    filteredTransactions.forEach((transaction) => {
-      const categoryName =
-        transaction.category?.trim();
+    filteredTransactions.forEach(
+      (transaction) => {
+        const categoryName =
+          transaction.category?.trim();
 
-      if (
-        transaction.amount > 0 &&
-        categoryName &&
-        categoryName !== 'Uncategorized'
-      ) {
-        categoryTotals[categoryName] =
-          (categoryTotals[categoryName] || 0) +
-          transaction.amount;
+        if (
+          transaction.amount > 0 &&
+          categoryName &&
+          categoryName !== 'Uncategorized'
+        ) {
+          categoryTotals[categoryName] =
+            (categoryTotals[categoryName] || 0) +
+            transaction.amount;
+        }
       }
-    });
+    );
 
     const sortedCategories =
       Object.entries(categoryTotals).sort(
@@ -316,13 +331,15 @@ export default function DashboardPage() {
   }, [filteredTransactions]);
 
   async function handleSignOut() {
-    const { error } = await supabase.auth.signOut();
+    const { error } =
+      await supabase.auth.signOut();
 
     if (error) {
       console.error(
         'LedgerAI sign out failed:',
         error
       );
+
       return;
     }
 
@@ -441,6 +458,7 @@ export default function DashboardPage() {
                       stdDeviation="1.5"
                       result="blur"
                     />
+
                     <feComposite
                       in="SourceGraphic"
                       in2="blur"
@@ -492,7 +510,11 @@ export default function DashboardPage() {
                   }}
                 >
                   Ledger
-                  <span style={{ color: '#38bdf8' }}>
+                  <span
+                    style={{
+                      color: '#38bdf8',
+                    }}
+                  >
                     AI
                   </span>
                 </h1>
@@ -550,9 +572,9 @@ export default function DashboardPage() {
                 padding: '11px 18px',
                 backgroundColor: '#0f172a',
                 color: '#38bdf8',
-                borderRadius: 10,
                 border:
                   '1px solid rgba(56, 189, 248, 0.4)',
+                borderRadius: 10,
                 fontWeight: 600,
                 cursor: 'pointer',
                 fontSize: 14,
@@ -561,7 +583,9 @@ export default function DashboardPage() {
                 transition: 'all 0.2s ease',
               }}
             >
-              <span>Connect Your Bank</span>
+              <span>
+                Connect Your Bank
+              </span>
             </button>
 
             <button
@@ -577,9 +601,9 @@ export default function DashboardPage() {
                 padding: '11px 18px',
                 backgroundColor: '#0f172a',
                 color: '#818cf8',
-                borderRadius: 10,
                 border:
                   '1px solid rgba(129, 140, 248, 0.4)',
+                borderRadius: 10,
                 fontWeight: 600,
                 cursor: 'pointer',
                 fontSize: 14,
@@ -622,7 +646,9 @@ export default function DashboardPage() {
                 transition: 'all 0.2s ease',
               }}
             >
-              <span>Export CSV Report</span>
+              <span>
+                Export CSV Report
+              </span>
 
               <span
                 style={{
@@ -646,9 +672,9 @@ export default function DashboardPage() {
                 padding: '11px 18px',
                 backgroundColor: '#1e293b',
                 color: '#f87171',
-                borderRadius: 10,
                 border:
                   '1px solid rgba(248, 113, 113, 0.3)',
+                borderRadius: 10,
                 fontWeight: 600,
                 cursor: 'pointer',
                 fontSize: 14,
@@ -720,12 +746,15 @@ export default function DashboardPage() {
               <option value="all_time">
                 All Time
               </option>
+
               <option value="this_month">
                 This Month
               </option>
+
               <option value="last_30_days">
                 Last 30 Days
               </option>
+
               <option value="custom">
                 Custom Range
               </option>
@@ -799,7 +828,9 @@ export default function DashboardPage() {
           >
             Active View:{' '}
             <strong
-              style={{ color: '#38bdf8' }}
+              style={{
+                color: '#38bdf8',
+              }}
             >
               {filteredTransactions.length}{' '}
               records
@@ -946,7 +977,11 @@ export default function DashboardPage() {
         </div>
 
         {/* AI Query Bar */}
-        <div style={{ marginBottom: 28 }}>
+        <div
+          style={{
+            marginBottom: 28,
+          }}
+        >
           {userId && (
             <QueryBar clientId={userId} />
           )}
@@ -984,8 +1019,11 @@ export default function DashboardPage() {
             <div>Date</div>
             <div>Merchant</div>
             <div>Category</div>
+
             <div
-              style={{ textAlign: 'right' }}
+              style={{
+                textAlign: 'right',
+              }}
             >
               Amount
             </div>
@@ -1092,21 +1130,27 @@ export default function DashboardPage() {
                         <option value="Uncategorized">
                           Uncategorized
                         </option>
+
                         <option value="Food & Dining">
                           Food & Dining
                         </option>
+
                         <option value="Transportation">
                           Transportation
                         </option>
+
                         <option value="Software & Tech">
                           Software & Tech
                         </option>
+
                         <option value="Transfer / Income">
                           Transfer / Income
                         </option>
+
                         <option value="Shopping">
                           Shopping
                         </option>
+
                         <option value="Bills & Utilities">
                           Bills & Utilities
                         </option>
