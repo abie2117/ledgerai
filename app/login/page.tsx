@@ -1,8 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { useRouter } from 'next/navigation';
-import { createBrowserSupabaseClient } from '@/lib/supabase-browser';
+import { supabase } from '@/lib/supabase-browser';
 
 export default function LoginPage() {
   const [isSignUp, setIsSignUp] = useState(false);
@@ -12,54 +11,63 @@ export default function LoginPage() {
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  const router = useRouter();
-  const supabase = createBrowserSupabaseClient();
-
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    console.log("handleSubmit triggered for:", email); // Debug log to track form execution
+
     setLoading(true);
     setErrorMsg(null);
     setSuccessMsg(null);
 
-    if (isSignUp) {
-      // Handle Sign Up
-      const { data, error } = await supabase.auth.signUp({
+    try {
+      if (isSignUp) {
+        const { data, error } = await supabase.auth.signUp({
+          email,
+          password,
+          options: {
+            emailRedirectTo: `${window.location.origin}/auth/callback`,
+          },
+        });
+
+        if (error) {
+          setErrorMsg(error.message);
+          return;
+        }
+
+        if (data.session) {
+          window.location.assign('/dashboard');
+          return;
+        }
+
+        setSuccessMsg(
+          'Account created successfully! Check your email to confirm your account, then log in below.'
+        );
+        setIsSignUp(false);
+        return;
+      }
+
+      const { data, error } = await supabase.auth.signInWithPassword({
         email,
         password,
-        options: {
-          emailRedirectTo: `${window.location.origin}/auth/callback`,
-        },
       });
 
       if (error) {
         setErrorMsg(error.message);
-        setLoading(false);
         return;
       }
 
-      if (data?.session) {
-        window.location.href = '/dashboard';
+      if (!data.session) {
+        setErrorMsg('Login succeeded, but no active session was created.');
         return;
       }
 
-      setSuccessMsg('Account created successfully! Check your email to confirm or log in below.');
+      // Full navigation ensures the dashboard request
+      // goes through Next.js middleware with the Supabase session.
+      window.location.assign('/dashboard');
+    } catch (error) {
+      console.error('Authentication error:', error);
+      setErrorMsg('Something went wrong while authenticating. Please try again.');
+    } finally {
       setLoading(false);
-    } else {
-      // Handle Log In
-      const { error } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-      });
-
-      if (error) {
-        setErrorMsg(error.message);
-        setLoading(false);
-        return;
-      }
-
-      // Successful login -> Force full browser redirect
-      window.location.href = '/dashboard';
     }
   }
 
@@ -72,7 +80,8 @@ export default function LoginPage() {
         minHeight: '100vh',
         backgroundColor: '#070b14',
         padding: '24px',
-        fontFamily: 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+        fontFamily:
+          'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
         color: '#f8fafc',
       }}
     >
@@ -87,18 +96,19 @@ export default function LoginPage() {
           padding: '40px 32px',
         }}
       >
-        {/* Logo and Header */}
         <div style={{ textAlign: 'center', marginBottom: 32 }}>
           <div
             style={{
               width: 50,
               height: 50,
               borderRadius: 14,
-              background: 'linear-gradient(135deg, #0b1329 0%, #030712 100%)',
+              background:
+                'linear-gradient(135deg, #0b1329 0%, #030712 100%)',
               display: 'inline-flex',
               alignItems: 'center',
               justifyContent: 'center',
-              boxShadow: '0 0 22px rgba(56, 189, 248, 0.4), inset 0 0 10px rgba(129, 140, 248, 0.2)',
+              boxShadow:
+                '0 0 22px rgba(56, 189, 248, 0.4), inset 0 0 10px rgba(129, 140, 248, 0.2)',
               border: '1.5px solid rgba(56, 189, 248, 0.6)',
               marginBottom: 16,
             }}
@@ -111,26 +121,54 @@ export default function LoginPage() {
               xmlns="http://www.w3.org/2000/svg"
             >
               <defs>
-                <linearGradient id="neon-glow-auth" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">
+                <linearGradient
+                  id="neon-glow-auth"
+                  x1="0"
+                  y1="0"
+                  x2="32"
+                  y2="32"
+                  gradientUnits="userSpaceOnUse"
+                >
                   <stop stopColor="#38bdf8" />
                   <stop offset="0.5" stopColor="#818cf8" />
                   <stop offset="1" stopColor="#c084fc" />
                 </linearGradient>
               </defs>
+
               <path
                 d="M16 3L28 9.5V22.5L16 29L4 22.5V9.5L16 3Z"
                 stroke="url(#neon-glow-auth)"
                 strokeWidth="2"
                 strokeLinejoin="round"
               />
+
               <circle cx="16" cy="16" r="3" fill="#818cf8" />
             </svg>
           </div>
-          <h1 style={{ fontSize: 24, fontWeight: 800, color: '#ffffff', margin: 0, letterSpacing: '-0.03em' }}>
+
+          <h1
+            style={{
+              fontSize: 24,
+              fontWeight: 800,
+              color: '#ffffff',
+              margin: 0,
+              letterSpacing: '-0.03em',
+            }}
+          >
             Ledger<span style={{ color: '#38bdf8' }}>AI</span>
           </h1>
-          <p style={{ fontSize: 13, color: '#94a3b8', marginTop: 6, marginBottom: 0 }}>
-            {isSignUp ? 'Create your account' : 'Log in to your workspace'}
+
+          <p
+            style={{
+              fontSize: 13,
+              color: '#94a3b8',
+              marginTop: 6,
+              marginBottom: 0,
+            }}
+          >
+            {isSignUp
+              ? 'Create your account'
+              : 'Log in to your workspace'}
           </p>
         </div>
 
@@ -168,17 +206,36 @@ export default function LoginPage() {
           </div>
         )}
 
-        <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+        <form
+          onSubmit={handleSubmit}
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 18,
+          }}
+        >
           <div>
-            <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#94a3b8', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+            <label
+              style={{
+                display: 'block',
+                fontSize: 12,
+                fontWeight: 600,
+                color: '#94a3b8',
+                marginBottom: 6,
+                textTransform: 'uppercase',
+                letterSpacing: '0.06em',
+              }}
+            >
               Email Address
             </label>
+
             <input
               type="email"
               required
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder="name@example.com"
+              autoComplete="email"
               style={{
                 width: '100%',
                 padding: '11px 14px',
@@ -188,20 +245,33 @@ export default function LoginPage() {
                 color: '#fff',
                 fontSize: 14,
                 outline: 'none',
+                boxSizing: 'border-box',
               }}
             />
           </div>
 
           <div>
-            <label style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#94a3b8', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+            <label
+              style={{
+                display: 'block',
+                fontSize: 12,
+                fontWeight: 600,
+                color: '#94a3b8',
+                marginBottom: 6,
+                textTransform: 'uppercase',
+                letterSpacing: '0.06em',
+              }}
+            >
               Password
             </label>
+
             <input
               type="password"
               required
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder="••••••••"
+              autoComplete={isSignUp ? 'new-password' : 'current-password'}
               style={{
                 width: '100%',
                 padding: '11px 14px',
@@ -211,6 +281,7 @@ export default function LoginPage() {
                 color: '#fff',
                 fontSize: 14,
                 outline: 'none',
+                boxSizing: 'border-box',
               }}
             />
           </div>
@@ -233,13 +304,26 @@ export default function LoginPage() {
               transition: 'background-color 0.2s',
             }}
           >
-            {loading ? 'Processing...' : isSignUp ? 'Create Account' : 'Log In'}
+            {loading
+              ? 'Processing...'
+              : isSignUp
+                ? 'Create Account'
+                : 'Log In'}
           </button>
         </form>
 
-        {/* Toggle between Log In and Sign Up */}
-        <div style={{ textAlign: 'center', marginTop: 24, fontSize: 13, color: '#94a3b8' }}>
-          {isSignUp ? 'Already have an account?' : "Don't have an account?"}{' '}
+        <div
+          style={{
+            textAlign: 'center',
+            marginTop: 24,
+            fontSize: 13,
+            color: '#94a3b8',
+          }}
+        >
+          {isSignUp
+            ? 'Already have an account?'
+            : "Don't have an account?"}{' '}
+
           <button
             type="button"
             onClick={() => {
