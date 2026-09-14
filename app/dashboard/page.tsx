@@ -28,6 +28,9 @@ type DateFilterType =
   | 'all_time'
   | 'custom';
 
+const ACME_CORP_CLIENT_ID =
+  '22222222-2222-2222-2222-222222222222';
+
 const LOCAL_CATEGORY_RULES: Array<{
   keywords: string[];
   category: string;
@@ -55,7 +58,6 @@ const LOCAL_CATEGORY_RULES: Array<{
       'starbucks',
       'chipotle',
       'subway',
-      'restaurant',
       'restaurant',
       'food',
       'doordash',
@@ -130,9 +132,7 @@ const LOCAL_CATEGORY_RULES: Array<{
   },
 ];
 
-function normalizeMerchant(
-  merchant: string
-): string {
+function normalizeMerchant(merchant: string): string {
   return merchant
     .toLowerCase()
     .replace(/\s+/g, ' ')
@@ -143,9 +143,7 @@ function localCategoryForMerchant(
   merchant: string,
   plaidCategory?: string | null
 ): string {
-  const normalized = normalizeMerchant(
-    merchant
-  );
+  const normalized = normalizeMerchant(merchant);
 
   for (const rule of LOCAL_CATEGORY_RULES) {
     if (
@@ -157,9 +155,7 @@ function localCategoryForMerchant(
     }
   }
 
-  const plaid = (
-    plaidCategory || ''
-  ).toLowerCase();
+  const plaid = (plaidCategory || '').toLowerCase();
 
   if (
     plaid.includes('travel') ||
@@ -198,8 +194,7 @@ export default function DashboardPage() {
   const [transactions, setTransactions] =
     useState<Transaction[]>([]);
 
-  const [loading, setLoading] =
-    useState(true);
+  const [loading, setLoading] = useState(true);
 
   const [userId, setUserId] =
     useState<string | null>(null);
@@ -270,10 +265,6 @@ export default function DashboardPage() {
           user.id
         );
 
-        /*
-         * Transactions are associated with the authenticated
-         * LedgerAI user.
-         */
         const {
           data,
           error,
@@ -353,12 +344,6 @@ export default function DashboardPage() {
    * ---------------------------------------------------------
    * LOCAL / FREE CATEGORIZATION
    * ---------------------------------------------------------
-   *
-   * This intentionally does NOT call /api/categorize-local.
-   *
-   * The current /api/categorize-local file is a GET
-   * categories endpoint, so calling POST there produces
-   * incorrect behavior.
    */
 
   async function handleLocalCategorize() {
@@ -400,15 +385,10 @@ export default function DashboardPage() {
             tx.raw_plaid_category
           );
 
-        if (
-          category === 'Uncategorized'
-        ) {
+        if (category === 'Uncategorized') {
           continue;
         }
 
-        /*
-         * Update transaction category.
-         */
         const {
           error: updateError,
         } = await supabase
@@ -431,10 +411,6 @@ export default function DashboardPage() {
 
         categorizedCount++;
 
-        /*
-         * Save merchant rule so future transactions
-         * can use the same category.
-         */
         categoryRuleRows.push({
           user_id: userId,
           merchant_pattern:
@@ -443,12 +419,7 @@ export default function DashboardPage() {
         });
       }
 
-      /*
-       * Save learned local rules.
-       */
-      if (
-        categoryRuleRows.length > 0
-      ) {
+      if (categoryRuleRows.length > 0) {
         const {
           error: rulesError,
         } = await supabase
@@ -469,9 +440,6 @@ export default function DashboardPage() {
         }
       }
 
-      /*
-       * Update the dashboard immediately.
-       */
       await refreshTransactions();
 
       setCategoryMessage(
@@ -542,9 +510,7 @@ export default function DashboardPage() {
           {
             user_id: userId,
             merchant_pattern:
-              normalizeMerchant(
-                merchantName
-              ),
+              normalizeMerchant(merchantName),
             category: newCategory,
           },
           {
@@ -568,101 +534,81 @@ export default function DashboardPage() {
    * ---------------------------------------------------------
    */
 
-  const filteredTransactions =
-    useMemo(() => {
-      if (
-        dateFilter === 'all_time'
-      ) {
-        return transactions;
+  const filteredTransactions = useMemo(() => {
+    if (dateFilter === 'all_time') {
+      return transactions;
+    }
+
+    const now = new Date();
+
+    return transactions.filter((tx) => {
+      const dateValue =
+        tx.date || tx.posted_date;
+
+      if (!dateValue) {
+        return false;
       }
 
-      const now = new Date();
+      const txDate = new Date(dateValue);
 
-      return transactions.filter(
-        (tx) => {
-          const dateValue =
-            tx.date ||
-            tx.posted_date;
+      if (dateFilter === 'this_month') {
+        return (
+          txDate.getMonth() === now.getMonth() &&
+          txDate.getFullYear() === now.getFullYear()
+        );
+      }
 
-          if (!dateValue) {
-            return false;
-          }
+      if (dateFilter === 'last_30_days') {
+        const thirtyDaysAgo = new Date();
 
-          const txDate =
-            new Date(dateValue);
+        thirtyDaysAgo.setDate(
+          now.getDate() - 30
+        );
 
-          if (
-            dateFilter === 'this_month'
-          ) {
-            return (
-              txDate.getMonth() ===
-                now.getMonth() &&
-              txDate.getFullYear() ===
-                now.getFullYear()
-            );
-          }
+        return (
+          txDate >= thirtyDaysAgo &&
+          txDate <= now
+        );
+      }
 
-          if (
-            dateFilter ===
-            'last_30_days'
-          ) {
-            const thirtyDaysAgo =
-              new Date();
-
-            thirtyDaysAgo.setDate(
-              now.getDate() - 30
-            );
-
-            return (
-              txDate >=
-                thirtyDaysAgo &&
-              txDate <= now
-            );
-          }
-
-          if (
-            dateFilter === 'custom'
-          ) {
-            if (
-              !customStartDate &&
-              !customEndDate
-            ) {
-              return true;
-            }
-
-            const start =
-              customStartDate
-                ? new Date(
-                    `${customStartDate}T00:00:00`
-                  )
-                : new Date(
-                    '1970-01-01T00:00:00'
-                  );
-
-            const end =
-              customEndDate
-                ? new Date(
-                    `${customEndDate}T23:59:59.999`
-                  )
-                : new Date(
-                    '2099-12-31T23:59:59.999'
-                  );
-
-            return (
-              txDate >= start &&
-              txDate <= end
-            );
-          }
-
+      if (dateFilter === 'custom') {
+        if (
+          !customStartDate &&
+          !customEndDate
+        ) {
           return true;
         }
-      );
-    }, [
-      transactions,
-      dateFilter,
-      customStartDate,
-      customEndDate,
-    ]);
+
+        const start = customStartDate
+          ? new Date(
+              `${customStartDate}T00:00:00`
+            )
+          : new Date(
+              '1970-01-01T00:00:00'
+            );
+
+        const end = customEndDate
+          ? new Date(
+              `${customEndDate}T23:59:59.999`
+            )
+          : new Date(
+              '2099-12-31T23:59:59.999'
+            );
+
+        return (
+          txDate >= start &&
+          txDate <= end
+        );
+      }
+
+      return true;
+    });
+  }, [
+    transactions,
+    dateFilter,
+    customStartDate,
+    customEndDate,
+  ]);
 
   /*
    * ---------------------------------------------------------
@@ -671,9 +617,7 @@ export default function DashboardPage() {
    */
 
   function exportToCSV() {
-    if (
-      filteredTransactions.length === 0
-    ) {
+    if (filteredTransactions.length === 0) {
       return;
     }
 
@@ -685,44 +629,41 @@ export default function DashboardPage() {
       'Amount',
     ];
 
-    const rows =
-      filteredTransactions.map(
-        (tx, index) => {
-          const merchant =
-            tx.merchant_name ||
-            tx.name ||
-            'Unknown Merchant';
+    const rows = filteredTransactions.map(
+      (tx, index) => {
+        const merchant =
+          tx.merchant_name ||
+          tx.name ||
+          'Unknown Merchant';
 
-          const category =
-            tx.category ||
-            'Uncategorized';
+        const category =
+          tx.category ||
+          'Uncategorized';
 
-          const date =
-            tx.date ||
-            tx.posted_date ||
-            '';
+        const date =
+          tx.date ||
+          tx.posted_date ||
+          '';
 
-          return [
-            index + 1,
-            date,
-            `"${merchant.replace(
-              /"/g,
-              '""'
-            )}"`,
-            `"${category.replace(
-              /"/g,
-              '""'
-            )}"`,
-            tx.amount < 0
-              ? `+${Math.abs(
-                  tx.amount
-                ).toFixed(2)}`
-              : `-${tx.amount.toFixed(
-                  2
-                )}`,
-          ];
-        }
-      );
+        return [
+          index + 1,
+          date,
+          `"${merchant.replace(
+            /"/g,
+            '""'
+          )}"`,
+          `"${category.replace(
+            /"/g,
+            '""'
+          )}"`,
+          tx.amount < 0
+            ? `+${Math.abs(
+                tx.amount
+              ).toFixed(2)}`
+            : `-${tx.amount.toFixed(2)}`,
+        ];
+      }
+    );
 
     const csvContent = [
       headers.join(','),
@@ -734,8 +675,7 @@ export default function DashboardPage() {
     const blob = new Blob(
       [csvContent],
       {
-        type:
-          'text/csv;charset=utf-8;',
+        type: 'text/csv;charset=utf-8;',
       }
     );
 
@@ -777,9 +717,7 @@ export default function DashboardPage() {
         .reduce(
           (sum, transaction) =>
             sum +
-            Number(
-              transaction.amount
-            ),
+            Number(transaction.amount),
           0
         );
 
@@ -793,9 +731,7 @@ export default function DashboardPage() {
           (sum, transaction) =>
             sum +
             Math.abs(
-              Number(
-                transaction.amount
-              )
+              Number(transaction.amount)
             ),
           0
         );
@@ -816,26 +752,17 @@ export default function DashboardPage() {
         if (
           transaction.amount > 0 &&
           categoryName &&
-          categoryName !==
-            'Uncategorized'
+          categoryName !== 'Uncategorized'
         ) {
-          categoryTotals[
-            categoryName
-          ] =
-            (categoryTotals[
-              categoryName
-            ] || 0) +
-            Number(
-              transaction.amount
-            );
+          categoryTotals[categoryName] =
+            (categoryTotals[categoryName] || 0) +
+            Number(transaction.amount);
         }
       }
     );
 
     const sortedCategories =
-      Object.entries(
-        categoryTotals
-      ).sort(
+      Object.entries(categoryTotals).sort(
         (a, b) => b[1] - a[1]
       );
 
@@ -885,12 +812,10 @@ export default function DashboardPage() {
       <div
         style={{
           display: 'flex',
-          justifyContent:
-            'center',
+          justifyContent: 'center',
           alignItems: 'center',
           minHeight: '100vh',
-          backgroundColor:
-            '#070b14',
+          backgroundColor: '#070b14',
           color: '#38bdf8',
           fontSize: 15,
           fontWeight: 500,
@@ -912,8 +837,7 @@ export default function DashboardPage() {
   return (
     <div
       style={{
-        backgroundColor:
-          '#070b14',
+        backgroundColor: '#070b14',
         minHeight: '100vh',
         padding: '40px 24px',
         fontFamily:
@@ -932,8 +856,7 @@ export default function DashboardPage() {
         <div
           style={{
             display: 'flex',
-            justifyContent:
-              'space-between',
+            justifyContent: 'space-between',
             alignItems: 'center',
             marginBottom: 36,
             paddingBottom: 24,
@@ -946,8 +869,7 @@ export default function DashboardPage() {
           <div
             style={{
               display: 'flex',
-              alignItems:
-                'center',
+              alignItems: 'center',
               gap: 16,
             }}
           >
@@ -959,10 +881,8 @@ export default function DashboardPage() {
                 background:
                   'linear-gradient(135deg, #0b1329 0%, #030712 100%)',
                 display: 'flex',
-                alignItems:
-                  'center',
-                justifyContent:
-                  'center',
+                alignItems: 'center',
+                justifyContent: 'center',
                 boxShadow:
                   '0 0 22px rgba(56,189,248,0.4), inset 0 0 10px rgba(129,140,248,0.2)',
                 border:
@@ -1045,19 +965,16 @@ export default function DashboardPage() {
               <div
                 style={{
                   display: 'flex',
-                  alignItems:
-                    'center',
+                  alignItems: 'center',
                   gap: 10,
-                  flexWrap:
-                    'wrap',
+                  flexWrap: 'wrap',
                 }}
               >
                 <h1
                   style={{
                     fontSize: 26,
                     fontWeight: 800,
-                    letterSpacing:
-                      '-0.03em',
+                    letterSpacing: '-0.03em',
                     color: '#ffffff',
                     margin: 0,
                   }}
@@ -1065,8 +982,7 @@ export default function DashboardPage() {
                   Ledger
                   <span
                     style={{
-                      color:
-                        '#38bdf8',
+                      color: '#38bdf8',
                     }}
                   >
                     AI
@@ -1079,15 +995,12 @@ export default function DashboardPage() {
                     fontWeight: 700,
                     backgroundColor:
                       'rgba(56,189,248,0.12)',
-                    color:
-                      '#38bdf8',
+                    color: '#38bdf8',
                     border:
                       '1px solid rgba(56,189,248,0.3)',
-                    padding:
-                      '2px 8px',
+                    padding: '2px 8px',
                     borderRadius: 6,
-                    letterSpacing:
-                      '0.08em',
+                    letterSpacing: '0.08em',
                   }}
                 >
                   ENTERPRISE
@@ -1097,15 +1010,12 @@ export default function DashboardPage() {
               <p
                 style={{
                   fontSize: 13,
-                  color:
-                    '#94a3b8',
-                  margin:
-                    '4px 0 0 0',
+                  color: '#94a3b8',
+                  margin: '4px 0 0 0',
                 }}
               >
-                Autonomous financial
-                tracking & intelligent
-                multi-account liquidity
+                Autonomous financial tracking &
+                intelligent multi-account liquidity
               </p>
             </div>
           </div>
@@ -1115,17 +1025,13 @@ export default function DashboardPage() {
           <div
             style={{
               display: 'flex',
-              alignItems:
-                'center',
+              alignItems: 'center',
               gap: 12,
-              flexWrap:
-                'wrap',
+              flexWrap: 'wrap',
             }}
           >
             <PlaidLinkButton
-              selectedClientId={
-                userId || undefined
-              }
+              selectedClientId={ACME_CORP_CLIENT_ID}
               onBankConnected={async () => {
                 setCategoryMessage(
                   'Bank connected successfully.'
@@ -1136,37 +1042,30 @@ export default function DashboardPage() {
             />
 
             <button
-              onClick={
-                handleLocalCategorize
-              }
+              onClick={handleLocalCategorize}
               disabled={
                 isCategorizing ||
-                transactions.length ===
-                  0
+                transactions.length === 0
               }
               style={{
-                padding:
-                  '11px 18px',
+                padding: '11px 18px',
                 backgroundColor:
                   isCategorizing
                     ? '#1e293b'
                     : '#0f172a',
-                color:
-                  '#818cf8',
+                color: '#818cf8',
                 borderRadius: 10,
                 border:
                   '1px solid rgba(129,140,248,0.4)',
                 fontWeight: 600,
                 cursor:
                   isCategorizing ||
-                  transactions.length ===
-                    0
+                  transactions.length === 0
                     ? 'not-allowed'
                     : 'pointer',
                 fontSize: 14,
                 opacity:
-                  transactions.length ===
-                  0
+                  transactions.length === 0
                     ? 0.5
                     : 1,
               }}
@@ -1177,59 +1076,43 @@ export default function DashboardPage() {
             </button>
 
             <button
-              onClick={
-                exportToCSV
-              }
+              onClick={exportToCSV}
               disabled={
-                filteredTransactions.length ===
-                0
+                filteredTransactions.length === 0
               }
               style={{
-                padding:
-                  '11px 20px',
+                padding: '11px 20px',
                 backgroundColor:
-                  filteredTransactions.length ===
-                  0
+                  filteredTransactions.length === 0
                     ? '#1e293b'
                     : '#0284c7',
-                color:
-                  '#ffffff',
+                color: '#ffffff',
                 borderRadius: 10,
                 border:
                   '1px solid rgba(255,255,255,0.1)',
                 fontWeight: 600,
                 cursor:
-                  filteredTransactions.length ===
-                  0
+                  filteredTransactions.length === 0
                     ? 'not-allowed'
                     : 'pointer',
                 fontSize: 14,
               }}
             >
               Export CSV Report (
-              {
-                filteredTransactions.length
-              }
-              )
+              {filteredTransactions.length})
             </button>
 
             <button
-              onClick={
-                handleSignOut
-              }
+              onClick={handleSignOut}
               style={{
-                padding:
-                  '11px 18px',
-                backgroundColor:
-                  '#1e293b',
-                color:
-                  '#f87171',
+                padding: '11px 18px',
+                backgroundColor: '#1e293b',
+                color: '#f87171',
                 borderRadius: 10,
                 border:
                   '1px solid rgba(248,113,113,0.3)',
                 fontWeight: 600,
-                cursor:
-                  'pointer',
+                cursor: 'pointer',
                 fontSize: 14,
               }}
             >
@@ -1244,15 +1127,13 @@ export default function DashboardPage() {
           <div
             style={{
               marginBottom: 20,
-              padding:
-                '12px 16px',
+              padding: '12px 16px',
               borderRadius: 10,
               backgroundColor:
                 'rgba(56,189,248,0.08)',
               border:
                 '1px solid rgba(56,189,248,0.25)',
-              color:
-                '#38bdf8',
+              color: '#38bdf8',
               fontSize: 13,
               fontWeight: 600,
             }}
@@ -1273,13 +1154,11 @@ export default function DashboardPage() {
           Active User:{' '}
           <span
             style={{
-              color:
-                '#38bdf8',
+              color: '#38bdf8',
               fontWeight: 600,
             }}
           >
-            {userId ||
-              'Unknown'}
+            {userId || 'Unknown'}
           </span>
         </div>
 
@@ -1288,70 +1167,54 @@ export default function DashboardPage() {
         <div
           style={{
             display: 'flex',
-            alignItems:
-              'center',
-            justifyContent:
-              'space-between',
+            alignItems: 'center',
+            justifyContent: 'space-between',
             marginBottom: 24,
-            backgroundColor:
-              '#0f172a',
-            padding:
-              '14px 22px',
+            backgroundColor: '#0f172a',
+            padding: '14px 22px',
             borderRadius: 12,
             border:
               '1px solid rgba(255,255,255,0.08)',
             gap: 20,
-            flexWrap:
-              'wrap',
+            flexWrap: 'wrap',
           }}
         >
           <div
             style={{
               display: 'flex',
-              alignItems:
-                'center',
+              alignItems: 'center',
               gap: 14,
-              flexWrap:
-                'wrap',
+              flexWrap: 'wrap',
             }}
           >
             <span
               style={{
                 fontSize: 12,
                 fontWeight: 600,
-                color:
-                  '#94a3b8',
-                textTransform:
-                  'uppercase',
-                letterSpacing:
-                  '0.08em',
+                color: '#94a3b8',
+                textTransform: 'uppercase',
+                letterSpacing: '0.08em',
               }}
             >
               Timeframe Filter
             </span>
 
             <select
-              value={
-                dateFilter
-              }
+              value={dateFilter}
               onChange={(e) =>
                 setDateFilter(
                   e.target.value as DateFilterType
                 )
               }
               style={{
-                padding:
-                  '8px 14px',
+                padding: '8px 14px',
                 borderRadius: 8,
                 border:
                   '1px solid rgba(255,255,255,0.1)',
                 fontSize: 13,
-                backgroundColor:
-                  '#1e293b',
-                color:
-                  '#f8fafc',
-                cursor:
-                  'pointer',
+                backgroundColor: '#1e293b',
+                color: '#f8fafc',
+                cursor: 'pointer',
               }}
             >
               <option value="all_time">
@@ -1371,46 +1234,36 @@ export default function DashboardPage() {
               </option>
             </select>
 
-            {dateFilter ===
-              'custom' && (
+            {dateFilter === 'custom' && (
               <div
                 style={{
                   display: 'flex',
-                  alignItems:
-                    'center',
+                  alignItems: 'center',
                   gap: 8,
-                  flexWrap:
-                    'wrap',
+                  flexWrap: 'wrap',
                 }}
               >
                 <input
                   type="date"
-                  value={
-                    customStartDate
-                  }
+                  value={customStartDate}
                   onChange={(e) =>
                     setCustomStartDate(
                       e.target.value
                     )
                   }
                   style={{
-                    padding:
-                      '7px 10px',
-                    borderRadius:
-                      6,
+                    padding: '7px 10px',
+                    borderRadius: 6,
                     border:
                       '1px solid rgba(255,255,255,0.1)',
-                    backgroundColor:
-                      '#1e293b',
-                    color:
-                      '#fff',
+                    backgroundColor: '#1e293b',
+                    color: '#fff',
                   }}
                 />
 
                 <span
                   style={{
-                    color:
-                      '#64748b',
+                    color: '#64748b',
                   }}
                 >
                   to
@@ -1418,25 +1271,19 @@ export default function DashboardPage() {
 
                 <input
                   type="date"
-                  value={
-                    customEndDate
-                  }
+                  value={customEndDate}
                   onChange={(e) =>
                     setCustomEndDate(
                       e.target.value
                     )
                   }
                   style={{
-                    padding:
-                      '7px 10px',
-                    borderRadius:
-                      6,
+                    padding: '7px 10px',
+                    borderRadius: 6,
                     border:
                       '1px solid rgba(255,255,255,0.1)',
-                    backgroundColor:
-                      '#1e293b',
-                    color:
-                      '#fff',
+                    backgroundColor: '#1e293b',
+                    color: '#fff',
                   }}
                 />
               </div>
@@ -1446,20 +1293,16 @@ export default function DashboardPage() {
           <div
             style={{
               fontSize: 13,
-              color:
-                '#94a3b8',
+              color: '#94a3b8',
             }}
           >
             Active View:{' '}
             <strong
               style={{
-                color:
-                  '#38bdf8',
+                color: '#38bdf8',
               }}
             >
-              {
-                filteredTransactions.length
-              } records
+              {filteredTransactions.length} records
             </strong>
           </div>
         </div>
@@ -1477,12 +1320,9 @@ export default function DashboardPage() {
         >
           <div
             style={{
-              padding:
-                '22px 24px',
-              backgroundColor:
-                '#0f172a',
-              borderRadius:
-                14,
+              padding: '22px 24px',
+              backgroundColor: '#0f172a',
+              borderRadius: 14,
               border:
                 '1px solid rgba(56,189,248,0.3)',
             }}
@@ -1490,12 +1330,9 @@ export default function DashboardPage() {
             <div
               style={{
                 fontSize: 12,
-                color:
-                  '#38bdf8',
-                fontWeight:
-                  700,
-                marginBottom:
-                  10,
+                color: '#38bdf8',
+                fontWeight: 700,
+                marginBottom: 10,
               }}
             >
               TOTAL SPEND
@@ -1504,27 +1341,19 @@ export default function DashboardPage() {
             <div
               style={{
                 fontSize: 30,
-                fontWeight:
-                  800,
-                color:
-                  '#ffffff',
+                fontWeight: 800,
+                color: '#ffffff',
               }}
             >
-              $
-              {analytics.totalSpend.toFixed(
-                2
-              )}
+              ${analytics.totalSpend.toFixed(2)}
             </div>
           </div>
 
           <div
             style={{
-              padding:
-                '22px 24px',
-              backgroundColor:
-                '#0f172a',
-              borderRadius:
-                14,
+              padding: '22px 24px',
+              backgroundColor: '#0f172a',
+              borderRadius: 14,
               border:
                 '1px solid rgba(129,140,248,0.3)',
             }}
@@ -1532,12 +1361,9 @@ export default function DashboardPage() {
             <div
               style={{
                 fontSize: 12,
-                color:
-                  '#818cf8',
-                fontWeight:
-                  700,
-                marginBottom:
-                  10,
+                color: '#818cf8',
+                fontWeight: 700,
+                marginBottom: 10,
               }}
             >
               TOP SPENDING CATEGORY
@@ -1546,47 +1372,35 @@ export default function DashboardPage() {
             <div
               style={{
                 fontSize: 26,
-                fontWeight:
-                  800,
-                color:
-                  '#ffffff',
+                fontWeight: 800,
+                color: '#ffffff',
               }}
             >
-              {
-                analytics.topCategory
-              }
+              {analytics.topCategory}
             </div>
           </div>
 
           <div
             style={{
-              padding:
-                '22px 24px',
-              backgroundColor:
-                '#0f172a',
-              borderRadius:
-                14,
-              border:
-                `1px solid ${
-                  analytics.netCashFlow >=
-                  0
-                    ? 'rgba(74,222,128,0.35)'
-                    : 'rgba(248,113,113,0.35)'
-                }`,
+              padding: '22px 24px',
+              backgroundColor: '#0f172a',
+              borderRadius: 14,
+              border: `1px solid ${
+                analytics.netCashFlow >= 0
+                  ? 'rgba(74,222,128,0.35)'
+                  : 'rgba(248,113,113,0.35)'
+              }`,
             }}
           >
             <div
               style={{
                 fontSize: 12,
                 color:
-                  analytics.netCashFlow >=
-                  0
+                  analytics.netCashFlow >= 0
                     ? '#4ade80'
                     : '#f87171',
-                fontWeight:
-                  700,
-                marginBottom:
-                  10,
+                fontWeight: 700,
+                marginBottom: 10,
               }}
             >
               NET CASH FLOW
@@ -1595,19 +1409,14 @@ export default function DashboardPage() {
             <div
               style={{
                 fontSize: 30,
-                fontWeight:
-                  800,
+                fontWeight: 800,
                 color:
-                  analytics.netCashFlow >=
-                  0
+                  analytics.netCashFlow >= 0
                     ? '#4ade80'
                     : '#f87171',
               }}
             >
-              $
-              {analytics.netCashFlow.toFixed(
-                2
-              )}
+              ${analytics.netCashFlow.toFixed(2)}
             </div>
           </div>
         </div>
@@ -1620,11 +1429,7 @@ export default function DashboardPage() {
           }}
         >
           {userId && (
-            <QueryBar
-              clientId={
-                userId
-              }
-            />
+            <QueryBar clientId={userId} />
           )}
         </div>
 
@@ -1632,14 +1437,11 @@ export default function DashboardPage() {
 
         <div
           style={{
-            backgroundColor:
-              '#0f172a',
-            borderRadius:
-              14,
+            backgroundColor: '#0f172a',
+            borderRadius: 14,
             border:
               '1px solid rgba(255,255,255,0.08)',
-            overflow:
-              'hidden',
+            overflow: 'hidden',
           }}
         >
           <div
@@ -1647,18 +1449,14 @@ export default function DashboardPage() {
               display: 'grid',
               gridTemplateColumns:
                 '60px 140px 1fr 220px 140px',
-              padding:
-                '16px 24px',
-              backgroundColor:
-                '#111827',
+              padding: '16px 24px',
+              backgroundColor: '#111827',
               borderBottom:
                 '1px solid rgba(255,255,255,0.08)',
               fontSize: 12,
               fontWeight: 700,
-              color:
-                '#94a3b8',
-              textTransform:
-                'uppercase',
+              color: '#94a3b8',
+              textTransform: 'uppercase',
             }}
           >
             <div>#</div>
@@ -1668,29 +1466,24 @@ export default function DashboardPage() {
 
             <div
               style={{
-                textAlign:
-                  'right',
+                textAlign: 'right',
               }}
             >
               Amount
             </div>
           </div>
 
-          {filteredTransactions.length ===
-          0 ? (
+          {filteredTransactions.length === 0 ? (
             <div
               style={{
-                padding:
-                  '56px 24px',
-                textAlign:
-                  'center',
-                color:
-                  '#64748b',
+                padding: '56px 24px',
+                textAlign: 'center',
+                color: '#64748b',
                 fontSize: 14,
               }}
             >
-              No matching transactions
-              found for this period.
+              No matching transactions found
+              for this period.
             </div>
           ) : (
             filteredTransactions.map(
@@ -1712,28 +1505,22 @@ export default function DashboardPage() {
                   <div
                     key={tx.id}
                     style={{
-                      display:
-                        'grid',
+                      display: 'grid',
                       gridTemplateColumns:
                         '60px 140px 1fr 220px 140px',
-                      alignItems:
-                        'center',
-                      padding:
-                        '16px 24px',
+                      alignItems: 'center',
+                      padding: '16px 24px',
                       borderBottom:
                         index ===
-                        filteredTransactions.length -
-                          1
+                        filteredTransactions.length - 1
                           ? 'none'
                           : '1px solid rgba(255,255,255,0.04)',
-                      fontSize:
-                        14,
+                      fontSize: 14,
                     }}
                   >
                     <div
                       style={{
-                        color:
-                          '#64748b',
+                        color: '#64748b',
                       }}
                     >
                       {index + 1}
@@ -1741,8 +1528,7 @@ export default function DashboardPage() {
 
                     <div
                       style={{
-                        color:
-                          '#94a3b8',
+                        color: '#94a3b8',
                       }}
                     >
                       {displayDate}
@@ -1750,10 +1536,8 @@ export default function DashboardPage() {
 
                     <div
                       style={{
-                        fontWeight:
-                          600,
-                        color:
-                          '#f8fafc',
+                        fontWeight: 600,
+                        color: '#f8fafc',
                       }}
                     >
                       {displayName}
@@ -1773,24 +1557,17 @@ export default function DashboardPage() {
                           )
                         }
                         style={{
-                          padding:
-                            '7px 12px',
-                          borderRadius:
-                            8,
+                          padding: '7px 12px',
+                          borderRadius: 8,
                           border:
                             '1px solid rgba(255,255,255,0.1)',
-                          fontSize:
-                            13,
-                          fontWeight:
-                            500,
-                          color:
-                            '#f8fafc',
+                          fontSize: 13,
+                          fontWeight: 500,
+                          color: '#f8fafc',
                           backgroundColor:
                             '#1e293b',
-                          cursor:
-                            'pointer',
-                          width:
-                            '90%',
+                          cursor: 'pointer',
+                          width: '90%',
                         }}
                       >
                         <option value="Uncategorized">
@@ -1825,45 +1602,31 @@ export default function DashboardPage() {
 
                     <div
                       style={{
-                        textAlign:
-                          'right',
+                        textAlign: 'right',
                       }}
                     >
                       <span
                         style={{
-                          display:
-                            'inline-block',
-                          padding:
-                            '5px 12px',
-                          borderRadius:
-                            20,
-                          fontSize:
-                            13,
-                          fontWeight:
-                            700,
-                          backgroundColor:
-                            isIncome
-                              ? 'rgba(74,222,128,0.1)'
-                              : 'rgba(255,255,255,0.05)',
-                          color:
-                            isIncome
-                              ? '#4ade80'
-                              : '#f8fafc',
+                          display: 'inline-block',
+                          padding: '5px 12px',
+                          borderRadius: 20,
+                          fontSize: 13,
+                          fontWeight: 700,
+                          backgroundColor: isIncome
+                            ? 'rgba(74,222,128,0.1)'
+                            : 'rgba(255,255,255,0.05)',
+                          color: isIncome
+                            ? '#4ade80'
+                            : '#f8fafc',
                         }}
                       >
                         {isIncome
                           ? `+$${Math.abs(
-                              Number(
-                                tx.amount
-                              )
-                            ).toFixed(
-                              2
-                            )}`
+                              Number(tx.amount)
+                            ).toFixed(2)}`
                           : `$${Number(
                               tx.amount
-                            ).toFixed(
-                              2
-                            )}`}
+                            ).toFixed(2)}`}
                       </span>
                     </div>
                   </div>
