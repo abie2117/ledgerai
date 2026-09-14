@@ -1,8 +1,13 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import {
+  useEffect,
+  useMemo,
+  useState,
+  type ChangeEvent,
+} from 'react';
 import { supabase } from '@/lib/supabase-browser';
-import QueryBar from '@/components/QueryBar';
+import { QueryBar } from '@/components/QueryBar';
 import PlaidLinkButton from '@/components/PlaidLinkButton';
 
 interface Transaction {
@@ -426,7 +431,7 @@ export default function DashboardPage() {
   }, [filteredTransactions]);
 
   function handleClientChange(
-    event: React.ChangeEvent<HTMLSelectElement>,
+    event: ChangeEvent<HTMLSelectElement>,
   ) {
     setSelectedClientId(event.target.value);
     setSearchTerm('');
