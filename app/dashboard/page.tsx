@@ -1,22 +1,25 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase-browser';
 import { QueryBar } from '@/components/QueryBar';
+import PlaidLinkButton from '@/components/PlaidLinkButton';
 
-console.log('🔥 DASHBOARD PAGE LOADED');
+console.log('🔥 LEDGERAI DASHBOARD PAGE LOADED');
 
 interface Transaction {
   id: string;
-  user_id?: string;
-  name?: string;
-  merchant_name?: string;
+  user_id?: string | null;
+  client_id?: string | null;
+  name?: string | null;
+  merchant_name?: string | null;
   amount: number;
-  date: string;
-  posted_date?: string;
-  category?: string;
-  account_id?: string;
+  date?: string | null;
+  posted_date?: string | null;
+  category?: string | null;
+  account_id?: string | null;
+  raw_plaid_category?: string | null;
 }
 
 type DateFilterType =
@@ -25,16 +28,181 @@ type DateFilterType =
   | 'all_time'
   | 'custom';
 
+const LOCAL_CATEGORY_RULES: Array<{
+  keywords: string[];
+  category: string;
+}> = [
+  {
+    keywords: [
+      'uber',
+      'lyft',
+      'taxi',
+      'gas',
+      'shell',
+      'chevron',
+      'exxon',
+      'bp ',
+      'fuel',
+      'parking',
+      'transit',
+      'metro',
+    ],
+    category: 'Transportation',
+  },
+  {
+    keywords: [
+      'mcdonald',
+      'starbucks',
+      'chipotle',
+      'subway',
+      'restaurant',
+      'restaurant',
+      'food',
+      'doordash',
+      'ubereats',
+      'grubhub',
+      'pizza',
+      'cafe',
+      'coffee',
+      'burger',
+      'wendy',
+      'chick-fil-a',
+      'taco',
+    ],
+    category: 'Food & Dining',
+  },
+  {
+    keywords: [
+      'netflix',
+      'spotify',
+      'adobe',
+      'microsoft',
+      'google',
+      'apple.com',
+      'aws',
+      'amazon web services',
+      'github',
+      'openai',
+      'anthropic',
+      'slack',
+      'zoom',
+      'dropbox',
+      'software',
+      'cloud',
+      'vercel',
+    ],
+    category: 'Software & Tech',
+  },
+  {
+    keywords: [
+      'walmart',
+      'target',
+      'amazon',
+      'ebay',
+      'costco',
+      'shopping',
+      'store',
+      'mall',
+      'nike',
+      'best buy',
+    ],
+    category: 'Shopping',
+  },
+  {
+    keywords: [
+      'electric',
+      'electricity',
+      'water',
+      'utility',
+      'utilities',
+      'internet',
+      'comcast',
+      'verizon',
+      'at&t',
+      't-mobile',
+      'phone',
+      'insurance',
+      'rent',
+      'mortgage',
+      'bill',
+    ],
+    category: 'Bills & Utilities',
+  },
+];
+
+function normalizeMerchant(
+  merchant: string
+): string {
+  return merchant
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function localCategoryForMerchant(
+  merchant: string,
+  plaidCategory?: string | null
+): string {
+  const normalized = normalizeMerchant(
+    merchant
+  );
+
+  for (const rule of LOCAL_CATEGORY_RULES) {
+    if (
+      rule.keywords.some((keyword) =>
+        normalized.includes(keyword)
+      )
+    ) {
+      return rule.category;
+    }
+  }
+
+  const plaid = (
+    plaidCategory || ''
+  ).toLowerCase();
+
+  if (
+    plaid.includes('travel') ||
+    plaid.includes('airlines')
+  ) {
+    return 'Transportation';
+  }
+
+  if (
+    plaid.includes('food') ||
+    plaid.includes('restaurant')
+  ) {
+    return 'Food & Dining';
+  }
+
+  if (
+    plaid.includes('shops') ||
+    plaid.includes('shopping')
+  ) {
+    return 'Shopping';
+  }
+
+  if (
+    plaid.includes('service') ||
+    plaid.includes('utilities')
+  ) {
+    return 'Bills & Utilities';
+  }
+
+  return 'Uncategorized';
+}
+
 export default function DashboardPage() {
   const router = useRouter();
 
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [userId, setUserId] = useState<string | null>(null);
+  const [transactions, setTransactions] =
+    useState<Transaction[]>([]);
 
-  const [isCategorizing, setIsCategorizing] = useState(false);
-  const [categorizeMessage, setCategorizeMessage] = useState('');
-  const [categorizeError, setCategorizeError] = useState('');
+  const [loading, setLoading] =
+    useState(true);
+
+  const [userId, setUserId] =
+    useState<string | null>(null);
 
   const [dateFilter, setDateFilter] =
     useState<DateFilterType>('all_time');
@@ -45,16 +213,28 @@ export default function DashboardPage() {
   const [customEndDate, setCustomEndDate] =
     useState('');
 
-  useEffect(() => {
-    console.log('🔥 DASHBOARD useEffect RUNNING');
+  const [isCategorizing, setIsCategorizing] =
+    useState(false);
 
+  const [categoryMessage, setCategoryMessage] =
+    useState('');
+
+  /*
+   * ---------------------------------------------------------
+   * LOAD AUTHENTICATED USER + TRANSACTIONS
+   * ---------------------------------------------------------
+   */
+
+  useEffect(() => {
     let mounted = true;
 
-    async function checkAuthAndFetchData() {
+    async function loadDashboard() {
       setLoading(true);
 
       try {
-        console.log('🔐 Checking Supabase authentication...');
+        console.log(
+          '🔐 Checking LedgerAI authentication...'
+        );
 
         const {
           data: { user },
@@ -63,16 +243,14 @@ export default function DashboardPage() {
 
         if (authError) {
           console.error(
-            'LedgerAI authentication check failed:',
+            'Authentication error:',
             authError
           );
         }
 
-        console.log('👤 Current Supabase user:', user);
-
         if (!user) {
           console.log(
-            '❌ No authenticated user. Redirecting to /login'
+            '❌ No authenticated user. Redirecting to login.'
           );
 
           if (mounted) {
@@ -85,82 +263,53 @@ export default function DashboardPage() {
 
         if (!mounted) return;
 
-        console.log(
-          '✅ Authenticated user found:',
-          user.id
-        );
-
         setUserId(user.id);
 
         console.log(
-          '📊 Fetching transactions for user:',
+          '✅ LedgerAI authenticated user:',
           user.id
         );
 
         /*
-         * Transactions created by the Plaid exchange route
-         * use client_id = authenticated user.id.
-         *
-         * Older records may also have user_id populated.
-         * We therefore query by either field.
+         * Transactions are associated with the authenticated
+         * LedgerAI user.
          */
-
         const {
           data,
           error,
         } = await supabase
           .from('transactions')
           .select('*')
-          .or(
-            `client_id.eq.${user.id},user_id.eq.${user.id}`
-          )
-          .order('posted_date', {
+          .eq('user_id', user.id)
+          .order('date', {
             ascending: false,
           });
 
         if (error) {
           console.error(
-            'LedgerAI transaction fetch failed:',
+            'Transaction fetch failed:',
             error
           );
         }
 
-        console.log(
-          '📦 Transactions returned:',
-          data
-        );
-
         if (mounted) {
-          const normalizedTransactions =
-            ((data as any[]) || []).map(
-              (tx) => ({
-                ...tx,
-                date:
-                  tx.posted_date ||
-                  tx.date ||
-                  '',
-              })
-            );
-
           setTransactions(
-            normalizedTransactions as Transaction[]
+            (data as Transaction[]) || []
           );
-
-          setLoading(false);
         }
       } catch (error) {
         console.error(
-          'LedgerAI dashboard initialization failed:',
+          'Dashboard initialization failed:',
           error
         );
-
+      } finally {
         if (mounted) {
           setLoading(false);
         }
       }
     }
 
-    checkAuthAndFetchData();
+    loadDashboard();
 
     return () => {
       mounted = false;
@@ -169,123 +318,173 @@ export default function DashboardPage() {
 
   /*
    * ---------------------------------------------------------
-   * LOCAL CATEGORIZATION
+   * REFRESH TRANSACTIONS
    * ---------------------------------------------------------
+   */
+
+  async function refreshTransactions() {
+    if (!userId) return;
+
+    const {
+      data,
+      error,
+    } = await supabase
+      .from('transactions')
+      .select('*')
+      .eq('user_id', userId)
+      .order('date', {
+        ascending: false,
+      });
+
+    if (error) {
+      console.error(
+        'Failed to refresh transactions:',
+        error
+      );
+      return;
+    }
+
+    setTransactions(
+      (data as Transaction[]) || []
+    );
+  }
+
+  /*
+   * ---------------------------------------------------------
+   * LOCAL / FREE CATEGORIZATION
+   * ---------------------------------------------------------
+   *
+   * This intentionally does NOT call /api/categorize-local.
+   *
+   * The current /api/categorize-local file is a GET
+   * categories endpoint, so calling POST there produces
+   * incorrect behavior.
    */
 
   async function handleLocalCategorize() {
     if (!userId) {
-      setCategorizeError(
+      setCategoryMessage(
         'No authenticated user found.'
       );
       return;
     }
 
+    if (transactions.length === 0) {
+      setCategoryMessage(
+        'There are no transactions to categorize.'
+      );
+      return;
+    }
+
     setIsCategorizing(true);
-    setCategorizeMessage('');
-    setCategorizeError('');
+    setCategoryMessage('');
 
     try {
-      console.log(
-        '[Dashboard] Starting local categorization for:',
-        userId
-      );
+      let categorizedCount = 0;
 
-      const response = await fetch(
-        '/api/categorize-local',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          credentials: 'include',
-          body: JSON.stringify({
-            clientId: userId,
-            client_id: userId,
-            user_id: userId,
-          }),
-        }
-      );
+      const categoryRuleRows: Array<{
+        user_id: string;
+        merchant_pattern: string;
+        category: string;
+      }> = [];
 
-      const data =
-        await response.json().catch(
-          () => null
-        );
+      for (const tx of transactions) {
+        const merchant =
+          tx.merchant_name ||
+          tx.name ||
+          'Unknown Merchant';
 
-      console.log(
-        '[Dashboard] Categorization response:',
-        data
-      );
-
-      if (!response.ok) {
-        throw new Error(
-          data?.error ||
-            data?.message ||
-            'Failed to run local categorization.'
-        );
-      }
-
-      const count =
-        data?.updated ??
-        data?.count ??
-        data?.categorized ??
-        0;
-
-      setCategorizeMessage(
-        `Categorized ${count} transaction${
-          count === 1 ? '' : 's'
-        }.`
-      );
-
-      /*
-       * Fetch the transactions again instead of
-       * reloading the entire application.
-       */
-
-      const {
-        data: refreshedData,
-        error: refreshError,
-      } = await supabase
-        .from('transactions')
-        .select('*')
-        .or(
-          `client_id.eq.${userId},user_id.eq.${userId}`
-        )
-        .order('posted_date', {
-          ascending: false,
-        });
-
-      if (refreshError) {
-        console.error(
-          '[Dashboard] Failed to refresh transactions:',
-          refreshError
-        );
-      } else {
-        const normalizedTransactions =
-          ((refreshedData as any[]) || []).map(
-            (tx) => ({
-              ...tx,
-              date:
-                tx.posted_date ||
-                tx.date ||
-                '',
-            })
+        const category =
+          localCategoryForMerchant(
+            merchant,
+            tx.raw_plaid_category
           );
 
-        setTransactions(
-          normalizedTransactions as Transaction[]
-        );
+        if (
+          category === 'Uncategorized'
+        ) {
+          continue;
+        }
+
+        /*
+         * Update transaction category.
+         */
+        const {
+          error: updateError,
+        } = await supabase
+          .from('transactions')
+          .update({
+            category,
+          })
+          .eq('id', tx.id)
+          .eq('user_id', userId);
+
+        if (updateError) {
+          console.error(
+            'Failed to categorize transaction:',
+            tx.id,
+            updateError
+          );
+
+          continue;
+        }
+
+        categorizedCount++;
+
+        /*
+         * Save merchant rule so future transactions
+         * can use the same category.
+         */
+        categoryRuleRows.push({
+          user_id: userId,
+          merchant_pattern:
+            normalizeMerchant(merchant),
+          category,
+        });
       }
+
+      /*
+       * Save learned local rules.
+       */
+      if (
+        categoryRuleRows.length > 0
+      ) {
+        const {
+          error: rulesError,
+        } = await supabase
+          .from('category_rules')
+          .upsert(
+            categoryRuleRows,
+            {
+              onConflict:
+                'user_id,merchant_pattern',
+            }
+          );
+
+        if (rulesError) {
+          console.warn(
+            'Category rules could not be saved:',
+            rulesError
+          );
+        }
+      }
+
+      /*
+       * Update the dashboard immediately.
+       */
+      await refreshTransactions();
+
+      setCategoryMessage(
+        `Categorized ${categorizedCount} transactions.`
+      );
     } catch (error) {
       console.error(
-        '[Dashboard] Categorization failed:',
+        'Local categorization failed:',
         error
       );
 
-      setCategorizeError(
-        error instanceof Error
-          ? error.message
-          : 'Categorization failed.'
+      setCategoryMessage(
+        'Local categorization failed. Check the browser console.'
       );
     } finally {
       setIsCategorizing(false);
@@ -294,7 +493,7 @@ export default function DashboardPage() {
 
   /*
    * ---------------------------------------------------------
-   * CATEGORY CHANGE
+   * MANUAL CATEGORY CHANGE
    * ---------------------------------------------------------
    */
 
@@ -303,8 +502,8 @@ export default function DashboardPage() {
     merchantName: string,
     newCategory: string
   ) {
-    setTransactions((prev) =>
-      prev.map((tx) =>
+    setTransactions((previous) =>
+      previous.map((tx) =>
         tx.id === txId
           ? {
               ...tx,
@@ -321,7 +520,8 @@ export default function DashboardPage() {
       .update({
         category: newCategory,
       })
-      .eq('id', txId);
+      .eq('id', txId)
+      .eq('user_id', userId);
 
     if (txError) {
       console.error(
@@ -329,6 +529,7 @@ export default function DashboardPage() {
         txError
       );
 
+      await refreshTransactions();
       return;
     }
 
@@ -337,18 +538,24 @@ export default function DashboardPage() {
         error: ruleError,
       } = await supabase
         .from('category_rules')
-        .upsert({
-          user_id: userId,
-          merchant_pattern:
-            merchantName
-              .toLowerCase()
-              .trim(),
-          category: newCategory,
-        });
+        .upsert(
+          {
+            user_id: userId,
+            merchant_pattern:
+              normalizeMerchant(
+                merchantName
+              ),
+            category: newCategory,
+          },
+          {
+            onConflict:
+              'user_id,merchant_pattern',
+          }
+        );
 
       if (ruleError) {
-        console.error(
-          'Category rule upsert failed:',
+        console.warn(
+          'Category rule could not be saved:',
           ruleError
         );
       }
@@ -363,82 +570,93 @@ export default function DashboardPage() {
 
   const filteredTransactions =
     useMemo(() => {
-      if (dateFilter === 'all_time') {
+      if (
+        dateFilter === 'all_time'
+      ) {
         return transactions;
       }
 
       const now = new Date();
 
-      return transactions.filter((tx) => {
-        const txDate = new Date(
-          tx.date
-        );
+      return transactions.filter(
+        (tx) => {
+          const dateValue =
+            tx.date ||
+            tx.posted_date;
 
-        if (
-          dateFilter === 'this_month'
-        ) {
-          return (
-            txDate.getMonth() ===
-              now.getMonth() &&
-            txDate.getFullYear() ===
-              now.getFullYear()
-          );
-        }
-
-        if (
-          dateFilter ===
-          'last_30_days'
-        ) {
-          const thirtyDaysAgo =
-            new Date();
-
-          thirtyDaysAgo.setDate(
-            now.getDate() - 30
-          );
-
-          return (
-            txDate >=
-              thirtyDaysAgo &&
-            txDate <= now
-          );
-        }
-
-        if (
-          dateFilter === 'custom'
-        ) {
-          if (
-            !customStartDate &&
-            !customEndDate
-          ) {
-            return true;
+          if (!dateValue) {
+            return false;
           }
 
-          const start =
-            customStartDate
-              ? new Date(
-                  `${customStartDate}T00:00:00`
-                )
-              : new Date(
-                  '1970-01-01T00:00:00'
-                );
+          const txDate =
+            new Date(dateValue);
 
-          const end =
-            customEndDate
-              ? new Date(
-                  `${customEndDate}T23:59:59.999`
-                )
-              : new Date(
-                  '2099-12-31T23:59:59.999'
-                );
+          if (
+            dateFilter === 'this_month'
+          ) {
+            return (
+              txDate.getMonth() ===
+                now.getMonth() &&
+              txDate.getFullYear() ===
+                now.getFullYear()
+            );
+          }
 
-          return (
-            txDate >= start &&
-            txDate <= end
-          );
+          if (
+            dateFilter ===
+            'last_30_days'
+          ) {
+            const thirtyDaysAgo =
+              new Date();
+
+            thirtyDaysAgo.setDate(
+              now.getDate() - 30
+            );
+
+            return (
+              txDate >=
+                thirtyDaysAgo &&
+              txDate <= now
+            );
+          }
+
+          if (
+            dateFilter === 'custom'
+          ) {
+            if (
+              !customStartDate &&
+              !customEndDate
+            ) {
+              return true;
+            }
+
+            const start =
+              customStartDate
+                ? new Date(
+                    `${customStartDate}T00:00:00`
+                  )
+                : new Date(
+                    '1970-01-01T00:00:00'
+                  );
+
+            const end =
+              customEndDate
+                ? new Date(
+                    `${customEndDate}T23:59:59.999`
+                  )
+                : new Date(
+                    '2099-12-31T23:59:59.999'
+                  );
+
+            return (
+              txDate >= start &&
+              txDate <= end
+            );
+          }
+
+          return true;
         }
-
-        return true;
-      });
+      );
     }, [
       transactions,
       dateFilter,
@@ -454,8 +672,7 @@ export default function DashboardPage() {
 
   function exportToCSV() {
     if (
-      filteredTransactions.length ===
-      0
+      filteredTransactions.length === 0
     ) {
       return;
     }
@@ -470,32 +687,41 @@ export default function DashboardPage() {
 
     const rows =
       filteredTransactions.map(
-        (tx, idx) => [
-          idx + 1,
-          tx.date,
-          `"${(
+        (tx, index) => {
+          const merchant =
             tx.merchant_name ||
             tx.name ||
-            'Unknown Merchant'
-          ).replace(
-            /"/g,
-            '""'
-          )}"`,
-          `"${(
+            'Unknown Merchant';
+
+          const category =
             tx.category ||
-            'Uncategorized'
-          ).replace(
-            /"/g,
-            '""'
-          )}"`,
-          tx.amount < 0
-            ? `+${Math.abs(
-                tx.amount
-              ).toFixed(2)}`
-            : `-${tx.amount.toFixed(
-                2
-              )}`,
-        ]
+            'Uncategorized';
+
+          const date =
+            tx.date ||
+            tx.posted_date ||
+            '';
+
+          return [
+            index + 1,
+            date,
+            `"${merchant.replace(
+              /"/g,
+              '""'
+            )}"`,
+            `"${category.replace(
+              /"/g,
+              '""'
+            )}"`,
+            tx.amount < 0
+              ? `+${Math.abs(
+                  tx.amount
+                ).toFixed(2)}`
+              : `-${tx.amount.toFixed(
+                  2
+                )}`,
+          ];
+        }
       );
 
     const csvContent = [
@@ -519,27 +745,18 @@ export default function DashboardPage() {
     const link =
       document.createElement('a');
 
-    link.setAttribute(
-      'href',
-      url
-    );
+    link.href = url;
 
-    link.setAttribute(
-      'download',
+    link.download =
       `LedgerAI_Report_${dateFilter}_${new Date()
         .toISOString()
-        .split('T')[0]}.csv`
-    );
+        .split('T')[0]}.csv`;
 
-    document.body.appendChild(
-      link
-    );
+    document.body.appendChild(link);
 
     link.click();
 
-    document.body.removeChild(
-      link
-    );
+    document.body.removeChild(link);
 
     URL.revokeObjectURL(url);
   }
@@ -550,88 +767,90 @@ export default function DashboardPage() {
    * ---------------------------------------------------------
    */
 
-  const analytics =
-    useMemo(() => {
-      const totalSpend =
-        filteredTransactions
-          .filter(
-            (transaction) =>
-              transaction.amount > 0
-          )
-          .reduce(
-            (sum, transaction) =>
-              sum +
-              transaction.amount,
-            0
-          );
-
-      const totalIncome =
-        filteredTransactions
-          .filter(
-            (transaction) =>
-              transaction.amount < 0
-          )
-          .reduce(
-            (sum, transaction) =>
-              sum +
-              Math.abs(
-                transaction.amount
-              ),
-            0
-          );
-
-      const netCashFlow =
-        totalIncome -
-        totalSpend;
-
-      const categoryTotals: Record<
-        string,
-        number
-      > = {};
-
-      filteredTransactions.forEach(
-        (transaction) => {
-          const categoryName =
-            transaction.category?.trim();
-
-          if (
-            transaction.amount > 0 &&
-            categoryName &&
-            categoryName !==
-              'Uncategorized'
-          ) {
-            categoryTotals[
-              categoryName
-            ] =
-              (categoryTotals[
-                categoryName
-              ] || 0) +
-              transaction.amount;
-          }
-        }
-      );
-
-      const sortedCategories =
-        Object.entries(
-          categoryTotals
-        ).sort(
-          (a, b) =>
-            b[1] - a[1]
+  const analytics = useMemo(() => {
+    const totalSpend =
+      filteredTransactions
+        .filter(
+          (transaction) =>
+            transaction.amount > 0
+        )
+        .reduce(
+          (sum, transaction) =>
+            sum +
+            Number(
+              transaction.amount
+            ),
+          0
         );
 
-      const topCategory =
-        sortedCategories.length >
-        0
-          ? sortedCategories[0][0]
-          : 'None';
+    const totalIncome =
+      filteredTransactions
+        .filter(
+          (transaction) =>
+            transaction.amount < 0
+        )
+        .reduce(
+          (sum, transaction) =>
+            sum +
+            Math.abs(
+              Number(
+                transaction.amount
+              )
+            ),
+          0
+        );
 
-      return {
-        totalSpend,
-        totalIncome,
-        netCashFlow,
-        topCategory,
-      };
-    }, [filteredTransactions]);
+    const netCashFlow =
+      totalIncome - totalSpend;
+
+    const categoryTotals: Record<
+      string,
+      number
+    > = {};
+
+    filteredTransactions.forEach(
+      (transaction) => {
+        const categoryName =
+          transaction.category?.trim();
+
+        if (
+          transaction.amount > 0 &&
+          categoryName &&
+          categoryName !==
+            'Uncategorized'
+        ) {
+          categoryTotals[
+            categoryName
+          ] =
+            (categoryTotals[
+              categoryName
+            ] || 0) +
+            Number(
+              transaction.amount
+            );
+        }
+      }
+    );
+
+    const sortedCategories =
+      Object.entries(
+        categoryTotals
+      ).sort(
+        (a, b) => b[1] - a[1]
+      );
+
+    const topCategory =
+      sortedCategories.length > 0
+        ? sortedCategories[0][0]
+        : 'None';
+
+    return {
+      totalSpend,
+      totalIncome,
+      netCashFlow,
+      topCategory,
+    };
+  }, [filteredTransactions]);
 
   /*
    * ---------------------------------------------------------
@@ -640,27 +859,17 @@ export default function DashboardPage() {
    */
 
   async function handleSignOut() {
-    console.log(
-      '🚪 Signing out of LedgerAI...'
-    );
-
     const {
       error,
-    } =
-      await supabase.auth.signOut();
+    } = await supabase.auth.signOut();
 
     if (error) {
       console.error(
-        'LedgerAI sign out failed:',
+        'Sign out failed:',
         error
       );
-
       return;
     }
-
-    console.log(
-      '✅ Signed out successfully'
-    );
 
     router.replace('/login');
   }
@@ -706,8 +915,7 @@ export default function DashboardPage() {
         backgroundColor:
           '#070b14',
         minHeight: '100vh',
-        padding:
-          '40px 24px',
+        padding: '40px 24px',
         fontFamily:
           'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
         color: '#f8fafc',
@@ -719,7 +927,6 @@ export default function DashboardPage() {
           margin: '0 auto',
         }}
       >
-
         {/* HEADER */}
 
         <div
@@ -736,7 +943,6 @@ export default function DashboardPage() {
             flexWrap: 'wrap',
           }}
         >
-
           <div
             style={{
               display: 'flex',
@@ -745,7 +951,6 @@ export default function DashboardPage() {
               gap: 16,
             }}
           >
-
             <div
               style={{
                 width: 50,
@@ -764,7 +969,6 @@ export default function DashboardPage() {
                   '1.5px solid rgba(56,189,248,0.6)',
               }}
             >
-
               <svg
                 width="28"
                 height="28"
@@ -772,9 +976,7 @@ export default function DashboardPage() {
                 fill="none"
                 xmlns="http://www.w3.org/2000/svg"
               >
-
                 <defs>
-
                   <linearGradient
                     id="neon-glow"
                     x1="0"
@@ -812,7 +1014,6 @@ export default function DashboardPage() {
                       operator="over"
                     />
                   </filter>
-
                 </defs>
 
                 <path
@@ -837,13 +1038,10 @@ export default function DashboardPage() {
                   r="3"
                   fill="#818cf8"
                 />
-
               </svg>
-
             </div>
 
             <div>
-
               <div
                 style={{
                   display: 'flex',
@@ -854,15 +1052,13 @@ export default function DashboardPage() {
                     'wrap',
                 }}
               >
-
                 <h1
                   style={{
                     fontSize: 26,
                     fontWeight: 800,
                     letterSpacing:
                       '-0.03em',
-                    color:
-                      '#ffffff',
+                    color: '#ffffff',
                     margin: 0,
                   }}
                 >
@@ -896,7 +1092,6 @@ export default function DashboardPage() {
                 >
                   ENTERPRISE
                 </span>
-
               </div>
 
               <p
@@ -908,12 +1103,11 @@ export default function DashboardPage() {
                     '4px 0 0 0',
                 }}
               >
-                Autonomous financial tracking &
-                intelligent multi-account liquidity
+                Autonomous financial
+                tracking & intelligent
+                multi-account liquidity
               </p>
-
             </div>
-
           </div>
 
           {/* ACTIONS */}
@@ -928,43 +1122,25 @@ export default function DashboardPage() {
                 'wrap',
             }}
           >
-
-            <button
-              type="button"
-              onClick={() => {
-                window.dispatchEvent(
-                  new CustomEvent(
-                    'ledgerai:open-plaid'
-                  )
+            <PlaidLinkButton
+              selectedClientId={
+                userId || undefined
+              }
+              onBankConnected={async () => {
+                setCategoryMessage(
+                  'Bank connected successfully.'
                 );
+
+                await refreshTransactions();
               }}
-              style={{
-                padding:
-                  '11px 18px',
-                backgroundColor:
-                  '#0f172a',
-                color:
-                  '#38bdf8',
-                borderRadius: 10,
-                border:
-                  '1px solid rgba(56,189,248,0.4)',
-                fontWeight: 600,
-                cursor:
-                  'pointer',
-                fontSize: 14,
-              }}
-            >
-              Connect Your Bank
-            </button>
+            />
 
             <button
-              type="button"
               onClick={
                 handleLocalCategorize
               }
               disabled={
                 isCategorizing ||
-                !userId ||
                 transactions.length ===
                   0
               }
@@ -972,31 +1148,27 @@ export default function DashboardPage() {
                 padding:
                   '11px 18px',
                 backgroundColor:
-                  isCategorizing ||
-                  !userId ||
-                  transactions.length ===
-                    0
+                  isCategorizing
                     ? '#1e293b'
                     : '#0f172a',
                 color:
-                  isCategorizing ||
-                  !userId ||
-                  transactions.length ===
-                    0
-                    ? '#64748b'
-                    : '#818cf8',
+                  '#818cf8',
                 borderRadius: 10,
                 border:
                   '1px solid rgba(129,140,248,0.4)',
                 fontWeight: 600,
                 cursor:
                   isCategorizing ||
-                  !userId ||
                   transactions.length ===
                     0
                     ? 'not-allowed'
                     : 'pointer',
                 fontSize: 14,
+                opacity:
+                  transactions.length ===
+                  0
+                    ? 0.5
+                    : 1,
               }}
             >
               {isCategorizing
@@ -1005,7 +1177,9 @@ export default function DashboardPage() {
             </button>
 
             <button
-              onClick={exportToCSV}
+              onClick={
+                exportToCSV
+              }
               disabled={
                 filteredTransactions.length ===
                 0
@@ -1020,9 +1194,9 @@ export default function DashboardPage() {
                     : '#0284c7',
                 color:
                   '#ffffff',
+                borderRadius: 10,
                 border:
                   '1px solid rgba(255,255,255,0.1)',
-                borderRadius: 10,
                 fontWeight: 600,
                 cursor:
                   filteredTransactions.length ===
@@ -1035,7 +1209,8 @@ export default function DashboardPage() {
               Export CSV Report (
               {
                 filteredTransactions.length
-              })
+              }
+              )
             </button>
 
             <button
@@ -1060,15 +1235,12 @@ export default function DashboardPage() {
             >
               Sign Out
             </button>
-
           </div>
-
         </div>
 
-        {/* CATEGORIZATION STATUS */}
+        {/* CATEGORY STATUS */}
 
-        {(categorizeMessage ||
-          categorizeError) && (
+        {categoryMessage && (
           <div
             style={{
               marginBottom: 20,
@@ -1076,22 +1248,16 @@ export default function DashboardPage() {
                 '12px 16px',
               borderRadius: 10,
               backgroundColor:
-                categorizeError
-                  ? 'rgba(248,113,113,0.08)'
-                  : 'rgba(74,222,128,0.08)',
+                'rgba(56,189,248,0.08)',
               border:
-                categorizeError
-                  ? '1px solid rgba(248,113,113,0.25)'
-                  : '1px solid rgba(74,222,128,0.25)',
+                '1px solid rgba(56,189,248,0.25)',
               color:
-                categorizeError
-                  ? '#f87171'
-                  : '#4ade80',
+                '#38bdf8',
               fontSize: 13,
+              fontWeight: 600,
             }}
           >
-            {categorizeError ||
-              categorizeMessage}
+            {categoryMessage}
           </div>
         )}
 
@@ -1101,8 +1267,7 @@ export default function DashboardPage() {
           style={{
             marginBottom: 20,
             fontSize: 13,
-            color:
-              '#64748b',
+            color: '#64748b',
           }}
         >
           Active User:{' '}
@@ -1140,7 +1305,6 @@ export default function DashboardPage() {
               'wrap',
           }}
         >
-
           <div
             style={{
               display: 'flex',
@@ -1151,7 +1315,6 @@ export default function DashboardPage() {
                 'wrap',
             }}
           >
-
             <span
               style={{
                 fontSize: 12,
@@ -1173,8 +1336,7 @@ export default function DashboardPage() {
               }
               onChange={(e) =>
                 setDateFilter(
-                  e.target
-                    .value as DateFilterType
+                  e.target.value as DateFilterType
                 )
               }
               style={{
@@ -1192,7 +1354,6 @@ export default function DashboardPage() {
                   'pointer',
               }}
             >
-
               <option value="all_time">
                 All Time
               </option>
@@ -1208,15 +1369,13 @@ export default function DashboardPage() {
               <option value="custom">
                 Custom Range
               </option>
-
             </select>
 
             {dateFilter ===
               'custom' && (
               <div
                 style={{
-                  display:
-                    'flex',
+                  display: 'flex',
                   alignItems:
                     'center',
                   gap: 8,
@@ -1224,7 +1383,6 @@ export default function DashboardPage() {
                     'wrap',
                 }}
               >
-
                 <input
                   type="date"
                   value={
@@ -1281,10 +1439,8 @@ export default function DashboardPage() {
                       '#fff',
                   }}
                 />
-
               </div>
             )}
-
           </div>
 
           <div
@@ -1306,22 +1462,19 @@ export default function DashboardPage() {
               } records
             </strong>
           </div>
-
         </div>
 
         {/* ANALYTICS */}
 
         <div
           style={{
-            display:
-              'grid',
+            display: 'grid',
             gridTemplateColumns:
               'repeat(3, minmax(0, 1fr))',
             gap: 20,
             marginBottom: 28,
           }}
         >
-
           <div
             style={{
               padding:
@@ -1334,7 +1487,6 @@ export default function DashboardPage() {
                 '1px solid rgba(56,189,248,0.3)',
             }}
           >
-
             <div
               style={{
                 fontSize: 12,
@@ -1363,7 +1515,6 @@ export default function DashboardPage() {
                 2
               )}
             </div>
-
           </div>
 
           <div
@@ -1378,7 +1529,6 @@ export default function DashboardPage() {
                 '1px solid rgba(129,140,248,0.3)',
             }}
           >
-
             <div
               style={{
                 fontSize: 12,
@@ -1402,9 +1552,10 @@ export default function DashboardPage() {
                   '#ffffff',
               }}
             >
-              {analytics.topCategory}
+              {
+                analytics.topCategory
+              }
             </div>
-
           </div>
 
           <div
@@ -1417,18 +1568,19 @@ export default function DashboardPage() {
                 14,
               border:
                 `1px solid ${
-                  analytics.netCashFlow >= 0
+                  analytics.netCashFlow >=
+                  0
                     ? 'rgba(74,222,128,0.35)'
                     : 'rgba(248,113,113,0.35)'
                 }`,
             }}
           >
-
             <div
               style={{
                 fontSize: 12,
                 color:
-                  analytics.netCashFlow >= 0
+                  analytics.netCashFlow >=
+                  0
                     ? '#4ade80'
                     : '#f87171',
                 fontWeight:
@@ -1446,7 +1598,8 @@ export default function DashboardPage() {
                 fontWeight:
                   800,
                 color:
-                  analytics.netCashFlow >= 0
+                  analytics.netCashFlow >=
+                  0
                     ? '#4ade80'
                     : '#f87171',
               }}
@@ -1456,17 +1609,14 @@ export default function DashboardPage() {
                 2
               )}
             </div>
-
           </div>
-
         </div>
 
         {/* AI QUERY BAR */}
 
         <div
           style={{
-            marginBottom:
-              28,
+            marginBottom: 28,
           }}
         >
           {userId && (
@@ -1492,11 +1642,9 @@ export default function DashboardPage() {
               'hidden',
           }}
         >
-
           <div
             style={{
-              display:
-                'grid',
+              display: 'grid',
               gridTemplateColumns:
                 '60px 140px 1fr 220px 140px',
               padding:
@@ -1513,7 +1661,6 @@ export default function DashboardPage() {
                 'uppercase',
             }}
           >
-
             <div>#</div>
             <div>Date</div>
             <div>Merchant</div>
@@ -1527,7 +1674,6 @@ export default function DashboardPage() {
             >
               Amount
             </div>
-
           </div>
 
           {filteredTransactions.length ===
@@ -1543,8 +1689,8 @@ export default function DashboardPage() {
                 fontSize: 14,
               }}
             >
-              No matching transactions found
-              for this period.
+              No matching transactions
+              found for this period.
             </div>
           ) : (
             filteredTransactions.map(
@@ -1554,14 +1700,17 @@ export default function DashboardPage() {
                   tx.name ||
                   'Unknown Merchant';
 
+                const displayDate =
+                  tx.date ||
+                  tx.posted_date ||
+                  '';
+
                 const isIncome =
                   tx.amount < 0;
 
                 return (
                   <div
-                    key={
-                      tx.id
-                    }
+                    key={tx.id}
                     style={{
                       display:
                         'grid',
@@ -1581,15 +1730,13 @@ export default function DashboardPage() {
                         14,
                     }}
                   >
-
                     <div
                       style={{
                         color:
                           '#64748b',
                       }}
                     >
-                      {index +
-                        1}
+                      {index + 1}
                     </div>
 
                     <div
@@ -1598,7 +1745,7 @@ export default function DashboardPage() {
                           '#94a3b8',
                       }}
                     >
-                      {tx.date}
+                      {displayDate}
                     </div>
 
                     <div
@@ -1609,27 +1756,20 @@ export default function DashboardPage() {
                           '#f8fafc',
                       }}
                     >
-                      {
-                        displayName
-                      }
+                      {displayName}
                     </div>
 
                     <div>
-
                       <select
                         value={
                           tx.category ||
                           'Uncategorized'
                         }
-                        onChange={(
-                          e
-                        ) =>
+                        onChange={(e) =>
                           handleCategoryChange(
                             tx.id,
                             displayName,
-                            e
-                              .target
-                              .value
+                            e.target.value
                           )
                         }
                         style={{
@@ -1653,7 +1793,6 @@ export default function DashboardPage() {
                             '90%',
                         }}
                       >
-
                         <option value="Uncategorized">
                           Uncategorized
                         </option>
@@ -1681,9 +1820,7 @@ export default function DashboardPage() {
                         <option value="Bills & Utilities">
                           Bills & Utilities
                         </option>
-
                       </select>
-
                     </div>
 
                     <div
@@ -1692,7 +1829,6 @@ export default function DashboardPage() {
                           'right',
                       }}
                     >
-
                       <span
                         style={{
                           display:
@@ -1717,25 +1853,25 @@ export default function DashboardPage() {
                       >
                         {isIncome
                           ? `+$${Math.abs(
-                              tx.amount
+                              Number(
+                                tx.amount
+                              )
                             ).toFixed(
                               2
                             )}`
-                          : `$${tx.amount.toFixed(
+                          : `$${Number(
+                              tx.amount
+                            ).toFixed(
                               2
                             )}`}
                       </span>
-
                     </div>
-
                   </div>
                 );
               }
             )
           )}
-
         </div>
-
       </div>
     </div>
   );
