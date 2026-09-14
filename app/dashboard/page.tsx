@@ -1,2279 +1,1309 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { useRouter } from 'next/navigation';
-import { supabase } from '@/lib/supabase-browser';
-import { QueryBar } from '@/components/QueryBar';
+import { createClient } from '@/lib/supabase/client';
+import QueryBar from '@/components/QueryBar';
 import PlaidLinkButton from '@/components/PlaidLinkButton';
-
-console.log('🔥 LEDGERAI DASHBOARD PAGE LOADED');
 
 interface Transaction {
   id: string;
   user_id?: string | null;
   client_id?: string | null;
-  name?: string | null;
+  date: string;
   merchant_name?: string | null;
+  name?: string | null;
   amount: number;
-  date?: string | null;
-  posted_date?: string | null;
   category?: string | null;
-  account_id?: string | null;
-  raw_plaid_category?: string | null;
+  account_name?: string | null;
+  account_mask?: string | null;
+  pending?: boolean | null;
+  payment_channel?: string | null;
+  iso_currency_code?: string | null;
+  personal_finance_category?: {
+    primary?: string | null;
+    detailed?: string | null;
+  } | null;
 }
 
 interface Client {
   id: string;
-  business_name: string;
+  name: string;
+  firm_id?: string | null;
+}
+
+interface FirmMembership {
   firm_id: string;
+  user_id: string;
+  role?: string | null;
 }
 
 interface GroupedMerchant {
   merchant: string;
-  category: string;
-  transactionCount: number;
-  totalSpent: number;
-  totalIncome: number;
-  netAmount: number;
+  total: number;
+  count: number;
 }
-
-type DateFilterType =
-  | 'this_month'
-  | 'last_30_days'
-  | 'all_time'
-  | 'custom';
-
-const ACME_CORP_CLIENT_ID =
-  '22222222-2222-2222-2222-222222222222';
 
 const CATEGORY_OPTIONS = [
   'Uncategorized',
-  'Food & Dining',
-  'Transportation',
-  'Software & Tech',
-  'Transfer / Income',
-  'Shopping',
-  'Bills & Utilities',
+  'Advertising',
+  'Bank Fees',
+  'Contractors',
+  'Education',
   'Entertainment',
+  'Food & Dining',
+  'Insurance',
+  'Interest',
+  'Legal & Professional',
+  'Meals',
+  'Office Supplies',
+  'Payroll',
+  'Rent',
+  'Software',
+  'Taxes',
   'Travel',
-  'Healthcare',
-  'Other',
+  'Utilities',
 ];
 
-const LOCAL_CATEGORY_RULES: Array<{
-  keywords: string[];
-  category: string;
-}> = [
-  {
-    keywords: [
-      'uber',
-      'lyft',
-      'taxi',
-      'shell',
-      'chevron',
-      'exxon',
-      'bp ',
-      'fuel',
-      'parking',
-      'transit',
-      'metro',
-      'gas station',
-      'gasoline',
-    ],
-    category: 'Transportation',
-  },
-  {
-    keywords: [
-      'mcdonald',
-      'starbucks',
-      'chipotle',
-      'subway',
-      'restaurant',
-      'food',
-      'doordash',
-      'ubereats',
-      'grubhub',
-      'pizza',
-      'cafe',
-      'coffee',
-      'burger',
-      'wendy',
-      'chick-fil-a',
-      'taco',
-    ],
-    category: 'Food & Dining',
-  },
-  {
-    keywords: [
-      'netflix',
-      'spotify',
-      'adobe',
-      'microsoft',
-      'google',
-      'apple.com',
-      'aws',
-      'amazon web services',
-      'github',
-      'openai',
-      'anthropic',
-      'slack',
-      'zoom',
-      'dropbox',
-      'software',
-      'cloud',
-      'vercel',
-    ],
-    category: 'Software & Tech',
-  },
-  {
-    keywords: [
-      'walmart',
-      'target',
-      'amazon',
-      'ebay',
-      'costco',
-      'shopping',
-      'store',
-      'mall',
-      'nike',
-      'best buy',
-    ],
-    category: 'Shopping',
-  },
-  {
-    keywords: [
-      'electric',
-      'electricity',
-      'water',
-      'utility',
-      'utilities',
-      'internet',
-      'comcast',
-      'verizon',
-      'at&t',
-      't-mobile',
-      'phone',
-      'insurance',
-      'rent',
-      'mortgage',
-      'bill',
-    ],
-    category: 'Bills & Utilities',
-  },
-];
-
-function normalizeMerchant(merchant: string): string {
-  return merchant
-    .toLowerCase()
-    .replace(/\s+/g, ' ')
-    .trim();
+function formatCurrency(amount: number) {
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+  }).format(amount);
 }
 
-function getDisplayMerchant(transaction: Transaction): string {
+function formatDate(date: string) {
+  if (!date) return '—';
+
+  const parsedDate = new Date(`${date}T00:00:00`);
+
+  if (Number.isNaN(parsedDate.getTime())) {
+    return date;
+  }
+
+  return parsedDate.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  });
+}
+
+function getMerchantName(transaction: Transaction) {
   return (
-    transaction.merchant_name?.trim() ||
-    transaction.name?.trim() ||
-    'Unknown Merchant'
+    transaction.merchant_name ||
+    transaction.name ||
+    'Unknown merchant'
   );
 }
 
-function getTransactionDate(transaction: Transaction): string {
-  return transaction.date || transaction.posted_date || '';
-}
-
-function localCategoryForMerchant(
-  merchant: string,
-  plaidCategory?: string | null
-): string {
-  const normalized = normalizeMerchant(merchant);
-
-  for (const rule of LOCAL_CATEGORY_RULES) {
-    if (
-      rule.keywords.some((keyword) =>
-        normalized.includes(keyword)
-      )
-    ) {
-      return rule.category;
-    }
+function getTransactionCategory(transaction: Transaction) {
+  if (transaction.category) {
+    return transaction.category;
   }
 
-  const plaid = (plaidCategory || '').toLowerCase();
-
-  if (
-    plaid.includes('travel') ||
-    plaid.includes('airlines')
-  ) {
-    return 'Transportation';
-  }
-
-  if (
-    plaid.includes('food') ||
-    plaid.includes('restaurant')
-  ) {
-    return 'Food & Dining';
-  }
-
-  if (
-    plaid.includes('shops') ||
-    plaid.includes('shopping')
-  ) {
-    return 'Shopping';
-  }
-
-  if (
-    plaid.includes('service') ||
-    plaid.includes('utilities')
-  ) {
-    return 'Bills & Utilities';
+  if (transaction.personal_finance_category?.primary) {
+    return transaction.personal_finance_category.primary;
   }
 
   return 'Uncategorized';
 }
 
-function groupTransactionsByMerchant(
-  transactions: Transaction[]
-): GroupedMerchant[] {
-  const grouped = new Map<string, GroupedMerchant>();
+function escapeCsvValue(value: string | number | boolean | null | undefined) {
+  const stringValue = String(value ?? '');
 
-  transactions.forEach((transaction) => {
-    const merchant = getDisplayMerchant(transaction);
-    const merchantKey = normalizeMerchant(merchant);
-    const amount = Number(transaction.amount || 0);
-
-    const existing = grouped.get(merchantKey);
-
-    if (existing) {
-      existing.transactionCount += 1;
-
-      if (amount > 0) {
-        existing.totalSpent += amount;
-      } else if (amount < 0) {
-        existing.totalIncome += Math.abs(amount);
-      }
-
-      existing.netAmount += amount;
-    } else {
-      grouped.set(merchantKey, {
-        merchant,
-        category:
-          transaction.category?.trim() ||
-          'Uncategorized',
-        transactionCount: 1,
-        totalSpent: amount > 0 ? amount : 0,
-        totalIncome:
-          amount < 0 ? Math.abs(amount) : 0,
-        netAmount: amount,
-      });
-    }
-  });
-
-  return Array.from(grouped.values()).sort(
-    (a, b) => b.totalSpent - a.totalSpent
-  );
+  return `"${stringValue.replace(/"/g, '""')}"`;
 }
 
 export default function DashboardPage() {
-  const router = useRouter();
+  const supabase = createClient();
 
-  const [transactions, setTransactions] =
-    useState<Transaction[]>([]);
+  const [userId, setUserId] = useState<string | null>(null);
+  const [userEmail, setUserEmail] = useState<string | null>(null);
 
-  const [clients, setClients] =
-    useState<Client[]>([]);
+  const [clients, setClients] = useState<Client[]>([]);
+  const [memberships, setMemberships] = useState<FirmMembership[]>([]);
 
-  const [selectedClientId, setSelectedClientId] =
-    useState<string>('');
+  const [selectedClientId, setSelectedClientId] = useState<string>('');
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
 
   const [loading, setLoading] = useState(true);
+  const [transactionsLoading, setTransactionsLoading] = useState(false);
+  const [errorMessage, setErrorMessage] = useState('');
+  const [successMessage, setSuccessMessage] = useState('');
 
-  const [userId, setUserId] =
-    useState<string | null>(null);
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
 
-  const [dateFilter, setDateFilter] =
-    useState<DateFilterType>('all_time');
+  const [searchTerm, setSearchTerm] = useState('');
+  const [categoryFilter, setCategoryFilter] = useState('All Categories');
+  const [accountFilter, setAccountFilter] = useState('All Accounts');
 
-  const [customStartDate, setCustomStartDate] =
-    useState('');
-
-  const [customEndDate, setCustomEndDate] =
-    useState('');
-
-  const [isCategorizing, setIsCategorizing] =
-    useState(false);
-
-  const [categoryMessage, setCategoryMessage] =
-    useState('');
-
-  /*
-   * ---------------------------------------------------------
-   * LOAD AUTHENTICATED USER + CLIENTS + TRANSACTIONS
-   * ---------------------------------------------------------
-   */
+  const [editingCategoryId, setEditingCategoryId] = useState<string | null>(
+    null,
+  );
+  const [savingCategoryId, setSavingCategoryId] = useState<string | null>(
+    null,
+  );
 
   useEffect(() => {
-    let mounted = true;
-
     async function loadDashboard() {
-      setLoading(true);
-
       try {
-        console.log(
-          '🔐 Checking LedgerAI authentication...'
-        );
+        setLoading(true);
+        setErrorMessage('');
 
         const {
           data: { user },
-          error: authError,
+          error: userError,
         } = await supabase.auth.getUser();
 
-        if (authError) {
-          console.error(
-            'Authentication error:',
-            authError
-          );
+        if (userError) {
+          throw userError;
         }
 
         if (!user) {
-          console.log(
-            '❌ No authenticated user. Redirecting to login.'
-          );
-
-          if (mounted) {
-            setLoading(false);
-          }
-
-          router.replace('/login');
+          window.location.href = '/login';
           return;
         }
 
-        if (!mounted) return;
-
         setUserId(user.id);
+        setUserEmail(user.email ?? null);
 
-        console.log(
-          '✅ LedgerAI authenticated user:',
-          user.id
-        );
+        const { data: membershipData, error: membershipError } =
+          await supabase
+            .from('firm_users')
+            .select('firm_id, user_id, role')
+            .eq('user_id', user.id);
 
-        /*
-         * -----------------------------------------------------
-         * LOAD FIRMS FOR AUTHENTICATED USER
-         * -----------------------------------------------------
-         */
-
-        const {
-          data: firmMemberships,
-          error: firmError,
-        } = await supabase
-          .from('firm_users')
-          .select('firm_id')
-          .eq('user_id', user.id);
-
-        if (firmError) {
-          console.error(
-            'Firm memberships fetch failed:',
-            firmError
-          );
+        if (membershipError) {
+          throw membershipError;
         }
 
-        const firmIds = (
-          firmMemberships || []
-        ).map((row) => row.firm_id);
+        const loadedMemberships = (membershipData ||
+          []) as FirmMembership[];
 
-        /*
-         * -----------------------------------------------------
-         * LOAD CLIENTS BELONGING TO THOSE FIRMS
-         * -----------------------------------------------------
-         */
+        setMemberships(loadedMemberships);
+
+        const firmIds = loadedMemberships
+          .map((membership) => membership.firm_id)
+          .filter(Boolean);
 
         let loadedClients: Client[] = [];
 
         if (firmIds.length > 0) {
-          const {
-            data: clientData,
-            error: clientsError,
-          } = await supabase
+          const { data: clientData, error: clientError } = await supabase
             .from('clients')
-            .select(
-              'id, business_name, firm_id'
-            )
+            .select('id, name, firm_id')
             .in('firm_id', firmIds)
-            .eq('status', 'active')
-            .order('business_name', {
-              ascending: true,
-            });
+            .order('name', { ascending: true });
 
-          if (clientsError) {
-            console.error(
-              'Clients fetch failed:',
-              clientsError
-            );
+          if (clientError) {
+            throw clientError;
           }
 
-          loadedClients =
-            (clientData as Client[]) || [];
-        }
+          loadedClients = (clientData || []) as Client[];
+        } else {
+          const { data: clientData, error: clientError } = await supabase
+            .from('clients')
+            .select('id, name, firm_id')
+            .order('name', { ascending: true });
 
-        if (!mounted) return;
+          if (clientError) {
+            throw clientError;
+          }
+
+          loadedClients = (clientData || []) as Client[];
+        }
 
         setClients(loadedClients);
 
-        /*
-         * Prefer Acme Corp when available.
-         * Otherwise use the first available client.
-         */
-
-        const initialClientId =
-          loadedClients.find(
-            (client) =>
-              client.id === ACME_CORP_CLIENT_ID
-          )?.id ||
-          loadedClients[0]?.id ||
-          '';
-
-        setSelectedClientId(initialClientId);
-
-        if (!initialClientId) {
-          console.warn(
-            'No active clients found for this user.'
-          );
-
+        if (loadedClients.length === 0) {
+          setSelectedClientId('');
           setTransactions([]);
           return;
         }
 
-        console.log(
-          '🏢 Loading transactions for client:',
-          initialClientId
+        const acmeClient = loadedClients.find(
+          (client) =>
+            client.name.toLowerCase().trim() === 'acme corp',
         );
 
-        /*
-         * -----------------------------------------------------
-         * LOAD TRANSACTIONS FOR SELECTED CLIENT
-         * -----------------------------------------------------
-         */
+        const initialClient = acmeClient || loadedClients[0];
 
-        const {
-          data: transactionData,
-          error: transactionError,
-        } = await supabase
-          .from('transactions')
-          .select('*')
-          .eq('user_id', user.id)
-          .eq('client_id', initialClientId)
-          .order('date', {
-            ascending: false,
-          });
-
-        if (transactionError) {
-          console.error(
-            'Transaction fetch failed:',
-            transactionError
-          );
-        }
-
-        if (mounted) {
-          setTransactions(
-            (transactionData as Transaction[]) || []
-          );
-        }
-      } catch (error) {
-        console.error(
-          'Dashboard initialization failed:',
-          error
+        setSelectedClientId(initialClient.id);
+      } catch (error: any) {
+        console.error('Error loading dashboard:', error);
+        setErrorMessage(
+          error?.message || 'Unable to load dashboard data.',
         );
       } finally {
-        if (mounted) {
-          setLoading(false);
-        }
+        setLoading(false);
       }
     }
 
     loadDashboard();
-
-    return () => {
-      mounted = false;
-    };
-  }, [router]);
-
-  /*
-   * ---------------------------------------------------------
-   * LOAD TRANSACTIONS WHEN CLIENT CHANGES
-   * ---------------------------------------------------------
-   */
+  }, [supabase]);
 
   useEffect(() => {
-    if (!userId || !selectedClientId) {
-      return;
-    }
-
-    let mounted = true;
-
     async function loadSelectedClientTransactions() {
-      setLoading(true);
+      if (!selectedClientId) {
+        setTransactions([]);
+        return;
+      }
 
       try {
-        console.log(
-          '🔄 Switching to client:',
-          selectedClientId
-        );
+        setTransactionsLoading(true);
+        setErrorMessage('');
 
+        /*
+         * Important:
+         * Transactions are loaded by client_id.
+         *
+         * We intentionally do not filter by the current user's user_id here.
+         * Existing transactions may have been created by another user while
+         * still belonging to the selected client. Access should be controlled
+         * by Supabase RLS and the user's client/firm permissions.
+         */
         const {
           data,
           error,
         } = await supabase
           .from('transactions')
           .select('*')
-          .eq('user_id', userId)
           .eq('client_id', selectedClientId)
           .order('date', {
             ascending: false,
           });
 
         if (error) {
-          console.error(
-            'Selected client transaction fetch failed:',
-            error
-          );
-
-          return;
+          throw error;
         }
 
-        if (mounted) {
-          setTransactions(
-            (data as Transaction[]) || []
-          );
-        }
+        setTransactions((data || []) as Transaction[]);
+      } catch (error: any) {
+        console.error(
+          'Error loading selected client transactions:',
+          error,
+        );
+
+        setTransactions([]);
+        setErrorMessage(
+          error?.message ||
+            'Unable to load transactions for this client.',
+        );
       } finally {
-        if (mounted) {
-          setLoading(false);
-        }
+        setTransactionsLoading(false);
       }
     }
 
     loadSelectedClientTransactions();
+  }, [selectedClientId, supabase]);
 
-    return () => {
-      mounted = false;
-    };
-  }, [userId, selectedClientId]);
+  const selectedClient = useMemo(() => {
+    return clients.find((client) => client.id === selectedClientId) || null;
+  }, [clients, selectedClientId]);
 
-  /*
-   * ---------------------------------------------------------
-   * REFRESH SELECTED CLIENT TRANSACTIONS
-   * ---------------------------------------------------------
-   */
+  const accountOptions = useMemo(() => {
+    const accounts = transactions
+      .map((transaction) => transaction.account_name || 'Unknown account')
+      .filter(Boolean);
 
-  async function refreshTransactions() {
-    if (!userId || !selectedClientId) {
-      return;
-    }
+    return ['All Accounts', ...Array.from(new Set(accounts)).sort()];
+  }, [transactions]);
 
-    const {
-      data,
-      error,
-    } = await supabase
-      .from('transactions')
-      .select('*')
-      .eq('user_id', userId)
-      .eq('client_id', selectedClientId)
-      .order('date', {
-        ascending: false,
-      });
-
-    if (error) {
-      console.error(
-        'Failed to refresh transactions:',
-        error
-      );
-      return;
-    }
-
-    setTransactions(
-      (data as Transaction[]) || []
-    );
-  }
-
-  /*
-   * ---------------------------------------------------------
-   * LOCAL / FREE CATEGORIZATION
-   * ---------------------------------------------------------
-   */
-
-  async function handleLocalCategorize() {
-    if (!userId) {
-      setCategoryMessage(
-        'No authenticated user found.'
-      );
-      return;
-    }
-
-    if (!selectedClientId) {
-      setCategoryMessage(
-        'Please select a client first.'
-      );
-      return;
-    }
-
-    if (transactions.length === 0) {
-      setCategoryMessage(
-        'There are no transactions to categorize.'
-      );
-      return;
-    }
-
-    setIsCategorizing(true);
-    setCategoryMessage('');
-
-    try {
-      let categorizedCount = 0;
-
-      const categoryRuleRows: Array<{
-        user_id: string;
-        merchant_pattern: string;
-        category: string;
-      }> = [];
-
-      for (const tx of transactions) {
-        const merchant = getDisplayMerchant(tx);
-
-        const category =
-          localCategoryForMerchant(
-            merchant,
-            tx.raw_plaid_category
-          );
-
-        if (category === 'Uncategorized') {
-          continue;
-        }
-
-        const {
-          error: updateError,
-        } = await supabase
-          .from('transactions')
-          .update({
-            category,
-          })
-          .eq('id', tx.id)
-          .eq('user_id', userId)
-          .eq('client_id', selectedClientId);
-
-        if (updateError) {
-          console.error(
-            'Failed to categorize transaction:',
-            tx.id,
-            updateError
-          );
-
-          continue;
-        }
-
-        categorizedCount++;
-
-        categoryRuleRows.push({
-          user_id: userId,
-          merchant_pattern:
-            normalizeMerchant(merchant),
-          category,
-        });
-      }
-
-      if (categoryRuleRows.length > 0) {
-        const {
-          error: rulesError,
-        } = await supabase
-          .from('category_rules')
-          .upsert(
-            categoryRuleRows,
-            {
-              onConflict:
-                'user_id,merchant_pattern',
-            }
-          );
-
-        if (rulesError) {
-          console.warn(
-            'Category rules could not be saved:',
-            rulesError
-          );
-        }
-      }
-
-      await refreshTransactions();
-
-      setCategoryMessage(
-        'Categorized ' +
-          categorizedCount +
-          ' transactions.'
-      );
-    } catch (error) {
-      console.error(
-        'Local categorization failed:',
-        error
-      );
-
-      setCategoryMessage(
-        'Local categorization failed. Check the browser console.'
-      );
-    } finally {
-      setIsCategorizing(false);
-    }
-  }
-
-  /*
-   * ---------------------------------------------------------
-   * MANUAL CATEGORY CHANGE
-   * ---------------------------------------------------------
-   */
-
-  async function handleCategoryChange(
-    txId: string,
-    merchantName: string,
-    newCategory: string
-  ) {
-    if (!userId || !selectedClientId) {
-      return;
-    }
-
-    setTransactions((previous) =>
-      previous.map((tx) =>
-        tx.id === txId
-          ? {
-              ...tx,
-              category: newCategory,
-            }
-          : tx
-      )
+  const categoryOptions = useMemo(() => {
+    const categories = transactions.map((transaction) =>
+      getTransactionCategory(transaction),
     );
 
-    const {
-      error: txError,
-    } = await supabase
-      .from('transactions')
-      .update({
-        category: newCategory,
-      })
-      .eq('id', txId)
-      .eq('user_id', userId)
-      .eq('client_id', selectedClientId);
-
-    if (txError) {
-      console.error(
-        'Transaction category update failed:',
-        txError
-      );
-
-      await refreshTransactions();
-      return;
-    }
-
-    if (merchantName) {
-      const {
-        error: ruleError,
-      } = await supabase
-        .from('category_rules')
-        .upsert(
-          {
-            user_id: userId,
-            merchant_pattern:
-              normalizeMerchant(merchantName),
-            category: newCategory,
-          },
-          {
-            onConflict:
-              'user_id,merchant_pattern',
-          }
-        );
-
-      if (ruleError) {
-        console.warn(
-          'Category rule could not be saved:',
-          ruleError
-        );
-      }
-    }
-  }
-
-  /*
-   * ---------------------------------------------------------
-   * DATE FILTER
-   * ---------------------------------------------------------
-   */
+    return [
+      'All Categories',
+      ...Array.from(new Set([...CATEGORY_OPTIONS, ...categories])).sort(),
+    ];
+  }, [transactions]);
 
   const filteredTransactions = useMemo(() => {
-    if (dateFilter === 'all_time') {
-      return transactions;
-    }
+    return transactions.filter((transaction) => {
+      const merchant = getMerchantName(transaction).toLowerCase();
+      const category = getTransactionCategory(transaction);
+      const account = transaction.account_name || 'Unknown account';
 
-    const now = new Date();
+      const normalizedSearchTerm = searchTerm.toLowerCase().trim();
 
-    return transactions.filter((tx) => {
-      const dateValue = getTransactionDate(tx);
+      const matchesSearch =
+        !normalizedSearchTerm ||
+        merchant.includes(normalizedSearchTerm) ||
+        category.toLowerCase().includes(normalizedSearchTerm) ||
+        account.toLowerCase().includes(normalizedSearchTerm);
 
-      if (!dateValue) {
-        return false;
-      }
+      const matchesCategory =
+        categoryFilter === 'All Categories' ||
+        category === categoryFilter;
 
-      const txDate = new Date(dateValue);
+      const matchesAccount =
+        accountFilter === 'All Accounts' ||
+        account === accountFilter;
 
-      if (Number.isNaN(txDate.getTime())) {
-        return false;
-      }
+      const matchesStartDate =
+        !startDate || transaction.date >= startDate;
 
-      if (dateFilter === 'this_month') {
-        return (
-          txDate.getMonth() === now.getMonth() &&
-          txDate.getFullYear() === now.getFullYear()
-        );
-      }
+      const matchesEndDate =
+        !endDate || transaction.date <= endDate;
 
-      if (dateFilter === 'last_30_days') {
-        const thirtyDaysAgo = new Date();
-
-        thirtyDaysAgo.setDate(
-          now.getDate() - 30
-        );
-
-        return (
-          txDate >= thirtyDaysAgo &&
-          txDate <= now
-        );
-      }
-
-      if (dateFilter === 'custom') {
-        if (
-          !customStartDate &&
-          !customEndDate
-        ) {
-          return true;
-        }
-
-        const start = customStartDate
-          ? new Date(
-              customStartDate + 'T00:00:00'
-            )
-          : new Date(
-              '1970-01-01T00:00:00'
-            );
-
-        const end = customEndDate
-          ? new Date(
-              customEndDate + 'T23:59:59.999'
-            )
-          : new Date(
-              '2099-12-31T23:59:59.999'
-            );
-
-        return (
-          txDate >= start &&
-          txDate <= end
-        );
-      }
-
-      return true;
+      return (
+        matchesSearch &&
+        matchesCategory &&
+        matchesAccount &&
+        matchesStartDate &&
+        matchesEndDate
+      );
     });
   }, [
     transactions,
-    dateFilter,
-    customStartDate,
-    customEndDate,
+    searchTerm,
+    categoryFilter,
+    accountFilter,
+    startDate,
+    endDate,
   ]);
 
-  /*
-   * ---------------------------------------------------------
-   * GROUPED MERCHANT SUMMARY
-   * ---------------------------------------------------------
-   */
+  const totalSpending = useMemo(() => {
+    return filteredTransactions.reduce(
+      (total, transaction) => total + Number(transaction.amount || 0),
+      0,
+    );
+  }, [filteredTransactions]);
 
-  const groupedMerchants = useMemo(
-    () =>
-      groupTransactionsByMerchant(
-        filteredTransactions
-      ),
-    [filteredTransactions]
-  );
+  const transactionCount = filteredTransactions.length;
 
-  /*
-   * ---------------------------------------------------------
-   * CSV EXPORT
-   * ---------------------------------------------------------
-   */
+  const averageTransaction = useMemo(() => {
+    if (transactionCount === 0) {
+      return 0;
+    }
 
-  function exportToCSV() {
+    return totalSpending / transactionCount;
+  }, [totalSpending, transactionCount]);
+
+  const merchantSummary = useMemo<GroupedMerchant[]>(() => {
+    const merchantMap = new Map<string, GroupedMerchant>();
+
+    filteredTransactions.forEach((transaction) => {
+      const merchant = getMerchantName(transaction);
+      const current = merchantMap.get(merchant);
+
+      if (current) {
+        current.total += Number(transaction.amount || 0);
+        current.count += 1;
+      } else {
+        merchantMap.set(merchant, {
+          merchant,
+          total: Number(transaction.amount || 0),
+          count: 1,
+        });
+      }
+    });
+
+    return Array.from(merchantMap.values()).sort(
+      (a, b) => b.total - a.total,
+    );
+  }, [filteredTransactions]);
+
+  const categorySummary = useMemo(() => {
+    const categoryMap = new Map<string, number>();
+
+    filteredTransactions.forEach((transaction) => {
+      const category = getTransactionCategory(transaction);
+      const amount = Number(transaction.amount || 0);
+
+      categoryMap.set(
+        category,
+        (categoryMap.get(category) || 0) + amount,
+      );
+    });
+
+    return Array.from(categoryMap.entries())
+      .map(([category, total]) => ({
+        category,
+        total,
+      }))
+      .sort((a, b) => b.total - a.total);
+  }, [filteredTransactions]);
+
+  function handleClientChange(
+    event: React.ChangeEvent<HTMLSelectElement>,
+  ) {
+    setSelectedClientId(event.target.value);
+    setSearchTerm('');
+    setCategoryFilter('All Categories');
+    setAccountFilter('All Accounts');
+    setStartDate('');
+    setEndDate('');
+    setSuccessMessage('');
+    setErrorMessage('');
+  }
+
+  function clearFilters() {
+    setSearchTerm('');
+    setCategoryFilter('All Categories');
+    setAccountFilter('All Accounts');
+    setStartDate('');
+    setEndDate('');
+  }
+
+  async function refreshTransactions() {
+    if (!selectedClientId) {
+      return;
+    }
+
+    try {
+      setTransactionsLoading(true);
+      setErrorMessage('');
+      setSuccessMessage('');
+
+      /*
+       * Load transactions by client_id only.
+       * Do not add .eq('user_id', userId) here.
+       */
+      const {
+        data,
+        error,
+      } = await supabase
+        .from('transactions')
+        .select('*')
+        .eq('client_id', selectedClientId)
+        .order('date', {
+          ascending: false,
+        });
+
+      if (error) {
+        throw error;
+      }
+
+      setTransactions((data || []) as Transaction[]);
+      setSuccessMessage('Transactions refreshed successfully.');
+    } catch (error: any) {
+      console.error('Error refreshing transactions:', error);
+      setErrorMessage(
+        error?.message || 'Unable to refresh transactions.',
+      );
+    } finally {
+      setTransactionsLoading(false);
+    }
+  }
+
+  async function handleCategoryChange(
+    transactionId: string,
+    category: string,
+  ) {
+    if (!selectedClientId) {
+      return;
+    }
+
+    try {
+      setSavingCategoryId(transactionId);
+      setErrorMessage('');
+      setSuccessMessage('');
+
+      const { error } = await supabase
+        .from('transactions')
+        .update({
+          category,
+        })
+        .eq('id', transactionId)
+        .eq('client_id', selectedClientId);
+
+      if (error) {
+        throw error;
+      }
+
+      setTransactions((currentTransactions) =>
+        currentTransactions.map((transaction) =>
+          transaction.id === transactionId
+            ? {
+                ...transaction,
+                category,
+              }
+            : transaction,
+        ),
+      );
+
+      setEditingCategoryId(null);
+      setSuccessMessage('Category updated successfully.');
+    } catch (error: any) {
+      console.error('Error updating transaction category:', error);
+      setErrorMessage(
+        error?.message || 'Unable to update transaction category.',
+      );
+    } finally {
+      setSavingCategoryId(null);
+    }
+  }
+
+  async function handleLocalCategorize() {
+    if (!selectedClientId || filteredTransactions.length === 0) {
+      return;
+    }
+
+    try {
+      setErrorMessage('');
+      setSuccessMessage('');
+
+      const updates = filteredTransactions
+        .filter(
+          (transaction) =>
+            !transaction.category ||
+            transaction.category === 'Uncategorized',
+        )
+        .map((transaction) => {
+          const merchant = getMerchantName(transaction).toLowerCase();
+
+          let category = 'Uncategorized';
+
+          if (
+            merchant.includes('uber') ||
+            merchant.includes('lyft') ||
+            merchant.includes('airline') ||
+            merchant.includes('hotel')
+          ) {
+            category = 'Travel';
+          } else if (
+            merchant.includes('google') ||
+            merchant.includes('microsoft') ||
+            merchant.includes('adobe') ||
+            merchant.includes('slack') ||
+            merchant.includes('notion') ||
+            merchant.includes('software')
+          ) {
+            category = 'Software';
+          } else if (
+            merchant.includes('amazon') ||
+            merchant.includes('office') ||
+            merchant.includes('staples')
+          ) {
+            category = 'Office Supplies';
+          } else if (
+            merchant.includes('restaurant') ||
+            merchant.includes('cafe') ||
+            merchant.includes('coffee') ||
+            merchant.includes('doordash') ||
+            merchant.includes('grubhub')
+          ) {
+            category = 'Food & Dining';
+          } else if (
+            merchant.includes('facebook') ||
+            merchant.includes('meta') ||
+            merchant.includes('google ads') ||
+            merchant.includes('advertising')
+          ) {
+            category = 'Advertising';
+          } else if (
+            merchant.includes('electric') ||
+            merchant.includes('water') ||
+            merchant.includes('utility') ||
+            merchant.includes('internet')
+          ) {
+            category = 'Utilities';
+          } else if (
+            merchant.includes('bank') ||
+            merchant.includes('fee') ||
+            merchant.includes('stripe')
+          ) {
+            category = 'Bank Fees';
+          }
+
+          return {
+            id: transaction.id,
+            category,
+          };
+        });
+
+      if (updates.length === 0) {
+        setSuccessMessage(
+          'There are no uncategorized transactions to update.',
+        );
+        return;
+      }
+
+      for (const update of updates) {
+        const { error } = await supabase
+          .from('transactions')
+          .update({
+            category: update.category,
+          })
+          .eq('id', update.id)
+          .eq('client_id', selectedClientId);
+
+        if (error) {
+          throw error;
+        }
+      }
+
+      setTransactions((currentTransactions) =>
+        currentTransactions.map((transaction) => {
+          const update = updates.find(
+            (item) => item.id === transaction.id,
+          );
+
+          if (!update) {
+            return transaction;
+          }
+
+          return {
+            ...transaction,
+            category: update.category,
+          };
+        }),
+      );
+
+      setSuccessMessage(
+        `${updates.length} transaction${
+          updates.length === 1 ? '' : 's'
+        } categorized successfully.`,
+      );
+    } catch (error: any) {
+      console.error('Error categorizing transactions:', error);
+      setErrorMessage(
+        error?.message || 'Unable to categorize transactions.',
+      );
+    }
+  }
+
+  function exportTransactionsToCsv() {
     if (filteredTransactions.length === 0) {
+      setErrorMessage('There are no transactions to export.');
       return;
     }
 
     const headers = [
-      '#',
       'Date',
       'Merchant',
-      'Category',
       'Amount',
+      'Category',
+      'Account',
+      'Account Mask',
+      'Pending',
+      'Payment Channel',
+      'Currency',
     ];
 
-    const rows = filteredTransactions.map(
-      (tx, index) => {
-        const merchant = getDisplayMerchant(tx);
-
-        const category =
-          tx.category ||
-          'Uncategorized';
-
-        const date = getTransactionDate(tx);
-
-        return [
-          index + 1,
-          date,
-          '"' +
-            merchant.replace(/"/g, '""') +
-            '"',
-          '"' +
-            category.replace(/"/g, '""') +
-            '"',
-          tx.amount < 0
-            ? '+' +
-              Math.abs(
-                Number(tx.amount)
-              ).toFixed(2)
-            : '-' +
-              Number(
-                tx.amount
-              ).toFixed(2),
-        ];
-      }
-    );
+    const rows = filteredTransactions.map((transaction) => [
+      transaction.date,
+      getMerchantName(transaction),
+      Number(transaction.amount || 0).toFixed(2),
+      getTransactionCategory(transaction),
+      transaction.account_name || '',
+      transaction.account_mask || '',
+      transaction.pending ? 'Yes' : 'No',
+      transaction.payment_channel || '',
+      transaction.iso_currency_code || 'USD',
+    ]);
 
     const csvContent = [
-      headers.join(','),
-      ...rows.map((row) =>
-        row.join(',')
-      ),
+      headers.map(escapeCsvValue).join(','),
+      ...rows.map((row) => row.map(escapeCsvValue).join(',')),
     ].join('\n');
 
-    const blob = new Blob(
-      [csvContent],
-      {
-        type: 'text/csv;charset=utf-8;',
-      }
-    );
+    const blob = new Blob([csvContent], {
+      type: 'text/csv;charset=utf-8;',
+    });
 
-    const url =
-      URL.createObjectURL(blob);
-
-    const link =
-      document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
 
     link.href = url;
-
-    link.download =
-      'LedgerAI_' +
-      (selectedClientId || 'Report') +
-      '_' +
-      dateFilter +
-      '_' +
-      new Date()
-        .toISOString()
-        .split('T')[0] +
-      '.csv';
+    link.setAttribute(
+      'download',
+      `${selectedClient?.name || 'transactions'}-transactions.csv`,
+    );
 
     document.body.appendChild(link);
-
     link.click();
-
     document.body.removeChild(link);
 
     URL.revokeObjectURL(url);
   }
 
-  /*
-   * ---------------------------------------------------------
-   * ANALYTICS
-   * ---------------------------------------------------------
-   */
-
-  const analytics = useMemo(() => {
-    const totalSpend =
-      filteredTransactions
-        .filter(
-          (transaction) =>
-            Number(transaction.amount) > 0
-        )
-        .reduce(
-          (sum, transaction) =>
-            sum +
-            Number(transaction.amount),
-          0
-        );
-
-    const totalIncome =
-      filteredTransactions
-        .filter(
-          (transaction) =>
-            Number(transaction.amount) < 0
-        )
-        .reduce(
-          (sum, transaction) =>
-            sum +
-            Math.abs(
-              Number(transaction.amount)
-            ),
-          0
-        );
-
-    const netCashFlow =
-      totalIncome - totalSpend;
-
-    const categoryTotals: Record<
-      string,
-      number
-    > = {};
-
-    filteredTransactions.forEach(
-      (transaction) => {
-        const categoryName =
-          transaction.category?.trim();
-
-        if (
-          Number(transaction.amount) > 0 &&
-          categoryName &&
-          categoryName !== 'Uncategorized'
-        ) {
-          categoryTotals[categoryName] =
-            (categoryTotals[categoryName] || 0) +
-            Number(transaction.amount);
-        }
-      }
-    );
-
-    const sortedCategories =
-      Object.entries(categoryTotals).sort(
-        (a, b) => b[1] - a[1]
-      );
-
-    const topCategory =
-      sortedCategories.length > 0
-        ? sortedCategories[0][0]
-        : 'None';
-
-    return {
-      totalSpend,
-      totalIncome,
-      netCashFlow,
-      topCategory,
-    };
-  }, [filteredTransactions]);
-
-  /*
-   * ---------------------------------------------------------
-   * SIGN OUT
-   * ---------------------------------------------------------
-   */
-
   async function handleSignOut() {
-    const {
-      error,
-    } = await supabase.auth.signOut();
-
-    if (error) {
-      console.error(
-        'Sign out failed:',
-        error
-      );
-      return;
-    }
-
-    router.replace('/login');
+    await supabase.auth.signOut();
+    window.location.href = '/login';
   }
-
-  /*
-   * ---------------------------------------------------------
-   * LOADING
-   * ---------------------------------------------------------
-   */
 
   if (loading) {
     return (
-      <div
-        style={{
-          display: 'flex',
-          justifyContent: 'center',
-          alignItems: 'center',
-          minHeight: '100vh',
-          backgroundColor: '#070b14',
-          color: '#38bdf8',
-          fontSize: 15,
-          fontWeight: 500,
-          fontFamily:
-            'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-        }}
-      >
-        Initializing LedgerAI Quantum Core...
-      </div>
+      <main className="min-h-screen bg-slate-950 px-6 py-10 text-white">
+        <div className="mx-auto max-w-7xl">
+          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-8">
+            <p className="text-slate-300">Loading dashboard...</p>
+          </div>
+        </div>
+      </main>
     );
   }
 
-  const selectedClient = clients.find(
-    (client) => client.id === selectedClientId
-  );
-
-  /*
-   * ---------------------------------------------------------
-   * DASHBOARD
-   * ---------------------------------------------------------
-   */
-
   return (
-    <div
-      style={{
-        backgroundColor: '#070b14',
-        minHeight: '100vh',
-        padding: '40px 24px',
-        fontFamily:
-          'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-        color: '#f8fafc',
-      }}
-    >
-      <div
-        style={{
-          maxWidth: 1160,
-          margin: '0 auto',
-        }}
-      >
-        {/* HEADER */}
-
-        <div
-          style={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            marginBottom: 36,
-            paddingBottom: 24,
-            borderBottom:
-              '1px solid rgba(255,255,255,0.08)',
-            gap: 24,
-            flexWrap: 'wrap',
-          }}
-        >
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 16,
-            }}
-          >
-            <div
-              style={{
-                width: 50,
-                height: 50,
-                borderRadius: 14,
-                background:
-                  'linear-gradient(135deg, #0b1329 0%, #030712 100%)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                boxShadow:
-                  '0 0 22px rgba(56,189,248,0.4), inset 0 0 10px rgba(129,140,248,0.2)',
-                border:
-                  '1.5px solid rgba(56,189,248,0.6)',
-              }}
-            >
-              <svg
-                width="28"
-                height="28"
-                viewBox="0 0 32 32"
-                fill="none"
-                xmlns="http://www.w3.org/2000/svg"
-              >
-                <defs>
-                  <linearGradient
-                    id="neon-glow"
-                    x1="0"
-                    y1="0"
-                    x2="32"
-                    y2="32"
-                    gradientUnits="userSpaceOnUse"
-                  >
-                    <stop stopColor="#38bdf8" />
-                    <stop
-                      offset="0.5"
-                      stopColor="#818cf8"
-                    />
-                    <stop
-                      offset="1"
-                      stopColor="#c084fc"
-                    />
-                  </linearGradient>
-
-                  <filter
-                    id="glow"
-                    x="-20%"
-                    y="-20%"
-                    width="140%"
-                    height="140%"
-                  >
-                    <feGaussianBlur
-                      stdDeviation="1.5"
-                      result="blur"
-                    />
-
-                    <feComposite
-                      in="SourceGraphic"
-                      in2="blur"
-                      operator="over"
-                    />
-                  </filter>
-                </defs>
-
-                <path
-                  d="M16 3L28 9.5V22.5L16 29L4 22.5V9.5L16 3Z"
-                  stroke="url(#neon-glow)"
-                  strokeWidth="2"
-                  strokeLinejoin="round"
-                  filter="url(#glow)"
-                />
-
-                <path
-                  d="M16 9L22 12.5V19.5L16 23L10 19.5V12.5L16 9Z"
-                  stroke="#38bdf8"
-                  strokeWidth="1.5"
-                  strokeOpacity="0.7"
-                  strokeLinejoin="round"
-                />
-
-                <circle
-                  cx="16"
-                  cy="16"
-                  r="3"
-                  fill="#818cf8"
-                />
-              </svg>
-            </div>
-
-            <div>
-              <div
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 10,
-                  flexWrap: 'wrap',
-                }}
-              >
-                <h1
-                  style={{
-                    fontSize: 26,
-                    fontWeight: 800,
-                    letterSpacing: '-0.03em',
-                    color: '#ffffff',
-                    margin: 0,
-                  }}
-                >
-                  Ledger
-                  <span
-                    style={{
-                      color: '#38bdf8',
-                    }}
-                  >
-                    AI
-                  </span>
-                </h1>
-
-                <span
-                  style={{
-                    fontSize: 10,
-                    fontWeight: 700,
-                    backgroundColor:
-                      'rgba(56,189,248,0.12)',
-                    color: '#38bdf8',
-                    border:
-                      '1px solid rgba(56,189,248,0.3)',
-                    padding: '2px 8px',
-                    borderRadius: 6,
-                    letterSpacing: '0.08em',
-                  }}
-                >
-                  ENTERPRISE
-                </span>
-              </div>
-
-              <p
-                style={{
-                  fontSize: 13,
-                  color: '#94a3b8',
-                  margin: '4px 0 0 0',
-                }}
-              >
-                Autonomous financial tracking & intelligent
-                multi-account liquidity
-              </p>
-            </div>
-          </div>
-
-          {/* ACTIONS */}
-
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 12,
-              flexWrap: 'wrap',
-            }}
-          >
-            <PlaidLinkButton
-              selectedClientId={selectedClientId}
-              onBankConnected={async () => {
-                setCategoryMessage(
-                  'Bank connected successfully.'
-                );
-
-                await refreshTransactions();
-              }}
-            />
-
-            <button
-              onClick={handleLocalCategorize}
-              disabled={
-                isCategorizing ||
-                transactions.length === 0 ||
-                !selectedClientId
-              }
-              style={{
-                padding: '11px 18px',
-                backgroundColor:
-                  isCategorizing
-                    ? '#1e293b'
-                    : '#0f172a',
-                color: '#818cf8',
-                borderRadius: 10,
-                border:
-                  '1px solid rgba(129,140,248,0.4)',
-                fontWeight: 600,
-                cursor:
-                  isCategorizing ||
-                  transactions.length === 0 ||
-                  !selectedClientId
-                    ? 'not-allowed'
-                    : 'pointer',
-                fontSize: 14,
-                opacity:
-                  transactions.length === 0 ||
-                  !selectedClientId
-                    ? 0.5
-                    : 1,
-              }}
-            >
-              {isCategorizing
-                ? 'Categorizing...'
-                : 'Categorize (Free/Local)'}
-            </button>
-
-            <button
-              onClick={exportToCSV}
-              disabled={
-                filteredTransactions.length === 0
-              }
-              style={{
-                padding: '11px 20px',
-                backgroundColor:
-                  filteredTransactions.length === 0
-                    ? '#1e293b'
-                    : '#0284c7',
-                color: '#ffffff',
-                borderRadius: 10,
-                border:
-                  '1px solid rgba(255,255,255,0.1)',
-                fontWeight: 600,
-                cursor:
-                  filteredTransactions.length === 0
-                    ? 'not-allowed'
-                    : 'pointer',
-                fontSize: 14,
-              }}
-            >
-              Export CSV Report (
-              {filteredTransactions.length})
-            </button>
-
-            <button
-              onClick={handleSignOut}
-              style={{
-                padding: '11px 18px',
-                backgroundColor: '#1e293b',
-                color: '#f87171',
-                borderRadius: 10,
-                border:
-                  '1px solid rgba(248,113,113,0.3)',
-                fontWeight: 600,
-                cursor: 'pointer',
-                fontSize: 14,
-              }}
-            >
-              Sign Out
-            </button>
-          </div>
-        </div>
-
-        {/* CLIENT SELECTOR */}
-
-        <div
-          style={{
-            marginBottom: 20,
-            padding: '16px 20px',
-            backgroundColor: '#0f172a',
-            borderRadius: 12,
-            border:
-              '1px solid rgba(56,189,248,0.2)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: 16,
-            flexWrap: 'wrap',
-          }}
-        >
+    <main className="min-h-screen bg-slate-950 px-4 py-6 text-white sm:px-6 lg:px-8">
+      <div className="mx-auto max-w-7xl space-y-6">
+        <header className="flex flex-col gap-4 rounded-2xl border border-slate-800 bg-slate-900 p-5 shadow-xl sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <div
-              style={{
-                color: '#38bdf8',
-                fontSize: 11,
-                fontWeight: 700,
-                textTransform: 'uppercase',
-                letterSpacing: '0.08em',
-                marginBottom: 5,
-              }}
-            >
-              Active Client
-            </div>
+            <p className="text-sm font-medium text-cyan-400">
+              LedgerAI
+            </p>
 
-            <div
-              style={{
-                color: '#f8fafc',
-                fontSize: 14,
-                fontWeight: 600,
-              }}
-            >
-              {selectedClient?.business_name ||
-                'No client selected'}
-            </div>
+            <h1 className="mt-1 text-2xl font-bold tracking-tight sm:text-3xl">
+              Financial Dashboard
+            </h1>
+
+            <p className="mt-1 text-sm text-slate-400">
+              Review, categorize, and analyze client transactions.
+            </p>
           </div>
 
-          <select
-            value={selectedClientId}
-            onChange={(event) => {
-              setSelectedClientId(event.target.value);
-              setCategoryMessage('');
-            }}
-            disabled={clients.length === 0}
-            style={{
-              minWidth: 260,
-              padding: '10px 14px',
-              borderRadius: 8,
-              border:
-                '1px solid rgba(56,189,248,0.35)',
-              backgroundColor: '#1e293b',
-              color: '#f8fafc',
-              fontSize: 14,
-              fontWeight: 600,
-              cursor:
-                clients.length === 0
-                  ? 'not-allowed'
-                  : 'pointer',
-            }}
-          >
-            {clients.length === 0 ? (
-              <option value="">
-                No clients available
-              </option>
-            ) : (
-              clients.map((client) => (
-                <option
-                  key={client.id}
-                  value={client.id}
-                >
-                  {client.business_name}
-                </option>
-              ))
+          <div className="flex flex-col items-start gap-2 sm:items-end">
+            {userEmail && (
+              <p className="text-xs text-slate-400">{userEmail}</p>
             )}
-          </select>
-        </div>
 
-        {/* CATEGORY STATUS */}
+            <button
+              type="button"
+              onClick={handleSignOut}
+              className="rounded-lg border border-slate-700 px-4 py-2 text-sm font-medium text-slate-200 transition hover:border-red-500 hover:bg-red-500/10 hover:text-red-300"
+            >
+              Sign out
+            </button>
+          </div>
+        </header>
 
-        {categoryMessage && (
-          <div
-            style={{
-              marginBottom: 20,
-              padding: '12px 16px',
-              borderRadius: 10,
-              backgroundColor:
-                'rgba(56,189,248,0.08)',
-              border:
-                '1px solid rgba(56,189,248,0.25)',
-              color: '#38bdf8',
-              fontSize: 13,
-              fontWeight: 600,
-            }}
-          >
-            {categoryMessage}
+        {errorMessage && (
+          <div className="rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+            {errorMessage}
           </div>
         )}
 
-        {/* ACTIVE USER */}
+        {successMessage && (
+          <div className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-300">
+            {successMessage}
+          </div>
+        )}
 
-        <div
-          style={{
-            marginBottom: 20,
-            fontSize: 13,
-            color: '#64748b',
-          }}
-        >
-          Active User:{' '}
-          <span
-            style={{
-              color: '#38bdf8',
-              fontWeight: 600,
-            }}
-          >
-            {userId || 'Unknown'}
-          </span>
-        </div>
-
-        {/* FILTERS */}
-
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            marginBottom: 24,
-            backgroundColor: '#0f172a',
-            padding: '14px 22px',
-            borderRadius: 12,
-            border:
-              '1px solid rgba(255,255,255,0.08)',
-            gap: 20,
-            flexWrap: 'wrap',
-          }}
-        >
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 14,
-              flexWrap: 'wrap',
-            }}
-          >
-            <span
-              style={{
-                fontSize: 12,
-                fontWeight: 600,
-                color: '#94a3b8',
-                textTransform: 'uppercase',
-                letterSpacing: '0.08em',
-              }}
-            >
-              Timeframe Filter
-            </span>
-
-            <select
-              value={dateFilter}
-              onChange={(e) =>
-                setDateFilter(
-                  e.target.value as DateFilterType
-                )
-              }
-              style={{
-                padding: '8px 14px',
-                borderRadius: 8,
-                border:
-                  '1px solid rgba(255,255,255,0.1)',
-                fontSize: 13,
-                backgroundColor: '#1e293b',
-                color: '#f8fafc',
-                cursor: 'pointer',
-              }}
-            >
-              <option value="all_time">
-                All Time
-              </option>
-
-              <option value="this_month">
-                This Month
-              </option>
-
-              <option value="last_30_days">
-                Last 30 Days
-              </option>
-
-              <option value="custom">
-                Custom Range
-              </option>
-            </select>
-
-            {dateFilter === 'custom' && (
-              <div
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 8,
-                  flexWrap: 'wrap',
-                }}
-              >
-                <input
-                  type="date"
-                  value={customStartDate}
-                  onChange={(e) =>
-                    setCustomStartDate(
-                      e.target.value
-                    )
-                  }
-                  style={{
-                    padding: '7px 10px',
-                    borderRadius: 6,
-                    border:
-                      '1px solid rgba(255,255,255,0.1)',
-                    backgroundColor: '#1e293b',
-                    color: '#fff',
-                  }}
-                />
-
-                <span
-                  style={{
-                    color: '#64748b',
-                  }}
+        <section className="grid gap-4 lg:grid-cols-[1fr_auto]">
+          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
+            <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+              <div className="flex-1">
+                <label
+                  htmlFor="client"
+                  className="mb-2 block text-sm font-medium text-slate-300"
                 >
-                  to
-                </span>
+                  Active Client
+                </label>
+
+                <select
+                  id="client"
+                  value={selectedClientId}
+                  onChange={handleClientChange}
+                  className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white outline-none transition focus:border-cyan-400 md:max-w-md"
+                >
+                  {clients.length === 0 && (
+                    <option value="">No clients available</option>
+                  )}
+
+                  {clients.map((client) => (
+                    <option key={client.id} value={client.id}>
+                      {client.name}
+                    </option>
+                  ))}
+                </select>
+
+                {selectedClient && (
+                  <p className="mt-2 text-xs text-slate-500">
+                    Viewing transactions for {selectedClient.name}
+                  </p>
+                )}
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                <PlaidLinkButton />
+
+                <button
+                  type="button"
+                  onClick={refreshTransactions}
+                  disabled={
+                    transactionsLoading || !selectedClientId
+                  }
+                  className="rounded-lg border border-slate-700 px-4 py-2.5 text-sm font-medium text-slate-200 transition hover:border-cyan-400 hover:text-cyan-300 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {transactionsLoading ? 'Refreshing...' : 'Refresh'}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
+            <p className="text-xs uppercase tracking-wide text-slate-500">
+              Connected Firms
+            </p>
+
+            <p className="mt-2 text-2xl font-bold text-white">
+              {memberships.length}
+            </p>
+
+            <p className="mt-1 text-xs text-slate-400">
+              Firm membership{memberships.length === 1 ? '' : 's'}
+            </p>
+          </div>
+        </section>
+
+        <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
+            <p className="text-sm text-slate-400">Total Spending</p>
+            <p className="mt-2 text-2xl font-bold text-white">
+              {formatCurrency(totalSpending)}
+            </p>
+            <p className="mt-1 text-xs text-slate-500">
+              Based on current filters
+            </p>
+          </div>
+
+          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
+            <p className="text-sm text-slate-400">Transactions</p>
+            <p className="mt-2 text-2xl font-bold text-white">
+              {transactionCount}
+            </p>
+            <p className="mt-1 text-xs text-slate-500">
+              Matching current filters
+            </p>
+          </div>
+
+          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
+            <p className="text-sm text-slate-400">Average Transaction</p>
+            <p className="mt-2 text-2xl font-bold text-white">
+              {formatCurrency(averageTransaction)}
+            </p>
+            <p className="mt-1 text-xs text-slate-500">
+              Average amount per transaction
+            </p>
+          </div>
+
+          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
+            <p className="text-sm text-slate-400">Merchants</p>
+            <p className="mt-2 text-2xl font-bold text-white">
+              {merchantSummary.length}
+            </p>
+            <p className="mt-1 text-xs text-slate-500">
+              Unique merchants in view
+            </p>
+          </div>
+        </section>
+
+        <section className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+            <div className="flex-1">
+              <label
+                htmlFor="search"
+                className="mb-2 block text-sm font-medium text-slate-300"
+              >
+                Search Transactions
+              </label>
+
+              <QueryBar
+                value={searchTerm}
+                onChange={setSearchTerm}
+                placeholder="Search merchant, category, or account..."
+              />
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2 xl:flex xl:items-end">
+              <div>
+                <label
+                  htmlFor="category-filter"
+                  className="mb-2 block text-sm font-medium text-slate-300"
+                >
+                  Category
+                </label>
+
+                <select
+                  id="category-filter"
+                  value={categoryFilter}
+                  onChange={(event) =>
+                    setCategoryFilter(event.target.value)
+                  }
+                  className="w-full min-w-[180px] rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white outline-none transition focus:border-cyan-400"
+                >
+                  {categoryOptions.map((category) => (
+                    <option key={category} value={category}>
+                      {category}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label
+                  htmlFor="account-filter"
+                  className="mb-2 block text-sm font-medium text-slate-300"
+                >
+                  Account
+                </label>
+
+                <select
+                  id="account-filter"
+                  value={accountFilter}
+                  onChange={(event) =>
+                    setAccountFilter(event.target.value)
+                  }
+                  className="w-full min-w-[180px] rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white outline-none transition focus:border-cyan-400"
+                >
+                  {accountOptions.map((account) => (
+                    <option key={account} value={account}>
+                      {account}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label
+                  htmlFor="start-date"
+                  className="mb-2 block text-sm font-medium text-slate-300"
+                >
+                  Start Date
+                </label>
 
                 <input
+                  id="start-date"
                   type="date"
-                  value={customEndDate}
-                  onChange={(e) =>
-                    setCustomEndDate(
-                      e.target.value
-                    )
+                  value={startDate}
+                  onChange={(event) =>
+                    setStartDate(event.target.value)
                   }
-                  style={{
-                    padding: '7px 10px',
-                    borderRadius: 6,
-                    border:
-                      '1px solid rgba(255,255,255,0.1)',
-                    backgroundColor: '#1e293b',
-                    color: '#fff',
-                  }}
+                  className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white outline-none transition focus:border-cyan-400"
                 />
               </div>
-            )}
-          </div>
 
-          <div
-            style={{
-              fontSize: 13,
-              color: '#94a3b8',
-            }}
-          >
-            Active View:{' '}
-            <strong
-              style={{
-                color: '#38bdf8',
-              }}
-            >
-              {filteredTransactions.length} records
-            </strong>
-          </div>
-        </div>
+              <div>
+                <label
+                  htmlFor="end-date"
+                  className="mb-2 block text-sm font-medium text-slate-300"
+                >
+                  End Date
+                </label>
 
-        {/* ANALYTICS */}
+                <input
+                  id="end-date"
+                  type="date"
+                  value={endDate}
+                  onChange={(event) =>
+                    setEndDate(event.target.value)
+                  }
+                  className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white outline-none transition focus:border-cyan-400"
+                />
+              </div>
 
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns:
-              'repeat(3, minmax(0, 1fr))',
-            gap: 20,
-            marginBottom: 28,
-          }}
-        >
-          <div
-            style={{
-              padding: '22px 24px',
-              backgroundColor: '#0f172a',
-              borderRadius: 14,
-              border:
-                '1px solid rgba(56,189,248,0.3)',
-            }}
-          >
-            <div
-              style={{
-                fontSize: 12,
-                color: '#38bdf8',
-                fontWeight: 700,
-                marginBottom: 10,
-              }}
-            >
-              TOTAL SPEND
-            </div>
-
-            <div
-              style={{
-                fontSize: 30,
-                fontWeight: 800,
-                color: '#ffffff',
-              }}
-            >
-              ${analytics.totalSpend.toFixed(2)}
-            </div>
-          </div>
-
-          <div
-            style={{
-              padding: '22px 24px',
-              backgroundColor: '#0f172a',
-              borderRadius: 14,
-              border:
-                '1px solid rgba(129,140,248,0.3)',
-            }}
-          >
-            <div
-              style={{
-                fontSize: 12,
-                color: '#818cf8',
-                fontWeight: 700,
-                marginBottom: 10,
-              }}
-            >
-              TOP SPENDING CATEGORY
-            </div>
-
-            <div
-              style={{
-                fontSize: 26,
-                fontWeight: 800,
-                color: '#ffffff',
-              }}
-            >
-              {analytics.topCategory}
-            </div>
-          </div>
-
-          <div
-            style={{
-              padding: '22px 24px',
-              backgroundColor: '#0f172a',
-              borderRadius: 14,
-              border:
-                analytics.netCashFlow >= 0
-                  ? '1px solid rgba(74,222,128,0.35)'
-                  : '1px solid rgba(248,113,113,0.35)',
-            }}
-          >
-            <div
-              style={{
-                fontSize: 12,
-                color:
-                  analytics.netCashFlow >= 0
-                    ? '#4ade80'
-                    : '#f87171',
-                fontWeight: 700,
-                marginBottom: 10,
-              }}
-            >
-              NET CASH FLOW
-            </div>
-
-            <div
-              style={{
-                fontSize: 30,
-                fontWeight: 800,
-                color:
-                  analytics.netCashFlow >= 0
-                    ? '#4ade80'
-                    : '#f87171',
-              }}
-            >
-              ${analytics.netCashFlow.toFixed(2)}
-            </div>
-          </div>
-        </div>
-
-        {/* AI QUERY BAR */}
-
-        <div
-          style={{
-            marginBottom: 28,
-          }}
-        >
-          {userId && selectedClientId && (
-            <QueryBar
-              clientId={selectedClientId}
-            />
-          )}
-        </div>
-
-        {/* MERCHANT SUMMARY */}
-
-        <section
-          style={{
-            backgroundColor: '#0f172a',
-            borderRadius: 14,
-            border:
-              '1px solid rgba(56,189,248,0.2)',
-            overflow: 'hidden',
-            marginBottom: 28,
-          }}
-        >
-          <div
-            style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              gap: 16,
-              flexWrap: 'wrap',
-              padding: '22px 24px',
-              borderBottom:
-                '1px solid rgba(255,255,255,0.08)',
-            }}
-          >
-            <div>
-              <h2
-                style={{
-                  margin: 0,
-                  color: '#ffffff',
-                  fontSize: 20,
-                  fontWeight: 800,
-                }}
+              <button
+                type="button"
+                onClick={clearFilters}
+                className="rounded-lg border border-slate-700 px-4 py-2.5 text-sm font-medium text-slate-300 transition hover:border-slate-500 hover:text-white"
               >
-                Merchant Summary
-              </h2>
-
-              <p
-                style={{
-                  margin: '6px 0 0',
-                  color: '#94a3b8',
-                  fontSize: 13,
-                }}
-              >
-                All transactions grouped by merchant
-                for easier spending analysis.
-              </p>
-            </div>
-
-            <div
-              style={{
-                padding: '7px 12px',
-                borderRadius: 999,
-                backgroundColor:
-                  'rgba(56,189,248,0.1)',
-                border:
-                  '1px solid rgba(56,189,248,0.25)',
-                color: '#38bdf8',
-                fontSize: 12,
-                fontWeight: 700,
-              }}
-            >
-              {groupedMerchants.length} merchants
+                Clear Filters
+              </button>
             </div>
           </div>
+        </section>
 
-          {groupedMerchants.length === 0 ? (
-            <div
-              style={{
-                padding: '50px 24px',
-                textAlign: 'center',
-                color: '#64748b',
-                fontSize: 14,
-              }}
-            >
-              No merchant data available for this
-              period.
+        <section className="grid gap-6 xl:grid-cols-[1fr_360px]">
+          <div className="rounded-2xl border border-slate-800 bg-slate-900">
+            <div className="flex flex-col gap-3 border-b border-slate-800 p-5 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h2 className="text-lg font-semibold text-white">
+                  Transactions
+                </h2>
+
+                <p className="mt-1 text-sm text-slate-400">
+                  {transactionsLoading
+                    ? 'Loading transactions...'
+                    : `${filteredTransactions.length} transaction${
+                        filteredTransactions.length === 1
+                          ? ''
+                          : 's'
+                      } shown`}
+                </p>
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={handleLocalCategorize}
+                  disabled={
+                    transactionsLoading ||
+                    filteredTransactions.length === 0
+                  }
+                  className="rounded-lg border border-cyan-500/50 px-3 py-2 text-sm font-medium text-cyan-300 transition hover:bg-cyan-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Auto-Categorize
+                </button>
+
+                <button
+                  type="button"
+                  onClick={exportTransactionsToCsv}
+                  disabled={filteredTransactions.length === 0}
+                  className="rounded-lg border border-slate-700 px-3 py-2 text-sm font-medium text-slate-300 transition hover:border-emerald-400 hover:text-emerald-300 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Export CSV
+                </button>
+              </div>
             </div>
-          ) : (
-            <div
-              style={{
-                overflowX: 'auto',
-              }}
-            >
-              <table
-                style={{
-                  width: '100%',
-                  minWidth: 700,
-                  borderCollapse: 'collapse',
-                }}
-              >
-                <thead>
-                  <tr
-                    style={{
-                      backgroundColor: '#111827',
-                      borderBottom:
-                        '1px solid rgba(255,255,255,0.08)',
-                    }}
-                  >
-                    <th
-                      style={{
-                        padding: '14px 24px',
-                        textAlign: 'left',
-                        color: '#94a3b8',
-                        fontSize: 11,
-                        fontWeight: 700,
-                        letterSpacing: '0.06em',
-                        textTransform: 'uppercase',
-                      }}
-                    >
+
+            <div className="overflow-x-auto">
+              <table className="min-w-full divide-y divide-slate-800">
+                <thead className="bg-slate-950/60">
+                  <tr>
+                    <th className="whitespace-nowrap px-5 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      Date
+                    </th>
+
+                    <th className="whitespace-nowrap px-5 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
                       Merchant
                     </th>
 
-                    <th
-                      style={{
-                        padding: '14px 16px',
-                        textAlign: 'left',
-                        color: '#94a3b8',
-                        fontSize: 11,
-                        fontWeight: 700,
-                        letterSpacing: '0.06em',
-                        textTransform: 'uppercase',
-                      }}
-                    >
+                    <th className="whitespace-nowrap px-5 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      Account
+                    </th>
+
+                    <th className="whitespace-nowrap px-5 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
                       Category
                     </th>
 
-                    <th
-                      style={{
-                        padding: '14px 16px',
-                        textAlign: 'center',
-                        color: '#94a3b8',
-                        fontSize: 11,
-                        fontWeight: 700,
-                        letterSpacing: '0.06em',
-                        textTransform: 'uppercase',
-                      }}
-                    >
-                      Transactions
-                    </th>
-
-                    <th
-                      style={{
-                        padding: '14px 16px',
-                        textAlign: 'right',
-                        color: '#94a3b8',
-                        fontSize: 11,
-                        fontWeight: 700,
-                        letterSpacing: '0.06em',
-                        textTransform: 'uppercase',
-                      }}
-                    >
-                      Total Spent
-                    </th>
-
-                    <th
-                      style={{
-                        padding: '14px 24px',
-                        textAlign: 'right',
-                        color: '#94a3b8',
-                        fontSize: 11,
-                        fontWeight: 700,
-                        letterSpacing: '0.06em',
-                        textTransform: 'uppercase',
-                      }}
-                    >
-                      Net Amount
+                    <th className="whitespace-nowrap px-5 py-3 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      Amount
                     </th>
                   </tr>
                 </thead>
 
-                <tbody>
-                  {groupedMerchants.map(
-                    (merchant, index) => {
-                      const hasIncome =
-                        merchant.totalIncome > 0;
+                <tbody className="divide-y divide-slate-800">
+                  {transactionsLoading ? (
+                    <tr>
+                      <td
+                        colSpan={5}
+                        className="px-5 py-12 text-center text-sm text-slate-400"
+                      >
+                        Loading transactions...
+                      </td>
+                    </tr>
+                  ) : filteredTransactions.length === 0 ? (
+                    <tr>
+                      <td
+                        colSpan={5}
+                        className="px-5 py-12 text-center text-sm text-slate-400"
+                      >
+                        No transactions found for this client and filter
+                        selection.
+                      </td>
+                    </tr>
+                  ) : (
+                    filteredTransactions.map((transaction) => {
+                      const category =
+                        getTransactionCategory(transaction);
+                      const isEditing =
+                        editingCategoryId === transaction.id;
+                      const isSaving =
+                        savingCategoryId === transaction.id;
 
                       return (
                         <tr
-                          key={normalizeMerchant(
-                            merchant.merchant
-                          )}
-                          style={{
-                            borderBottom:
-                              index ===
-                              groupedMerchants.length - 1
-                                ? 'none'
-                                : '1px solid rgba(255,255,255,0.05)',
-                          }}
+                          key={transaction.id}
+                          className="transition hover:bg-slate-800/40"
                         >
-                          <td
-                            style={{
-                              padding: '16px 24px',
-                              color: '#f8fafc',
-                              fontSize: 14,
-                              fontWeight: 700,
-                            }}
-                          >
-                            {merchant.merchant}
+                          <td className="whitespace-nowrap px-5 py-4 text-sm text-slate-300">
+                            {formatDate(transaction.date)}
                           </td>
 
-                          <td
-                            style={{
-                              padding: '16px',
-                              color: '#94a3b8',
-                              fontSize: 13,
-                            }}
-                          >
-                            {merchant.category}
+                          <td className="px-5 py-4">
+                            <div className="min-w-[180px]">
+                              <p className="font-medium text-white">
+                                {getMerchantName(transaction)}
+                              </p>
+
+                              {transaction.pending && (
+                                <span className="mt-1 inline-flex rounded-full bg-amber-500/10 px-2 py-0.5 text-xs text-amber-300">
+                                  Pending
+                                </span>
+                              )}
+                            </div>
                           </td>
 
-                          <td
-                            style={{
-                              padding: '16px',
-                              textAlign: 'center',
-                              color: '#cbd5e1',
-                              fontSize: 13,
-                              fontWeight: 600,
-                            }}
-                          >
-                            {merchant.transactionCount}
+                          <td className="px-5 py-4 text-sm text-slate-400">
+                            <div className="min-w-[140px]">
+                              <p>
+                                {transaction.account_name ||
+                                  'Unknown account'}
+                              </p>
+
+                              {transaction.account_mask && (
+                                <p className="mt-1 text-xs text-slate-500">
+                                  •••• {transaction.account_mask}
+                                </p>
+                              )}
+                            </div>
                           </td>
 
-                          <td
-                            style={{
-                              padding: '16px',
-                              textAlign: 'right',
-                              color: '#f8fafc',
-                              fontSize: 13,
-                              fontWeight: 700,
-                            }}
-                          >
-                            $
-                            {merchant.totalSpent.toFixed(
-                              2
+                          <td className="px-5 py-4">
+                            {isEditing ? (
+                              <select
+                                value={category}
+                                disabled={isSaving}
+                                onChange={(event) =>
+                                  handleCategoryChange(
+                                    transaction.id,
+                                    event.target.value,
+                                  )
+                                }
+                                onBlur={() =>
+                                  setEditingCategoryId(null)
+                                }
+                                autoFocus
+                                className="rounded-lg border border-cyan-400 bg-slate-950 px-2 py-1.5 text-sm text-white outline-none"
+                              >
+                                {CATEGORY_OPTIONS.map(
+                                  (categoryOption) => (
+                                    <option
+                                      key={categoryOption}
+                                      value={categoryOption}
+                                    >
+                                      {categoryOption}
+                                    </option>
+                                  ),
+                                )}
+                              </select>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setEditingCategoryId(
+                                    transaction.id,
+                                  )
+                                }
+                                className="rounded-full bg-slate-800 px-3 py-1 text-left text-xs text-slate-300 transition hover:bg-cyan-500/10 hover:text-cyan-300"
+                              >
+                                {category}
+                              </button>
                             )}
                           </td>
 
-                          <td
-                            style={{
-                              padding: '16px 24px',
-                              textAlign: 'right',
-                              color: hasIncome
-                                ? '#4ade80'
-                                : '#f8fafc',
-                              fontSize: 13,
-                              fontWeight: 700,
-                            }}
-                          >
-                            {merchant.netAmount < 0
-                              ? '+$' +
-                                Math.abs(
-                                  merchant.netAmount
-                                ).toFixed(2)
-                              : '$' +
-                                merchant.netAmount.toFixed(
-                                  2
-                                )}
+                          <td className="whitespace-nowrap px-5 py-4 text-right text-sm font-semibold text-white">
+                            {formatCurrency(
+                              Number(transaction.amount || 0),
+                            )}
                           </td>
                         </tr>
                       );
-                    }
+                    })
                   )}
                 </tbody>
               </table>
             </div>
-          )}
-        </section>
-
-        {/* TRANSACTION TABLE */}
-
-        <div
-          style={{
-            backgroundColor: '#0f172a',
-            borderRadius: 14,
-            border:
-              '1px solid rgba(255,255,255,0.08)',
-            overflow: 'hidden',
-          }}
-        >
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns:
-                '60px 140px 1fr 220px 140px',
-              padding: '16px 24px',
-              backgroundColor: '#111827',
-              borderBottom:
-                '1px solid rgba(255,255,255,0.08)',
-              fontSize: 12,
-              fontWeight: 700,
-              color: '#94a3b8',
-              textTransform: 'uppercase',
-              minWidth: 780,
-            }}
-          >
-            <div>#</div>
-            <div>Date</div>
-            <div>Merchant</div>
-            <div>Category</div>
-
-            <div
-              style={{
-                textAlign: 'right',
-              }}
-            >
-              Amount
-            </div>
           </div>
 
-          {filteredTransactions.length === 0 ? (
-            <div
-              style={{
-                padding: '56px 24px',
-                textAlign: 'center',
-                color: '#64748b',
-                fontSize: 14,
-              }}
-            >
-              No matching transactions found
-              for this period.
-            </div>
-          ) : (
-            <div
-              style={{
-                overflowX: 'auto',
-              }}
-            >
-              {filteredTransactions.map(
-                (tx, index) => {
-                  const displayName =
-                    getDisplayMerchant(tx);
+          <div className="space-y-6">
+            <section className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-lg font-semibold text-white">
+                    Merchant Summary
+                  </h2>
 
-                  const displayDate =
-                    getTransactionDate(tx);
+                  <p className="mt-1 text-sm text-slate-400">
+                    Spending grouped by merchant
+                  </p>
+                </div>
+              </div>
 
-                  const isIncome =
-                    Number(tx.amount) < 0;
+              <div className="mt-5 space-y-4">
+                {merchantSummary.length === 0 ? (
+                  <p className="text-sm text-slate-500">
+                    No merchant data available.
+                  </p>
+                ) : (
+                  merchantSummary.slice(0, 8).map((merchant) => (
+                    <div key={merchant.merchant}>
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="truncate text-sm font-medium text-slate-200">
+                          {merchant.merchant}
+                        </p>
 
-                  return (
-                    <div
-                      key={tx.id}
-                      style={{
-                        display: 'grid',
-                        gridTemplateColumns:
-                          '60px 140px 1fr 220px 140px',
-                        alignItems: 'center',
-                        padding: '16px 24px',
-                        borderBottom:
-                          index ===
-                          filteredTransactions.length - 1
-                            ? 'none'
-                            : '1px solid rgba(255,255,255,0.04)',
-                        fontSize: 14,
-                        minWidth: 780,
-                      }}
-                    >
-                      <div
-                        style={{
-                          color: '#64748b',
-                        }}
-                      >
-                        {index + 1}
+                        <p className="whitespace-nowrap text-sm font-semibold text-white">
+                          {formatCurrency(merchant.total)}
+                        </p>
                       </div>
 
-                      <div
-                        style={{
-                          color: '#94a3b8',
-                        }}
-                      >
-                        {displayDate}
-                      </div>
+                      <div className="mt-1 flex items-center justify-between text-xs text-slate-500">
+                        <span>
+                          {merchant.count} transaction
+                          {merchant.count === 1 ? '' : 's'}
+                        </span>
 
-                      <div
-                        style={{
-                          fontWeight: 600,
-                          color: '#f8fafc',
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          whiteSpace: 'nowrap',
-                          paddingRight: 12,
-                        }}
-                      >
-                        {displayName}
-                      </div>
-
-                      <div>
-                        <select
-                          value={
-                            tx.category ||
-                            'Uncategorized'
-                          }
-                          onChange={(e) =>
-                            handleCategoryChange(
-                              tx.id,
-                              displayName,
-                              e.target.value
-                            )
-                          }
-                          style={{
-                            padding: '7px 12px',
-                            borderRadius: 8,
-                            border:
-                              '1px solid rgba(255,255,255,0.1)',
-                            fontSize: 13,
-                            fontWeight: 500,
-                            color: '#f8fafc',
-                            backgroundColor:
-                              '#1e293b',
-                            cursor: 'pointer',
-                            width: '90%',
-                            maxWidth: 210,
-                          }}
-                        >
-                          {CATEGORY_OPTIONS.map(
-                            (category) => (
-                              <option
-                                key={category}
-                                value={category}
-                              >
-                                {category}
-                              </option>
-                            )
-                          )}
-                        </select>
-                      </div>
-
-                      <div
-                        style={{
-                          textAlign: 'right',
-                        }}
-                      >
-                        <span
-                          style={{
-                            display: 'inline-block',
-                            padding: '5px 12px',
-                            borderRadius: 20,
-                            fontSize: 13,
-                            fontWeight: 700,
-                            backgroundColor: isIncome
-                              ? 'rgba(74,222,128,0.1)'
-                              : 'rgba(255,255,255,0.05)',
-                            color: isIncome
-                              ? '#4ade80'
-                              : '#f8fafc',
-                          }}
-                        >
-                          {isIncome
-                            ? '+$' +
-                              Math.abs(
-                                Number(tx.amount)
-                              ).toFixed(2)
-                            : '$' +
-                              Number(
-                                tx.amount
-                              ).toFixed(2)}
+                        <span>
+                          {totalSpending > 0
+                            ? `${(
+                                (merchant.total / totalSpending) *
+                                100
+                              ).toFixed(1)}%`
+                            : '0%'}
                         </span>
                       </div>
+
+                      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-800">
+                        <div
+                          className="h-full rounded-full bg-cyan-400"
+                          style={{
+                            width:
+                              totalSpending > 0
+                                ? `${Math.min(
+                                    (merchant.total / totalSpending) *
+                                      100,
+                                    100,
+                                  )}%`
+                                : '0%',
+                          }}
+                        />
+                      </div>
                     </div>
-                  );
-                }
-              )}
-            </div>
-          )}
-        </div>
+                  ))
+                )}
+              </div>
+            </section>
+
+            <section className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
+              <h2 className="text-lg font-semibold text-white">
+                Category Summary
+              </h2>
+
+              <p className="mt-1 text-sm text-slate-400">
+                Spending grouped by category
+              </p>
+
+              <div className="mt-5 space-y-3">
+                {categorySummary.length === 0 ? (
+                  <p className="text-sm text-slate-500">
+                    No category data available.
+                  </p>
+                ) : (
+                  categorySummary.map((item) => (
+                    <div
+                      key={item.category}
+                      className="flex items-center justify-between gap-3"
+                    >
+                      <p className="text-sm text-slate-300">
+                        {item.category}
+                      </p>
+
+                      <p className="text-sm font-semibold text-white">
+                        {formatCurrency(item.total)}
+                      </p>
+                    </div>
+                  ))
+                )}
+              </div>
+            </section>
+          </div>
+        </section>
       </div>
-    </div>
+    </main>
   );
 }
