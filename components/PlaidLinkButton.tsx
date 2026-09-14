@@ -1,9 +1,7 @@
-```tsx
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
 import { usePlaidLink } from 'react-plaid-link';
-import { supabase } from '@/lib/supabase-browser';
 
 interface PlaidLinkButtonProps {
   selectedClientId?: string;
@@ -240,11 +238,11 @@ export default function PlaidLinkButton({
         type="button"
         onClick={handleOpen}
         disabled={!isReady}
-        className={`px-4 py-2 rounded text-white font-semibold ${
+        className={
           isReady
-            ? 'bg-blue-600 hover:bg-blue-700 cursor-pointer'
-            : 'bg-gray-400 cursor-not-allowed'
-        }`}
+            ? 'px-4 py-2 rounded text-white font-semibold bg-blue-600 hover:bg-blue-700 cursor-pointer'
+            : 'px-4 py-2 rounded text-white font-semibold bg-gray-400 cursor-not-allowed'
+        }
       >
         {isExchanging
           ? 'Syncing bank data...'
@@ -269,4 +267,3 @@ export default function PlaidLinkButton({
     </div>
   );
 }
-```
