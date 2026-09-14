@@ -294,7 +294,7 @@ export default function DashboardPage() {
 
   /*
    * ---------------------------------------------------------
-   * LOAD AUTHENTICATED USER + TRANSACTIONS
+   * LOAD AUTHENTICATED USER + CLIENT TRANSACTIONS
    * ---------------------------------------------------------
    */
 
@@ -343,6 +343,11 @@ export default function DashboardPage() {
           user.id
         );
 
+        console.log(
+          '🏢 Loading transactions for client:',
+          ACME_CORP_CLIENT_ID
+        );
+
         const {
           data,
           error,
@@ -350,6 +355,7 @@ export default function DashboardPage() {
           .from('transactions')
           .select('*')
           .eq('user_id', user.id)
+          .eq('client_id', ACME_CORP_CLIENT_ID)
           .order('date', {
             ascending: false,
           });
@@ -387,7 +393,7 @@ export default function DashboardPage() {
 
   /*
    * ---------------------------------------------------------
-   * REFRESH TRANSACTIONS
+   * REFRESH CLIENT TRANSACTIONS
    * ---------------------------------------------------------
    */
 
@@ -401,6 +407,7 @@ export default function DashboardPage() {
       .from('transactions')
       .select('*')
       .eq('user_id', userId)
+      .eq('client_id', ACME_CORP_CLIENT_ID)
       .order('date', {
         ascending: false,
       });
@@ -472,7 +479,8 @@ export default function DashboardPage() {
             category,
           })
           .eq('id', tx.id)
-          .eq('user_id', userId);
+          .eq('user_id', userId)
+          .eq('client_id', ACME_CORP_CLIENT_ID);
 
         if (updateError) {
           console.error(
@@ -564,7 +572,8 @@ export default function DashboardPage() {
         category: newCategory,
       })
       .eq('id', txId)
-      .eq('user_id', userId);
+      .eq('user_id', userId)
+      .eq('client_id', ACME_CORP_CLIENT_ID);
 
     if (txError) {
       console.error(
@@ -1102,8 +1111,8 @@ export default function DashboardPage() {
                   margin: '4px 0 0 0',
                 }}
               >
-                Autonomous financial tracking &
-                intelligent multi-account liquidity
+                Autonomous financial tracking & intelligent
+                multi-account liquidity
               </p>
             </div>
           </div>
