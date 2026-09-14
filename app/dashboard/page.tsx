@@ -1,4 +1,3 @@
-```tsx
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
@@ -703,7 +702,9 @@ export default function DashboardPage() {
       await refreshTransactions();
 
       setCategoryMessage(
-        `Categorized ${categorizedCount} transactions.`
+        'Categorized ' +
+          categorizedCount +
+          ' transactions.'
       );
     } catch (error) {
       console.error(
@@ -849,7 +850,7 @@ export default function DashboardPage() {
 
         const start = customStartDate
           ? new Date(
-              `${customStartDate}T00:00:00`
+              customStartDate + 'T00:00:00'
             )
           : new Date(
               '1970-01-01T00:00:00'
@@ -857,7 +858,7 @@ export default function DashboardPage() {
 
         const end = customEndDate
           ? new Date(
-              `${customEndDate}T23:59:59.999`
+              customEndDate + 'T23:59:59.999'
             )
           : new Date(
               '2099-12-31T23:59:59.999'
@@ -896,7 +897,7 @@ export default function DashboardPage() {
    * ---------------------------------------------------------
    * CSV EXPORT
    * ---------------------------------------------------------
- */
+   */
 
   function exportToCSV() {
     if (filteredTransactions.length === 0) {
@@ -924,21 +925,21 @@ export default function DashboardPage() {
         return [
           index + 1,
           date,
-          `"${merchant.replace(
-            /"/g,
-            '""'
-          )}"`,
-          `"${category.replace(
-            /"/g,
-            '""'
-          )}"`,
+          '"' +
+            merchant.replace(/"/g, '""') +
+            '"',
+          '"' +
+            category.replace(/"/g, '""') +
+            '"',
           tx.amount < 0
-            ? `+${Math.abs(
+            ? '+' +
+              Math.abs(
                 Number(tx.amount)
-              ).toFixed(2)}`
-            : `-${Number(
+              ).toFixed(2)
+            : '-' +
+              Number(
                 tx.amount
-              ).toFixed(2)}`,
+              ).toFixed(2),
         ];
       }
     );
@@ -966,9 +967,15 @@ export default function DashboardPage() {
     link.href = url;
 
     link.download =
-      `LedgerAI_${selectedClientId || 'Report'}_${dateFilter}_${new Date()
+      'LedgerAI_' +
+      (selectedClientId || 'Report') +
+      '_' +
+      dateFilter +
+      '_' +
+      new Date()
         .toISOString()
-        .split('T')[0]}.csv`;
+        .split('T')[0] +
+      '.csv';
 
     document.body.appendChild(link);
 
@@ -1753,11 +1760,10 @@ export default function DashboardPage() {
               padding: '22px 24px',
               backgroundColor: '#0f172a',
               borderRadius: 14,
-              border: `1px solid ${
+              border:
                 analytics.netCashFlow >= 0
-                  ? 'rgba(74,222,128,0.35)'
-                  : 'rgba(248,113,113,0.35)'
-              }`,
+                  ? '1px solid rgba(74,222,128,0.35)'
+                  : '1px solid rgba(248,113,113,0.35)',
             }}
           >
             <div
@@ -2052,12 +2058,14 @@ export default function DashboardPage() {
                             }}
                           >
                             {merchant.netAmount < 0
-                              ? `+$${Math.abs(
+                              ? '+$' +
+                                Math.abs(
                                   merchant.netAmount
-                                ).toFixed(2)}`
-                              : `$${merchant.netAmount.toFixed(
+                                ).toFixed(2)
+                              : '$' +
+                                merchant.netAmount.toFixed(
                                   2
-                                )}`}
+                                )}
                           </td>
                         </tr>
                       );
@@ -2248,12 +2256,14 @@ export default function DashboardPage() {
                           }}
                         >
                           {isIncome
-                            ? `+$${Math.abs(
+                            ? '+$' +
+                              Math.abs(
                                 Number(tx.amount)
-                              ).toFixed(2)}`
-                            : `$${Number(
+                              ).toFixed(2)
+                            : '$' +
+                              Number(
                                 tx.amount
-                              ).toFixed(2)}`}
+                              ).toFixed(2)}
                         </span>
                       </div>
                     </div>
@@ -2267,4 +2277,3 @@ export default function DashboardPage() {
     </div>
   );
 }
-```
