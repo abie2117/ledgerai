@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { createClient } from '@/lib/supabase/client';
+import { supabase } from '@/lib/supabase-browser';
 import QueryBar from '@/components/QueryBar';
 import PlaidLinkButton from '@/components/PlaidLinkButton';
 
@@ -107,15 +107,15 @@ function getTransactionCategory(transaction: Transaction) {
   return 'Uncategorized';
 }
 
-function escapeCsvValue(value: string | number | boolean | null | undefined) {
+function escapeCsvValue(
+  value: string | number | boolean | null | undefined,
+) {
   const stringValue = String(value ?? '');
 
   return `"${stringValue.replace(/"/g, '""')}"`;
 }
 
 export default function DashboardPage() {
-  const supabase = createClient();
-
   const [userId, setUserId] = useState<string | null>(null);
   const [userEmail, setUserEmail] = useState<string | null>(null);
 
@@ -222,8 +222,7 @@ export default function DashboardPage() {
         }
 
         const acmeClient = loadedClients.find(
-          (client) =>
-            client.name.toLowerCase().trim() === 'acme corp',
+          (client) => client.name.toLowerCase().trim() === 'acme corp',
         );
 
         const initialClient = acmeClient || loadedClients[0];
@@ -231,6 +230,7 @@ export default function DashboardPage() {
         setSelectedClientId(initialClient.id);
       } catch (error: any) {
         console.error('Error loading dashboard:', error);
+
         setErrorMessage(
           error?.message || 'Unable to load dashboard data.',
         );
@@ -240,7 +240,7 @@ export default function DashboardPage() {
     }
 
     loadDashboard();
-  }, [supabase]);
+  }, []);
 
   useEffect(() => {
     async function loadSelectedClientTransactions() {
@@ -254,18 +254,12 @@ export default function DashboardPage() {
         setErrorMessage('');
 
         /*
-         * Important:
-         * Transactions are loaded by client_id.
-         *
-         * We intentionally do not filter by the current user's user_id here.
-         * Existing transactions may have been created by another user while
-         * still belonging to the selected client. Access should be controlled
-         * by Supabase RLS and the user's client/firm permissions.
+         * Transactions are loaded using client_id only.
+         * We do not filter by the current user's user_id because
+         * transactions may have been created by another user but
+         * still belong to the selected client.
          */
-        const {
-          data,
-          error,
-        } = await supabase
+        const { data, error } = await supabase
           .from('transactions')
           .select('*')
           .eq('client_id', selectedClientId)
@@ -285,6 +279,7 @@ export default function DashboardPage() {
         );
 
         setTransactions([]);
+
         setErrorMessage(
           error?.message ||
             'Unable to load transactions for this client.',
@@ -295,10 +290,12 @@ export default function DashboardPage() {
     }
 
     loadSelectedClientTransactions();
-  }, [selectedClientId, supabase]);
+  }, [selectedClientId]);
 
   const selectedClient = useMemo(() => {
-    return clients.find((client) => client.id === selectedClientId) || null;
+    return (
+      clients.find((client) => client.id === selectedClientId) || null
+    );
   }, [clients, selectedClientId]);
 
   const accountOptions = useMemo(() => {
@@ -388,14 +385,15 @@ export default function DashboardPage() {
     filteredTransactions.forEach((transaction) => {
       const merchant = getMerchantName(transaction);
       const current = merchantMap.get(merchant);
+      const amount = Number(transaction.amount || 0);
 
       if (current) {
-        current.total += Number(transaction.amount || 0);
+        current.total += amount;
         current.count += 1;
       } else {
         merchantMap.set(merchant, {
           merchant,
-          total: Number(transaction.amount || 0),
+          total: amount,
           count: 1,
         });
       }
@@ -458,14 +456,7 @@ export default function DashboardPage() {
       setErrorMessage('');
       setSuccessMessage('');
 
-      /*
-       * Load transactions by client_id only.
-       * Do not add .eq('user_id', userId) here.
-       */
-      const {
-        data,
-        error,
-      } = await supabase
+      const { data, error } = await supabase
         .from('transactions')
         .select('*')
         .eq('client_id', selectedClientId)
@@ -481,6 +472,7 @@ export default function DashboardPage() {
       setSuccessMessage('Transactions refreshed successfully.');
     } catch (error: any) {
       console.error('Error refreshing transactions:', error);
+
       setErrorMessage(
         error?.message || 'Unable to refresh transactions.',
       );
@@ -529,6 +521,7 @@ export default function DashboardPage() {
       setSuccessMessage('Category updated successfully.');
     } catch (error: any) {
       console.error('Error updating transaction category:', error);
+
       setErrorMessage(
         error?.message || 'Unable to update transaction category.',
       );
@@ -660,6 +653,7 @@ export default function DashboardPage() {
       );
     } catch (error: any) {
       console.error('Error categorizing transactions:', error);
+
       setErrorMessage(
         error?.message || 'Unable to categorize transactions.',
       );
@@ -853,9 +847,11 @@ export default function DashboardPage() {
         <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
           <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
             <p className="text-sm text-slate-400">Total Spending</p>
+
             <p className="mt-2 text-2xl font-bold text-white">
               {formatCurrency(totalSpending)}
             </p>
+
             <p className="mt-1 text-xs text-slate-500">
               Based on current filters
             </p>
@@ -863,19 +859,25 @@ export default function DashboardPage() {
 
           <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
             <p className="text-sm text-slate-400">Transactions</p>
+
             <p className="mt-2 text-2xl font-bold text-white">
               {transactionCount}
             </p>
+
             <p className="mt-1 text-xs text-slate-500">
               Matching current filters
             </p>
           </div>
 
           <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
-            <p className="text-sm text-slate-400">Average Transaction</p>
+            <p className="text-sm text-slate-400">
+              Average Transaction
+            </p>
+
             <p className="mt-2 text-2xl font-bold text-white">
               {formatCurrency(averageTransaction)}
             </p>
+
             <p className="mt-1 text-xs text-slate-500">
               Average amount per transaction
             </p>
@@ -883,9 +885,11 @@ export default function DashboardPage() {
 
           <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
             <p className="text-sm text-slate-400">Merchants</p>
+
             <p className="mt-2 text-2xl font-bold text-white">
               {merchantSummary.length}
             </p>
+
             <p className="mt-1 text-xs text-slate-500">
               Unique merchants in view
             </p>
@@ -1100,8 +1104,10 @@ export default function DashboardPage() {
                     filteredTransactions.map((transaction) => {
                       const category =
                         getTransactionCategory(transaction);
+
                       const isEditing =
                         editingCategoryId === transaction.id;
+
                       const isSaving =
                         savingCategoryId === transaction.id;
 
