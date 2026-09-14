@@ -22,6 +22,15 @@ interface Transaction {
   raw_plaid_category?: string | null;
 }
 
+interface GroupedMerchant {
+  merchant: string;
+  category: string;
+  transactionCount: number;
+  totalSpent: number;
+  totalIncome: number;
+  netAmount: number;
+}
+
 type DateFilterType =
   | 'this_month'
   | 'last_30_days'
@@ -30,6 +39,20 @@ type DateFilterType =
 
 const ACME_CORP_CLIENT_ID =
   '22222222-2222-2222-2222-222222222222';
+
+const CATEGORY_OPTIONS = [
+  'Uncategorized',
+  'Food & Dining',
+  'Transportation',
+  'Software & Tech',
+  'Transfer / Income',
+  'Shopping',
+  'Bills & Utilities',
+  'Entertainment',
+  'Travel',
+  'Healthcare',
+  'Other',
+];
 
 const LOCAL_CATEGORY_RULES: Array<{
   keywords: string[];
@@ -40,7 +63,6 @@ const LOCAL_CATEGORY_RULES: Array<{
       'uber',
       'lyft',
       'taxi',
-      'gas',
       'shell',
       'chevron',
       'exxon',
@@ -49,6 +71,8 @@ const LOCAL_CATEGORY_RULES: Array<{
       'parking',
       'transit',
       'metro',
+      'gas station',
+      'gasoline',
     ],
     category: 'Transportation',
   },
@@ -139,6 +163,18 @@ function normalizeMerchant(merchant: string): string {
     .trim();
 }
 
+function getDisplayMerchant(transaction: Transaction): string {
+  return (
+    transaction.merchant_name?.trim() ||
+    transaction.name?.trim() ||
+    'Unknown Merchant'
+  );
+}
+
+function getTransactionDate(transaction: Transaction): string {
+  return transaction.date || transaction.posted_date || '';
+}
+
 function localCategoryForMerchant(
   merchant: string,
   plaidCategory?: string | null
@@ -186,6 +222,48 @@ function localCategoryForMerchant(
   }
 
   return 'Uncategorized';
+}
+
+function groupTransactionsByMerchant(
+  transactions: Transaction[]
+): GroupedMerchant[] {
+  const grouped = new Map<string, GroupedMerchant>();
+
+  transactions.forEach((transaction) => {
+    const merchant = getDisplayMerchant(transaction);
+    const merchantKey = normalizeMerchant(merchant);
+    const amount = Number(transaction.amount || 0);
+
+    const existing = grouped.get(merchantKey);
+
+    if (existing) {
+      existing.transactionCount += 1;
+
+      if (amount > 0) {
+        existing.totalSpent += amount;
+      } else if (amount < 0) {
+        existing.totalIncome += Math.abs(amount);
+      }
+
+      existing.netAmount += amount;
+    } else {
+      grouped.set(merchantKey, {
+        merchant,
+        category:
+          transaction.category?.trim() ||
+          'Uncategorized',
+        transactionCount: 1,
+        totalSpent: amount > 0 ? amount : 0,
+        totalIncome:
+          amount < 0 ? Math.abs(amount) : 0,
+        netAmount: amount,
+      });
+    }
+  });
+
+  return Array.from(grouped.values()).sort(
+    (a, b) => b.totalSpent - a.totalSpent
+  );
 }
 
 export default function DashboardPage() {
@@ -374,10 +452,7 @@ export default function DashboardPage() {
       }> = [];
 
       for (const tx of transactions) {
-        const merchant =
-          tx.merchant_name ||
-          tx.name ||
-          'Unknown Merchant';
+        const merchant = getDisplayMerchant(tx);
 
         const category =
           localCategoryForMerchant(
@@ -542,14 +617,17 @@ export default function DashboardPage() {
     const now = new Date();
 
     return transactions.filter((tx) => {
-      const dateValue =
-        tx.date || tx.posted_date;
+      const dateValue = getTransactionDate(tx);
 
       if (!dateValue) {
         return false;
       }
 
       const txDate = new Date(dateValue);
+
+      if (Number.isNaN(txDate.getTime())) {
+        return false;
+      }
 
       if (dateFilter === 'this_month') {
         return (
@@ -612,6 +690,20 @@ export default function DashboardPage() {
 
   /*
    * ---------------------------------------------------------
+   * GROUPED MERCHANT SUMMARY
+   * ---------------------------------------------------------
+   */
+
+  const groupedMerchants = useMemo(
+    () =>
+      groupTransactionsByMerchant(
+        filteredTransactions
+      ),
+    [filteredTransactions]
+  );
+
+  /*
+   * ---------------------------------------------------------
    * CSV EXPORT
    * ---------------------------------------------------------
    */
@@ -631,19 +723,13 @@ export default function DashboardPage() {
 
     const rows = filteredTransactions.map(
       (tx, index) => {
-        const merchant =
-          tx.merchant_name ||
-          tx.name ||
-          'Unknown Merchant';
+        const merchant = getDisplayMerchant(tx);
 
         const category =
           tx.category ||
           'Uncategorized';
 
-        const date =
-          tx.date ||
-          tx.posted_date ||
-          '';
+        const date = getTransactionDate(tx);
 
         return [
           index + 1,
@@ -658,9 +744,11 @@ export default function DashboardPage() {
           )}"`,
           tx.amount < 0
             ? `+${Math.abs(
-                tx.amount
+                Number(tx.amount)
               ).toFixed(2)}`
-            : `-${tx.amount.toFixed(2)}`,
+            : `-${Number(
+                tx.amount
+              ).toFixed(2)}`,
         ];
       }
     );
@@ -712,7 +800,7 @@ export default function DashboardPage() {
       filteredTransactions
         .filter(
           (transaction) =>
-            transaction.amount > 0
+            Number(transaction.amount) > 0
         )
         .reduce(
           (sum, transaction) =>
@@ -725,7 +813,7 @@ export default function DashboardPage() {
       filteredTransactions
         .filter(
           (transaction) =>
-            transaction.amount < 0
+            Number(transaction.amount) < 0
         )
         .reduce(
           (sum, transaction) =>
@@ -750,7 +838,7 @@ export default function DashboardPage() {
           transaction.category?.trim();
 
         if (
-          transaction.amount > 0 &&
+          Number(transaction.amount) > 0 &&
           categoryName &&
           categoryName !== 'Uncategorized'
         ) {
@@ -1429,9 +1517,277 @@ export default function DashboardPage() {
           }}
         >
           {userId && (
-            <QueryBar clientId={userId} />
+            <QueryBar
+              clientId={ACME_CORP_CLIENT_ID}
+            />
           )}
         </div>
+
+        {/* MERCHANT SUMMARY */}
+
+        <section
+          style={{
+            backgroundColor: '#0f172a',
+            borderRadius: 14,
+            border:
+              '1px solid rgba(56,189,248,0.2)',
+            overflow: 'hidden',
+            marginBottom: 28,
+          }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              gap: 16,
+              flexWrap: 'wrap',
+              padding: '22px 24px',
+              borderBottom:
+                '1px solid rgba(255,255,255,0.08)',
+            }}
+          >
+            <div>
+              <h2
+                style={{
+                  margin: 0,
+                  color: '#ffffff',
+                  fontSize: 20,
+                  fontWeight: 800,
+                }}
+              >
+                Merchant Summary
+              </h2>
+
+              <p
+                style={{
+                  margin: '6px 0 0',
+                  color: '#94a3b8',
+                  fontSize: 13,
+                }}
+              >
+                All transactions grouped by merchant
+                for easier spending analysis.
+              </p>
+            </div>
+
+            <div
+              style={{
+                padding: '7px 12px',
+                borderRadius: 999,
+                backgroundColor:
+                  'rgba(56,189,248,0.1)',
+                border:
+                  '1px solid rgba(56,189,248,0.25)',
+                color: '#38bdf8',
+                fontSize: 12,
+                fontWeight: 700,
+              }}
+            >
+              {groupedMerchants.length} merchants
+            </div>
+          </div>
+
+          {groupedMerchants.length === 0 ? (
+            <div
+              style={{
+                padding: '50px 24px',
+                textAlign: 'center',
+                color: '#64748b',
+                fontSize: 14,
+              }}
+            >
+              No merchant data available for this
+              period.
+            </div>
+          ) : (
+            <div
+              style={{
+                overflowX: 'auto',
+              }}
+            >
+              <table
+                style={{
+                  width: '100%',
+                  minWidth: 700,
+                  borderCollapse: 'collapse',
+                }}
+              >
+                <thead>
+                  <tr
+                    style={{
+                      backgroundColor: '#111827',
+                      borderBottom:
+                        '1px solid rgba(255,255,255,0.08)',
+                    }}
+                  >
+                    <th
+                      style={{
+                        padding: '14px 24px',
+                        textAlign: 'left',
+                        color: '#94a3b8',
+                        fontSize: 11,
+                        fontWeight: 700,
+                        letterSpacing: '0.06em',
+                        textTransform: 'uppercase',
+                      }}
+                    >
+                      Merchant
+                    </th>
+
+                    <th
+                      style={{
+                        padding: '14px 16px',
+                        textAlign: 'left',
+                        color: '#94a3b8',
+                        fontSize: 11,
+                        fontWeight: 700,
+                        letterSpacing: '0.06em',
+                        textTransform: 'uppercase',
+                      }}
+                    >
+                      Category
+                    </th>
+
+                    <th
+                      style={{
+                        padding: '14px 16px',
+                        textAlign: 'center',
+                        color: '#94a3b8',
+                        fontSize: 11,
+                        fontWeight: 700,
+                        letterSpacing: '0.06em',
+                        textTransform: 'uppercase',
+                      }}
+                    >
+                      Transactions
+                    </th>
+
+                    <th
+                      style={{
+                        padding: '14px 16px',
+                        textAlign: 'right',
+                        color: '#94a3b8',
+                        fontSize: 11,
+                        fontWeight: 700,
+                        letterSpacing: '0.06em',
+                        textTransform: 'uppercase',
+                      }}
+                    >
+                      Total Spent
+                    </th>
+
+                    <th
+                      style={{
+                        padding: '14px 24px',
+                        textAlign: 'right',
+                        color: '#94a3b8',
+                        fontSize: 11,
+                        fontWeight: 700,
+                        letterSpacing: '0.06em',
+                        textTransform: 'uppercase',
+                      }}
+                    >
+                      Net Amount
+                    </th>
+                  </tr>
+                </thead>
+
+                <tbody>
+                  {groupedMerchants.map(
+                    (merchant, index) => {
+                      const hasIncome =
+                        merchant.totalIncome > 0;
+
+                      return (
+                        <tr
+                          key={normalizeMerchant(
+                            merchant.merchant
+                          )}
+                          style={{
+                            borderBottom:
+                              index ===
+                              groupedMerchants.length - 1
+                                ? 'none'
+                                : '1px solid rgba(255,255,255,0.05)',
+                          }}
+                        >
+                          <td
+                            style={{
+                              padding: '16px 24px',
+                              color: '#f8fafc',
+                              fontSize: 14,
+                              fontWeight: 700,
+                            }}
+                          >
+                            {merchant.merchant}
+                          </td>
+
+                          <td
+                            style={{
+                              padding: '16px',
+                              color: '#94a3b8',
+                              fontSize: 13,
+                            }}
+                          >
+                            {merchant.category}
+                          </td>
+
+                          <td
+                            style={{
+                              padding: '16px',
+                              textAlign: 'center',
+                              color: '#cbd5e1',
+                              fontSize: 13,
+                              fontWeight: 600,
+                            }}
+                          >
+                            {merchant.transactionCount}
+                          </td>
+
+                          <td
+                            style={{
+                              padding: '16px',
+                              textAlign: 'right',
+                              color: '#f8fafc',
+                              fontSize: 13,
+                              fontWeight: 700,
+                            }}
+                          >
+                            $
+                            {merchant.totalSpent.toFixed(
+                              2
+                            )}
+                          </td>
+
+                          <td
+                            style={{
+                              padding: '16px 24px',
+                              textAlign: 'right',
+                              color: hasIncome
+                                ? '#4ade80'
+                                : '#f8fafc',
+                              fontSize: 13,
+                              fontWeight: 700,
+                            }}
+                          >
+                            {merchant.netAmount < 0
+                              ? `+$${Math.abs(
+                                  merchant.netAmount
+                                ).toFixed(2)}`
+                              : `$${merchant.netAmount.toFixed(
+                                  2
+                                )}`}
+                          </td>
+                        </tr>
+                      );
+                    }
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
 
         {/* TRANSACTION TABLE */}
 
@@ -1457,6 +1813,7 @@ export default function DashboardPage() {
               fontWeight: 700,
               color: '#94a3b8',
               textTransform: 'uppercase',
+              minWidth: 780,
             }}
           >
             <div>#</div>
@@ -1486,153 +1843,144 @@ export default function DashboardPage() {
               for this period.
             </div>
           ) : (
-            filteredTransactions.map(
-              (tx, index) => {
-                const displayName =
-                  tx.merchant_name ||
-                  tx.name ||
-                  'Unknown Merchant';
+            <div
+              style={{
+                overflowX: 'auto',
+              }}
+            >
+              {filteredTransactions.map(
+                (tx, index) => {
+                  const displayName =
+                    getDisplayMerchant(tx);
 
-                const displayDate =
-                  tx.date ||
-                  tx.posted_date ||
-                  '';
+                  const displayDate =
+                    getTransactionDate(tx);
 
-                const isIncome =
-                  tx.amount < 0;
+                  const isIncome =
+                    Number(tx.amount) < 0;
 
-                return (
-                  <div
-                    key={tx.id}
-                    style={{
-                      display: 'grid',
-                      gridTemplateColumns:
-                        '60px 140px 1fr 220px 140px',
-                      alignItems: 'center',
-                      padding: '16px 24px',
-                      borderBottom:
-                        index ===
-                        filteredTransactions.length - 1
-                          ? 'none'
-                          : '1px solid rgba(255,255,255,0.04)',
-                      fontSize: 14,
-                    }}
-                  >
+                  return (
                     <div
+                      key={tx.id}
                       style={{
-                        color: '#64748b',
+                        display: 'grid',
+                        gridTemplateColumns:
+                          '60px 140px 1fr 220px 140px',
+                        alignItems: 'center',
+                        padding: '16px 24px',
+                        borderBottom:
+                          index ===
+                          filteredTransactions.length - 1
+                            ? 'none'
+                            : '1px solid rgba(255,255,255,0.04)',
+                        fontSize: 14,
+                        minWidth: 780,
                       }}
                     >
-                      {index + 1}
-                    </div>
-
-                    <div
-                      style={{
-                        color: '#94a3b8',
-                      }}
-                    >
-                      {displayDate}
-                    </div>
-
-                    <div
-                      style={{
-                        fontWeight: 600,
-                        color: '#f8fafc',
-                      }}
-                    >
-                      {displayName}
-                    </div>
-
-                    <div>
-                      <select
-                        value={
-                          tx.category ||
-                          'Uncategorized'
-                        }
-                        onChange={(e) =>
-                          handleCategoryChange(
-                            tx.id,
-                            displayName,
-                            e.target.value
-                          )
-                        }
+                      <div
                         style={{
-                          padding: '7px 12px',
-                          borderRadius: 8,
-                          border:
-                            '1px solid rgba(255,255,255,0.1)',
-                          fontSize: 13,
-                          fontWeight: 500,
+                          color: '#64748b',
+                        }}
+                      >
+                        {index + 1}
+                      </div>
+
+                      <div
+                        style={{
+                          color: '#94a3b8',
+                        }}
+                      >
+                        {displayDate}
+                      </div>
+
+                      <div
+                        style={{
+                          fontWeight: 600,
                           color: '#f8fafc',
-                          backgroundColor:
-                            '#1e293b',
-                          cursor: 'pointer',
-                          width: '90%',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                          paddingRight: 12,
                         }}
                       >
-                        <option value="Uncategorized">
-                          Uncategorized
-                        </option>
+                        {displayName}
+                      </div>
 
-                        <option value="Food & Dining">
-                          Food & Dining
-                        </option>
+                      <div>
+                        <select
+                          value={
+                            tx.category ||
+                            'Uncategorized'
+                          }
+                          onChange={(e) =>
+                            handleCategoryChange(
+                              tx.id,
+                              displayName,
+                              e.target.value
+                            )
+                          }
+                          style={{
+                            padding: '7px 12px',
+                            borderRadius: 8,
+                            border:
+                              '1px solid rgba(255,255,255,0.1)',
+                            fontSize: 13,
+                            fontWeight: 500,
+                            color: '#f8fafc',
+                            backgroundColor:
+                              '#1e293b',
+                            cursor: 'pointer',
+                            width: '90%',
+                            maxWidth: 210,
+                          }}
+                        >
+                          {CATEGORY_OPTIONS.map(
+                            (category) => (
+                              <option
+                                key={category}
+                                value={category}
+                              >
+                                {category}
+                              </option>
+                            )
+                          )}
+                        </select>
+                      </div>
 
-                        <option value="Transportation">
-                          Transportation
-                        </option>
-
-                        <option value="Software & Tech">
-                          Software & Tech
-                        </option>
-
-                        <option value="Transfer / Income">
-                          Transfer / Income
-                        </option>
-
-                        <option value="Shopping">
-                          Shopping
-                        </option>
-
-                        <option value="Bills & Utilities">
-                          Bills & Utilities
-                        </option>
-                      </select>
-                    </div>
-
-                    <div
-                      style={{
-                        textAlign: 'right',
-                      }}
-                    >
-                      <span
+                      <div
                         style={{
-                          display: 'inline-block',
-                          padding: '5px 12px',
-                          borderRadius: 20,
-                          fontSize: 13,
-                          fontWeight: 700,
-                          backgroundColor: isIncome
-                            ? 'rgba(74,222,128,0.1)'
-                            : 'rgba(255,255,255,0.05)',
-                          color: isIncome
-                            ? '#4ade80'
-                            : '#f8fafc',
+                          textAlign: 'right',
                         }}
                       >
-                        {isIncome
-                          ? `+$${Math.abs(
-                              Number(tx.amount)
-                            ).toFixed(2)}`
-                          : `$${Number(
-                              tx.amount
-                            ).toFixed(2)}`}
-                      </span>
+                        <span
+                          style={{
+                            display: 'inline-block',
+                            padding: '5px 12px',
+                            borderRadius: 20,
+                            fontSize: 13,
+                            fontWeight: 700,
+                            backgroundColor: isIncome
+                              ? 'rgba(74,222,128,0.1)'
+                              : 'rgba(255,255,255,0.05)',
+                            color: isIncome
+                              ? '#4ade80'
+                              : '#f8fafc',
+                          }}
+                        >
+                          {isIncome
+                            ? `+$${Math.abs(
+                                Number(tx.amount)
+                              ).toFixed(2)}`
+                            : `$${Number(
+                                tx.amount
+                              ).toFixed(2)}`}
+                        </span>
+                      </div>
                     </div>
-                  </div>
-                );
-              }
-            )
+                  );
+                }
+              )}
+            </div>
           )}
         </div>
       </div>
