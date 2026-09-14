@@ -68,11 +68,6 @@ export async function POST(req: Request) {
       );
     }
 
-    console.log(
-      '[plaid/exchange] Authenticated user:',
-      user.id
-    );
-
     // ---------------------------------------------------------
     // 2. READ REQUEST BODY
     // ---------------------------------------------------------
@@ -81,25 +76,18 @@ export async function POST(req: Request) {
 
     const publicToken = body?.public_token;
 
-    if (!publicToken) {
+    if (
+      !publicToken ||
+      typeof publicToken !== 'string'
+    ) {
       return NextResponse.json(
         {
           success: false,
-          error: 'Missing public_token',
+          error: 'Missing or invalid public_token.',
         },
         { status: 400 }
       );
     }
-
-    /*
-     * IMPORTANT:
-     *
-     * plaid_items.client_id references clients.id.
-     *
-     * Therefore DO NOT use user.id here.
-     *
-     * The frontend should send the LedgerAI client ID.
-     */
 
     const requestedClientId =
       body?.client_id ||
@@ -107,32 +95,125 @@ export async function POST(req: Request) {
       null;
 
     // ---------------------------------------------------------
-    // 3. SERVER DATABASE CLIENT
+    // 3. CREATE SERVICE-ROLE DATABASE CLIENT
     // ---------------------------------------------------------
 
     const db = createServiceRoleClient();
 
     // ---------------------------------------------------------
-    // 4. DETERMINE CLIENT
+    // 4. FIND THE USER'S FIRMS
+    // ---------------------------------------------------------
+
+    const {
+      data: memberships,
+      error: membershipError,
+    } = await db
+      .from('firm_users')
+      .select('firm_id, role')
+      .eq('user_id', user.id);
+
+    if (membershipError) {
+      console.error(
+        '[plaid/exchange] Failed to load firm memberships:',
+        membershipError
+      );
+
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Unable to verify firm membership.',
+        },
+        { status: 500 }
+      );
+    }
+
+    if (!memberships || memberships.length === 0) {
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            'You are not associated with an accounting firm.',
+        },
+        { status: 403 }
+      );
+    }
+
+    const firmIds = memberships.map(
+      (membership) => membership.firm_id
+    );
+
+    // ---------------------------------------------------------
+    // 5. DETERMINE AND VERIFY LEDGERAI CLIENT
     // ---------------------------------------------------------
 
     let clientId = requestedClientId;
 
-    /*
-     * If the frontend did not send a client ID, try to find
-     * the first active client.
-     *
-     * This makes the connection work for your current
-     * single-user/test setup.
-     */
+    if (clientId) {
+      const {
+        data: selectedClient,
+        error: selectedClientError,
+      } = await db
+        .from('clients')
+        .select(
+          'id, firm_id, business_name, status'
+        )
+        .eq('id', clientId)
+        .in('firm_id', firmIds)
+        .maybeSingle();
 
-    if (!clientId) {
+      if (selectedClientError) {
+        console.error(
+          '[plaid/exchange] Selected client lookup failed:',
+          selectedClientError
+        );
+
+        return NextResponse.json(
+          {
+            success: false,
+            error:
+              'Failed to verify the selected LedgerAI client.',
+          },
+          { status: 500 }
+        );
+      }
+
+      if (!selectedClient) {
+        return NextResponse.json(
+          {
+            success: false,
+            error:
+              'The selected client does not belong to one of your firms.',
+          },
+          { status: 403 }
+        );
+      }
+
+      if (selectedClient.status !== 'active') {
+        return NextResponse.json(
+          {
+            success: false,
+            error:
+              'The selected LedgerAI client is not active.',
+          },
+          { status: 400 }
+        );
+      }
+
+      console.log(
+        '[plaid/exchange] Selected client:',
+        selectedClient.id,
+        selectedClient.business_name
+      );
+    } else {
       const {
         data: defaultClient,
         error: defaultClientError,
       } = await db
         .from('clients')
-        .select('id, business_name')
+        .select(
+          'id, firm_id, business_name, status'
+        )
+        .in('firm_id', firmIds)
         .eq('status', 'active')
         .order('created_at', {
           ascending: true,
@@ -161,7 +242,7 @@ export async function POST(req: Request) {
           {
             success: false,
             error:
-              'No active LedgerAI client exists. Create a client before connecting a bank.',
+              'No active LedgerAI client exists for your firm.',
           },
           { status: 400 }
         );
@@ -177,65 +258,6 @@ export async function POST(req: Request) {
     }
 
     // ---------------------------------------------------------
-    // 5. VERIFY CLIENT EXISTS
-    // ---------------------------------------------------------
-
-    const {
-      data: client,
-      error: clientError,
-    } = await db
-      .from('clients')
-      .select(
-        'id, business_name, status'
-      )
-      .eq('id', clientId)
-      .maybeSingle();
-
-    if (clientError) {
-      console.error(
-        '[plaid/exchange] Client lookup failed:',
-        clientError
-      );
-
-      return NextResponse.json(
-        {
-          success: false,
-          error:
-            'Failed to verify LedgerAI client.',
-        },
-        { status: 500 }
-      );
-    }
-
-    if (!client) {
-      return NextResponse.json(
-        {
-          success: false,
-          error:
-            'The selected LedgerAI client does not exist.',
-        },
-        { status: 400 }
-      );
-    }
-
-    if (client.status !== 'active') {
-      return NextResponse.json(
-        {
-          success: false,
-          error:
-            'The selected LedgerAI client is not active.',
-        },
-        { status: 400 }
-      );
-    }
-
-    console.log(
-      '[plaid/exchange] LedgerAI client:',
-      client.id,
-      client.business_name
-    );
-
-    // ---------------------------------------------------------
     // 6. EXCHANGE PLAID PUBLIC TOKEN
     // ---------------------------------------------------------
 
@@ -249,11 +271,6 @@ export async function POST(req: Request) {
 
     const plaidItemId =
       exchangeResponse.data.item_id;
-
-    console.log(
-      '[plaid/exchange] Plaid item:',
-      plaidItemId
-    );
 
     // ---------------------------------------------------------
     // 7. GET PLAID ACCOUNTS
@@ -278,13 +295,16 @@ export async function POST(req: Request) {
       );
     }
 
-    console.log(
-      `[plaid/exchange] ${plaidAccounts.length} Plaid accounts returned`
-    );
-
     // ---------------------------------------------------------
     // 8. SAVE PLAID ITEM
     // ---------------------------------------------------------
+
+    /*
+     * This preserves your current storage format.
+     *
+     * Note: Base64 is encoding, not encryption. For production,
+     * replace this with real encryption using a server-side key.
+     */
 
     const encryptedAccessToken =
       Buffer.from(accessToken).toString('base64');
@@ -296,29 +316,17 @@ export async function POST(req: Request) {
       .from('plaid_items')
       .upsert(
         {
-          /*
-           * THIS IS THE IMPORTANT FIX:
-           *
-           * client_id must be clients.id,
-           * NOT auth.users.id.
-           */
           client_id: clientId,
-
           plaid_item_id: plaidItemId,
-
           access_token_encrypted:
             encryptedAccessToken,
-
           status: 'active',
-
           last_synced_at:
             new Date().toISOString(),
-
           token_key_version: 1,
         },
         {
-          onConflict:
-            'plaid_item_id',
+          onConflict: 'plaid_item_id',
         }
       )
       .select('id')
@@ -344,13 +352,8 @@ export async function POST(req: Request) {
     const plaidItemDatabaseId =
       plaidItem.id;
 
-    console.log(
-      '[plaid/exchange] Saved plaid_items row:',
-      plaidItemDatabaseId
-    );
-
     // ---------------------------------------------------------
-    // 9. SAVE ACCOUNTS
+    // 9. SAVE PLAID ACCOUNTS
     // ---------------------------------------------------------
 
     const accountIdMap =
@@ -384,8 +387,7 @@ export async function POST(req: Request) {
               account.subtype || null,
           },
           {
-            onConflict:
-              'plaid_account_id',
+            onConflict: 'plaid_account_id',
           }
         )
         .select(
@@ -408,13 +410,6 @@ export async function POST(req: Request) {
 
       accountIdMap.set(
         account.account_id,
-        accountRow.id
-      );
-
-      console.log(
-        '[plaid/exchange] Account mapped:',
-        account.account_id,
-        '=>',
         accountRow.id
       );
     }
@@ -461,10 +456,6 @@ export async function POST(req: Request) {
       plaidTransactions =
         transactionsResponse.data.transactions ||
         [];
-
-      console.log(
-        `[plaid/exchange] ${plaidTransactions.length} transactions returned`
-      );
     } catch (transactionError: any) {
       console.error(
         '[plaid/exchange] Transaction request failed:',
@@ -476,6 +467,7 @@ export async function POST(req: Request) {
         success: true,
         plaid_item_id:
           plaidItemDatabaseId,
+        client_id: clientId,
         accounts:
           accountIdMap.size,
         count: 0,
@@ -496,13 +488,6 @@ export async function POST(req: Request) {
               tx.account_id
             );
 
-          /*
-           * transactions.account_id is NOT NULL.
-           *
-           * Never insert a transaction without
-           * a valid local account UUID.
-           */
-
           if (!localAccountId) {
             console.warn(
               '[plaid/exchange] Skipping transaction with unknown account:',
@@ -521,10 +506,6 @@ export async function POST(req: Request) {
             account_id:
               localAccountId,
 
-            /*
-             * Your transactions.client_id also needs
-             * the LedgerAI clients.id UUID.
-             */
             client_id:
               clientId,
 
@@ -564,9 +545,7 @@ export async function POST(req: Request) {
     // 12. SAVE TRANSACTIONS
     // ---------------------------------------------------------
 
-    if (
-      transactionRecords.length > 0
-    ) {
+    if (transactionRecords.length > 0) {
       const {
         error: transactionError,
       } = await db
