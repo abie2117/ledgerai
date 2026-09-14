@@ -1,19 +1,29 @@
 // app/api/plaid/exchange/route.ts
 
 import { NextResponse } from 'next/server';
-import { Configuration, PlaidApi, PlaidEnvironments } from 'plaid';
+import {
+  Configuration,
+  PlaidApi,
+  PlaidEnvironments,
+} from 'plaid';
 import { createRouteHandlerClient } from '@/lib/supabase-server';
 import { createClient } from '@supabase/supabase-js';
 
+const TEST_CLIENT_ID =
+  '00000000-0000-0000-0000-000000000002';
+
 const plaidEnvironment =
-  (process.env.PLAID_ENV as keyof typeof PlaidEnvironments) || 'sandbox';
+  (process.env.PLAID_ENV as keyof typeof PlaidEnvironments) ||
+  'sandbox';
 
 const configuration = new Configuration({
   basePath: PlaidEnvironments[plaidEnvironment],
   baseOptions: {
     headers: {
-      'PLAID-CLIENT-ID': process.env.PLAID_CLIENT_ID!,
-      'PLAID-SECRET': process.env.PLAID_SECRET!,
+      'PLAID-CLIENT-ID':
+        process.env.PLAID_CLIENT_ID!,
+      'PLAID-SECRET':
+        process.env.PLAID_SECRET!,
     },
   },
 });
@@ -36,11 +46,12 @@ export async function POST(req: Request) {
   try {
     /*
      * ---------------------------------------------------------
-     * 1. AUTHENTICATE THE CURRENT LEDGERAI USER
+     * 1. AUTHENTICATE USER
      * ---------------------------------------------------------
      */
 
-    const authClient = await createRouteHandlerClient();
+    const authClient =
+      await createRouteHandlerClient();
 
     const {
       data: { user },
@@ -72,18 +83,20 @@ export async function POST(req: Request) {
 
     /*
      * ---------------------------------------------------------
-     * 2. READ PLAID PUBLIC TOKEN
+     * 2. READ PUBLIC TOKEN
      * ---------------------------------------------------------
      */
 
     const body = await req.json();
 
-    const publicToken = body?.public_token;
+    const publicToken =
+      body?.public_token;
 
     if (!publicToken) {
       return NextResponse.json(
         {
-          error: 'Missing public_token',
+          error:
+            'Missing public_token',
         },
         {
           status: 400,
@@ -96,6 +109,10 @@ export async function POST(req: Request) {
      * 3. EXCHANGE PLAID PUBLIC TOKEN
      * ---------------------------------------------------------
      */
+
+    console.log(
+      '[plaid/exchange] Exchanging Plaid public token...'
+    );
 
     const exchangeResponse =
       await plaidClient.itemPublicTokenExchange({
@@ -115,20 +132,22 @@ export async function POST(req: Request) {
 
     /*
      * ---------------------------------------------------------
-     * 4. SERVER-SIDE SUPABASE CLIENT
+     * 4. SERVER SUPABASE CLIENT
      * ---------------------------------------------------------
      */
 
-    const db = serviceRoleClient();
+    const db =
+      serviceRoleClient();
 
     /*
      * ---------------------------------------------------------
-     * 5. GET PLAID ACCOUNTS FIRST
+     * 5. GET PLAID ACCOUNTS
      * ---------------------------------------------------------
-     *
-     * We must create the accounts before inserting
-     * transactions. This prevents account_id from becoming null.
      */
+
+    console.log(
+      '[plaid/exchange] Fetching Plaid accounts...'
+    );
 
     const accountsResponse =
       await plaidClient.accountsGet({
@@ -136,7 +155,7 @@ export async function POST(req: Request) {
       });
 
     const plaidAccounts =
-      accountsResponse.data.accounts;
+      accountsResponse.data.accounts || [];
 
     console.log(
       `[plaid/exchange] Plaid returned ${plaidAccounts.length} accounts`
@@ -156,36 +175,55 @@ export async function POST(req: Request) {
 
     /*
      * ---------------------------------------------------------
-     * 6. CREATE / UPDATE PLAID ITEM
+     * 6. SAVE PLAID ITEM
      * ---------------------------------------------------------
      *
      * IMPORTANT:
-     * We associate the Plaid item with the authenticated
-     * LedgerAI user.
+     *
+     * client_id MUST be a real ID from the clients table.
+     *
+     * We are using the existing Test Client Business because
+     * this LedgerAI installation is being tested without a
+     * real bank account.
+     *
+     * user_id is kept separately for the authenticated user.
      */
 
-    const { data: plaidItem, error: plaidItemError } =
-      await db
-        .from('plaid_items')
-        .upsert(
-          {
-            client_id: userId,
-            plaid_item_id: plaidItemId,
-            access_token_encrypted: Buffer.from(
+    const {
+      data: plaidItem,
+      error: plaidItemError,
+    } = await db
+      .from('plaid_items')
+      .upsert(
+        {
+          client_id:
+            TEST_CLIENT_ID,
+
+          plaid_item_id:
+            plaidItemId,
+
+          access_token_encrypted:
+            Buffer.from(
               accessToken
             ).toString('base64'),
-            status: 'active',
-            last_synced_at:
-              new Date().toISOString(),
-          },
-          {
-            onConflict: 'plaid_item_id',
-          }
-        )
-        .select('id')
-        .single();
 
-    if (plaidItemError || !plaidItem) {
+          status: 'active',
+
+          last_synced_at:
+            new Date().toISOString(),
+        },
+        {
+          onConflict:
+            'plaid_item_id',
+        }
+      )
+      .select('id')
+      .single();
+
+    if (
+      plaidItemError ||
+      !plaidItem
+    ) {
       console.error(
         '[plaid/exchange] Failed to save Plaid connection:',
         plaidItemError
@@ -207,20 +245,22 @@ export async function POST(req: Request) {
       plaidItem.id;
 
     console.log(
-      '[plaid/exchange] Saved Plaid item:',
+      '[plaid/exchange] Plaid item saved:',
       plaidItemDatabaseId
     );
 
     /*
      * ---------------------------------------------------------
-     * 7. CREATE / UPDATE ACCOUNTS
+     * 7. SAVE PLAID ACCOUNTS
      * ---------------------------------------------------------
      */
 
     const accountIdMap =
       new Map<string, string>();
 
-    for (const account of plaidAccounts) {
+    for (
+      const account of plaidAccounts
+    ) {
       const {
         data: accountRow,
         error: accountError,
@@ -230,17 +270,25 @@ export async function POST(req: Request) {
           {
             plaid_item_id:
               plaidItemDatabaseId,
+
             plaid_account_id:
               account.account_id,
+
             name:
               account.name ||
               'Plaid Account',
+
             mask:
-              account.mask || null,
+              account.mask ||
+              null,
+
             type:
-              account.type || null,
+              account.type ||
+              null,
+
             subtype:
-              account.subtype || null,
+              account.subtype ||
+              null,
           },
           {
             onConflict:
@@ -252,7 +300,10 @@ export async function POST(req: Request) {
         )
         .single();
 
-      if (accountError || !accountRow) {
+      if (
+        accountError ||
+        !accountRow
+      ) {
         console.error(
           '[plaid/exchange] Failed to save account:',
           accountError
@@ -269,18 +320,14 @@ export async function POST(req: Request) {
       console.log(
         '[plaid/exchange] Account mapped:',
         account.account_id,
-        '→',
+        '=>',
         accountRow.id
       );
     }
 
-    /*
-     * ---------------------------------------------------------
-     * 8. MAKE SURE WE ACTUALLY CREATED ACCOUNTS
-     * ---------------------------------------------------------
-     */
-
-    if (accountIdMap.size === 0) {
+    if (
+      accountIdMap.size === 0
+    ) {
       return NextResponse.json(
         {
           error:
@@ -294,52 +341,85 @@ export async function POST(req: Request) {
 
     /*
      * ---------------------------------------------------------
-     * 9. GET TRANSACTIONS FROM PLAID
+     * 8. FETCH TRANSACTIONS
      * ---------------------------------------------------------
      */
 
-    const now = new Date();
+    const now =
+      new Date();
 
-    const startDate = new Date(
-      now.getFullYear(),
-      now.getMonth() - 1,
-      1
-    )
-      .toISOString()
-      .split('T')[0];
+    const startDate =
+      new Date(
+        now.getFullYear(),
+        now.getMonth() - 1,
+        1
+      )
+        .toISOString()
+        .split('T')[0];
 
     const endDate =
-      now.toISOString().split('T')[0];
+      now
+        .toISOString()
+        .split('T')[0];
 
-    let plaidTransactions: any[] = [];
+    let plaidTransactions: any[] =
+      [];
 
     try {
+      console.log(
+        '[plaid/exchange] Fetching Plaid transactions...',
+        {
+          startDate,
+          endDate,
+        }
+      );
+
       const transactionsResponse =
         await plaidClient.transactionsGet({
-          access_token: accessToken,
-          start_date: startDate,
-          end_date: endDate,
+          access_token:
+            accessToken,
+
+          start_date:
+            startDate,
+
+          end_date:
+            endDate,
         });
 
       plaidTransactions =
         transactionsResponse.data
           .transactions || [];
-    } catch (transactionError: any) {
+
+      console.log(
+        `[plaid/exchange] Plaid returned ${plaidTransactions.length} transactions`
+      );
+    } catch (
+      transactionError: any
+    ) {
       console.error(
         '[plaid/exchange] Transactions request failed:',
-        transactionError?.response?.data ||
+        transactionError?.response
+          ?.data ||
           transactionError
       );
 
       /*
-       * The bank connection itself is still valid.
-       * Return success for the connection instead of
-       * pretending the entire Plaid connection failed.
+       * The bank itself is connected.
+       * Plaid Sandbox may not immediately return
+       * transactions in every test scenario.
        */
 
       return NextResponse.json({
         success: true,
+
+        plaid_item_id:
+          plaidItemDatabaseId,
+
+        accounts:
+          accountIdMap.size,
+
         count: 0,
+
         message:
           'Bank connected successfully. Transactions are not available yet.',
       });
@@ -347,12 +427,8 @@ export async function POST(req: Request) {
 
     /*
      * ---------------------------------------------------------
-     * 10. PREPARE TRANSACTIONS
+     * 9. PREPARE TRANSACTIONS
      * ---------------------------------------------------------
-     *
-     * IMPORTANT:
-     * Never insert a transaction when we cannot resolve
-     * its account_id.
      */
 
     const transactionRecords =
@@ -363,11 +439,23 @@ export async function POST(req: Request) {
               tx.account_id
             );
 
-          if (!databaseAccountId) {
+          /*
+           * Never insert a transaction without
+           * a valid account_id.
+           */
+
+          if (
+            !databaseAccountId
+          ) {
             console.warn(
-              '[plaid/exchange] Skipping transaction because account was not found:',
-              tx.transaction_id,
-              tx.account_id
+              '[plaid/exchange] Skipping transaction because account was not mapped:',
+              {
+                transactionId:
+                  tx.transaction_id,
+
+                plaidAccountId:
+                  tx.account_id,
+              }
             );
 
             return null;
@@ -380,11 +468,33 @@ export async function POST(req: Request) {
             account_id:
               databaseAccountId,
 
+            /*
+             * client_id points to the actual
+             * LedgerAI client record.
+             */
+
             client_id:
+              TEST_CLIENT_ID,
+
+            /*
+             * user_id points to the
+             * authenticated Supabase user.
+             *
+             * Your dashboard uses this field
+             * to load transactions.
+             */
+
+            user_id:
               userId,
 
             posted_date:
               tx.date,
+
+            /*
+             * Plaid convention:
+             * positive = money leaving account
+             * negative = money entering account
+             */
 
             amount:
               tx.amount,
@@ -395,9 +505,16 @@ export async function POST(req: Request) {
               'Unknown Merchant',
 
             raw_plaid_category:
-              Array.isArray(tx.category)
-                ? tx.category.join(', ')
+              Array.isArray(
+                tx.category
+              )
+                ? tx.category.join(
+                    ', '
+                  )
                 : null,
+
+            category:
+              'Uncategorized',
 
             status:
               'pending_review',
@@ -408,18 +525,23 @@ export async function POST(req: Request) {
             record
           ): record is NonNullable<
             typeof record
-          > => record !== null
+          > =>
+            record !== null
         );
 
     /*
      * ---------------------------------------------------------
-     * 11. INSERT TRANSACTIONS
+     * 10. SAVE TRANSACTIONS
      * ---------------------------------------------------------
      */
 
     if (
       transactionRecords.length > 0
     ) {
+      console.log(
+        `[plaid/exchange] Saving ${transactionRecords.length} transactions...`
+      );
+
       const {
         error: transactionError,
       } = await db
@@ -432,7 +554,9 @@ export async function POST(req: Request) {
           }
         );
 
-      if (transactionError) {
+      if (
+        transactionError
+      ) {
         console.error(
           '[plaid/exchange] Transaction insert failed:',
           transactionError
@@ -452,7 +576,7 @@ export async function POST(req: Request) {
 
     /*
      * ---------------------------------------------------------
-     * 12. SUCCESS
+     * 11. SUCCESS
      * ---------------------------------------------------------
      */
 
@@ -460,9 +584,15 @@ export async function POST(req: Request) {
       '[plaid/exchange] SUCCESS',
       {
         userId,
+
+        clientId:
+          TEST_CLIENT_ID,
+
         plaidItemId,
+
         accounts:
           accountIdMap.size,
+
         transactions:
           transactionRecords.length,
       }
@@ -470,10 +600,16 @@ export async function POST(req: Request) {
 
     return NextResponse.json({
       success: true,
+
       plaid_item_id:
         plaidItemDatabaseId,
+
+      client_id:
+        TEST_CLIENT_ID,
+
       accounts:
         accountIdMap.size,
+
       count:
         transactionRecords.length,
     });
@@ -488,7 +624,8 @@ export async function POST(req: Request) {
     return NextResponse.json(
       {
         error:
-          error?.response?.data?.error_message ||
+          error?.response?.data
+            ?.error_message ||
           error?.message ||
           'Failed to connect bank account.',
       },
