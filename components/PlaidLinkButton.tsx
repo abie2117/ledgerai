@@ -1,3 +1,4 @@
+```tsx
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
@@ -16,39 +17,7 @@ export default function PlaidLinkButton({
   const [token, setToken] = useState<string | null>(null);
   const [loadingToken, setLoadingToken] = useState(true);
   const [isExchanging, setIsExchanging] = useState(false);
-  const [activeUserId, setActiveUserId] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-
-  useEffect(() => {
-    let mounted = true;
-
-    async function getUser() {
-      try {
-        const {
-          data: { user },
-          error,
-        } = await supabase.auth.getUser();
-
-        if (error) {
-          console.error('Failed to get Supabase user:', error);
-          return;
-        }
-
-        if (mounted && user?.id) {
-          setActiveUserId(user.id);
-          console.log('✅ Plaid active user:', user.id);
-        }
-      } catch (error) {
-        console.error('Failed to get authenticated user:', error);
-      }
-    }
-
-    getUser();
-
-    return () => {
-      mounted = false;
-    };
-  }, []);
 
   useEffect(() => {
     let mounted = true;
@@ -141,20 +110,27 @@ export default function PlaidLinkButton({
         console.log('🏦 Plaid bank selected successfully');
         console.log('🔄 Exchanging Plaid public token...');
 
-        const targetClientId =
-          selectedClientId || activeUserId;
+        /*
+         * selectedClientId must be a real clients.id UUID.
+         * Do not fall back to the Supabase auth user ID.
+         */
 
-        if (!targetClientId) {
+        if (!selectedClientId) {
           console.error(
-            '❌ No client/user ID available for Plaid connection.'
+            '❌ No LedgerAI client ID was provided.'
           );
 
           setErrorMessage(
-            'Unable to identify your account. Please sign in again.'
+            'Please select a LedgerAI client before connecting a bank account.'
           );
 
           return;
         }
+
+        console.log(
+          '🏢 Connecting bank to LedgerAI client:',
+          selectedClientId
+        );
 
         const res = await fetch('/api/plaid/exchange', {
           method: 'POST',
@@ -164,8 +140,7 @@ export default function PlaidLinkButton({
           },
           body: JSON.stringify({
             public_token: publicToken,
-            client_id: targetClientId,
-            user_id: activeUserId,
+            client_id: selectedClientId,
           }),
         });
 
@@ -208,7 +183,7 @@ export default function PlaidLinkButton({
         setIsExchanging(false);
       }
     },
-    [selectedClientId, activeUserId, onBankConnected]
+    [selectedClientId, onBankConnected]
   );
 
   const { open, ready } = usePlaidLink({
@@ -223,6 +198,13 @@ export default function PlaidLinkButton({
     !isExchanging;
 
   function handleOpen() {
+    if (!selectedClientId) {
+      setErrorMessage(
+        'Please select a LedgerAI client before connecting a bank account.'
+      );
+      return;
+    }
+
     if (!token) {
       console.error(
         '❌ Cannot open Plaid because there is no Link token.'
@@ -287,3 +269,4 @@ export default function PlaidLinkButton({
     </div>
   );
 }
+```
