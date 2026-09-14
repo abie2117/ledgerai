@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createRouteHandlerClient } from "../../../lib/supabase-server";
+import { createClient } from "@supabase/supabase-js";
 
 export const dynamic = "force-dynamic";
 
@@ -11,14 +12,31 @@ type Transaction = {
   client_id: string;
 };
 
+function serviceRoleClient() {
+  return createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    {
+      auth: {
+        persistSession: false,
+      },
+    }
+  );
+}
+
 function categorizeTransaction(
   merchantName: string | null,
   plaidCategory: string | null
 ): string {
-  const merchant = (merchantName || "").toLowerCase().trim();
-  const plaid = (plaidCategory || "").toLowerCase().trim();
+  const merchant = (merchantName || "")
+    .toLowerCase()
+    .trim();
 
-  // Food & Dining
+  const plaid = (plaidCategory || "")
+    .toLowerCase()
+    .trim();
+
+  // FOOD & DINING
   if (
     merchant.includes("mcdonald") ||
     merchant.includes("starbucks") ||
@@ -36,9 +54,10 @@ function categorizeTransaction(
     return "Food & Dining";
   }
 
-  // Transportation
+  // TRANSPORTATION
   if (
-    merchant.includes("uber") ||
+    merchant === "uber" ||
+    merchant.startsWith("uber ") ||
     merchant.includes("lyft") ||
     merchant.includes("taxi") ||
     merchant.includes("shell") ||
@@ -48,29 +67,31 @@ function categorizeTransaction(
     merchant.includes("fuel") ||
     merchant.includes("gas station") ||
     plaid.includes("transportation") ||
-    plaid.includes("travel")
+    plaid.includes("transport")
   ) {
     return "Transportation";
   }
 
-  // Airlines / travel
+  // AIRLINES / TRAVEL
   if (
     merchant.includes("united airlines") ||
     merchant.includes("american airlines") ||
     merchant.includes("delta") ||
     merchant.includes("southwest") ||
+    merchant.includes("jetblue") ||
     merchant.includes("airbnb") ||
     merchant.includes("hotel") ||
     merchant.includes("marriott") ||
     merchant.includes("hilton") ||
     merchant.includes("booking.com") ||
     plaid.includes("airlines") ||
-    plaid.includes("lodging")
+    plaid.includes("lodging") ||
+    plaid.includes("travel")
   ) {
     return "Transportation";
   }
 
-  // Software & Technology
+  // SOFTWARE & TECHNOLOGY
   if (
     merchant.includes("openai") ||
     merchant.includes("anthropic") ||
@@ -91,7 +112,7 @@ function categorizeTransaction(
     return "Software & Tech";
   }
 
-  // Bills & Utilities
+  // BILLS & UTILITIES
   if (
     merchant.includes("electric") ||
     merchant.includes("power") ||
@@ -104,12 +125,13 @@ function categorizeTransaction(
     merchant.includes("utility") ||
     merchant.includes("insurance") ||
     plaid.includes("utilities") ||
+    plaid.includes("utility") ||
     plaid.includes("bills")
   ) {
     return "Bills & Utilities";
   }
 
-  // Shopping
+  // SHOPPING
   if (
     merchant.includes("amazon") ||
     merchant.includes("walmart") ||
@@ -124,7 +146,7 @@ function categorizeTransaction(
     return "Shopping";
   }
 
-  // Income / transfers
+  // INCOME / TRANSFERS
   if (
     merchant.includes("payroll") ||
     merchant.includes("salary") ||
@@ -136,32 +158,6 @@ function categorizeTransaction(
     return "Transfer / Income";
   }
 
-  // Generic Plaid category fallbacks
-  if (plaid.includes("food")) {
-    return "Food & Dining";
-  }
-
-  if (
-    plaid.includes("transport") ||
-    plaid.includes("travel")
-  ) {
-    return "Transportation";
-  }
-
-  if (
-    plaid.includes("shop") ||
-    plaid.includes("merchandise")
-  ) {
-    return "Shopping";
-  }
-
-  if (
-    plaid.includes("utility") ||
-    plaid.includes("bill")
-  ) {
-    return "Bills & Utilities";
-  }
-
   return "Uncategorized";
 }
 
@@ -169,18 +165,24 @@ export async function POST(req: Request) {
   try {
     /*
      * ---------------------------------------------------------
-     * 1. AUTHENTICATE USER
+     * 1. AUTHENTICATE CURRENT USER
      * ---------------------------------------------------------
      */
 
-    const supabase = await createRouteHandlerClient();
+    const authClient =
+      await createRouteHandlerClient();
 
     const {
       data: { user },
       error: authError,
-    } = await supabase.auth.getUser();
+    } = await authClient.auth.getUser();
 
     if (authError || !user) {
+      console.error(
+        "[categorize-local] Authentication failed:",
+        authError
+      );
+
       return NextResponse.json(
         {
           error: "Not authenticated",
@@ -197,7 +199,9 @@ export async function POST(req: Request) {
      * ---------------------------------------------------------
      */
 
-    let body: { clientId?: string } = {};
+    let body: {
+      clientId?: string;
+    } = {};
 
     try {
       body = await req.json();
@@ -206,9 +210,8 @@ export async function POST(req: Request) {
     }
 
     /*
-     * The dashboard sends clientId.
-     * For a normal LedgerAI user, the authenticated
-     * Supabase user ID is the safest client ID.
+     * For LedgerAI users, the authenticated Supabase
+     * user ID is the correct transaction client ID.
      */
 
     const clientId =
@@ -216,30 +219,40 @@ export async function POST(req: Request) {
 
     /*
      * ---------------------------------------------------------
-     * 3. GET USER TRANSACTIONS
+     * 3. USE SERVICE ROLE FOR SERVER-SIDE UPDATES
+     * ---------------------------------------------------------
+     *
+     * This bypasses Supabase RLS for the controlled
+     * server-side categorization operation.
+     */
+
+    const db = serviceRoleClient();
+
+    /*
+     * ---------------------------------------------------------
+     * 4. FETCH TRANSACTIONS
      * ---------------------------------------------------------
      */
 
     const {
       data: transactions,
-      error: transactionFetchError,
-    } = await supabase
+      error: fetchError,
+    } = await db
       .from("transactions")
       .select(
         "id, merchant_name, raw_plaid_category, category, client_id"
       )
       .eq("client_id", clientId);
 
-    if (transactionFetchError) {
+    if (fetchError) {
       console.error(
-        "[categorize-local] Failed to fetch transactions:",
-        transactionFetchError
+        "[categorize-local] Transaction fetch failed:",
+        fetchError
       );
 
       return NextResponse.json(
         {
-          error:
-            transactionFetchError.message,
+          error: fetchError.message,
         },
         {
           status: 500,
@@ -250,14 +263,19 @@ export async function POST(req: Request) {
     const rows =
       (transactions as Transaction[]) || [];
 
+    console.log(
+      `[categorize-local] Found ${rows.length} transactions for client ${clientId}`
+    );
+
     /*
      * ---------------------------------------------------------
-     * 4. CATEGORIZE TRANSACTIONS
+     * 5. CATEGORIZE + UPDATE
      * ---------------------------------------------------------
      */
 
     let updated = 0;
     let unchanged = 0;
+    let failed = 0;
 
     for (const transaction of rows) {
       const newCategory =
@@ -267,7 +285,8 @@ export async function POST(req: Request) {
         );
 
       /*
-       * Don't repeatedly write the same category.
+       * If already correctly categorized,
+       * don't perform another database write.
        */
 
       if (
@@ -279,8 +298,9 @@ export async function POST(req: Request) {
       }
 
       const {
+        data: updatedRows,
         error: updateError,
-      } = await supabase
+      } = await db
         .from("transactions")
         .update({
           category: newCategory,
@@ -288,35 +308,60 @@ export async function POST(req: Request) {
             new Date().toISOString(),
         })
         .eq("id", transaction.id)
-        .eq("client_id", clientId);
+        .eq("client_id", clientId)
+        .select("id, category");
 
       if (updateError) {
+        failed++;
+
         console.error(
-          "[categorize-local] Failed to update transaction:",
-          transaction.id,
-          updateError
+          "[categorize-local] Update failed:",
+          {
+            transactionId:
+              transaction.id,
+            merchant:
+              transaction.merchant_name,
+            error: updateError,
+          }
         );
 
         continue;
       }
 
-      updated++;
+      if (
+        updatedRows &&
+        updatedRows.length > 0
+      ) {
+        updated++;
+
+        console.log(
+          `[categorize-local] ${transaction.merchant_name} → ${newCategory}`
+        );
+      } else {
+        failed++;
+
+        console.error(
+          "[categorize-local] Update returned no rows:",
+          transaction.id
+        );
+      }
     }
 
     /*
      * ---------------------------------------------------------
-     * 5. SUCCESS
+     * 6. SUCCESS
      * ---------------------------------------------------------
      */
 
     console.log(
-      "[categorize-local] Completed:",
+      "[categorize-local] COMPLETE:",
       {
         userId: user.id,
         clientId,
         total: rows.length,
         updated,
         unchanged,
+        failed,
       }
     );
 
@@ -325,8 +370,9 @@ export async function POST(req: Request) {
       total: rows.length,
       updated,
       unchanged,
+      failed,
       message:
-        `Categorization completed. ${updated} transaction(s) updated.`,
+        `Categorized ${updated} transaction(s).`,
     });
   } catch (error: any) {
     console.error(
