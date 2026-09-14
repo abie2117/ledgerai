@@ -1,3 +1,4 @@
+```tsx
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
@@ -20,6 +21,12 @@ interface Transaction {
   category?: string | null;
   account_id?: string | null;
   raw_plaid_category?: string | null;
+}
+
+interface Client {
+  id: string;
+  business_name: string;
+  firm_id: string;
 }
 
 interface GroupedMerchant {
@@ -272,6 +279,12 @@ export default function DashboardPage() {
   const [transactions, setTransactions] =
     useState<Transaction[]>([]);
 
+  const [clients, setClients] =
+    useState<Client[]>([]);
+
+  const [selectedClientId, setSelectedClientId] =
+    useState<string>('');
+
   const [loading, setLoading] = useState(true);
 
   const [userId, setUserId] =
@@ -294,7 +307,7 @@ export default function DashboardPage() {
 
   /*
    * ---------------------------------------------------------
-   * LOAD AUTHENTICATED USER + CLIENT TRANSACTIONS
+   * LOAD AUTHENTICATED USER + CLIENTS + TRANSACTIONS
    * ---------------------------------------------------------
    */
 
@@ -343,33 +356,126 @@ export default function DashboardPage() {
           user.id
         );
 
-        console.log(
-          '🏢 Loading transactions for client:',
-          ACME_CORP_CLIENT_ID
-        );
+        /*
+         * -----------------------------------------------------
+         * LOAD FIRMS FOR AUTHENTICATED USER
+         * -----------------------------------------------------
+         */
 
         const {
-          data,
-          error,
+          data: firmMemberships,
+          error: firmError,
+        } = await supabase
+          .from('firm_users')
+          .select('firm_id')
+          .eq('user_id', user.id);
+
+        if (firmError) {
+          console.error(
+            'Firm memberships fetch failed:',
+            firmError
+          );
+        }
+
+        const firmIds = (
+          firmMemberships || []
+        ).map((row) => row.firm_id);
+
+        /*
+         * -----------------------------------------------------
+         * LOAD CLIENTS BELONGING TO THOSE FIRMS
+         * -----------------------------------------------------
+         */
+
+        let loadedClients: Client[] = [];
+
+        if (firmIds.length > 0) {
+          const {
+            data: clientData,
+            error: clientsError,
+          } = await supabase
+            .from('clients')
+            .select(
+              'id, business_name, firm_id'
+            )
+            .in('firm_id', firmIds)
+            .eq('status', 'active')
+            .order('business_name', {
+              ascending: true,
+            });
+
+          if (clientsError) {
+            console.error(
+              'Clients fetch failed:',
+              clientsError
+            );
+          }
+
+          loadedClients =
+            (clientData as Client[]) || [];
+        }
+
+        if (!mounted) return;
+
+        setClients(loadedClients);
+
+        /*
+         * Prefer Acme Corp when available.
+         * Otherwise use the first available client.
+         */
+
+        const initialClientId =
+          loadedClients.find(
+            (client) =>
+              client.id === ACME_CORP_CLIENT_ID
+          )?.id ||
+          loadedClients[0]?.id ||
+          '';
+
+        setSelectedClientId(initialClientId);
+
+        if (!initialClientId) {
+          console.warn(
+            'No active clients found for this user.'
+          );
+
+          setTransactions([]);
+          return;
+        }
+
+        console.log(
+          '🏢 Loading transactions for client:',
+          initialClientId
+        );
+
+        /*
+         * -----------------------------------------------------
+         * LOAD TRANSACTIONS FOR SELECTED CLIENT
+         * -----------------------------------------------------
+         */
+
+        const {
+          data: transactionData,
+          error: transactionError,
         } = await supabase
           .from('transactions')
           .select('*')
           .eq('user_id', user.id)
-          .eq('client_id', ACME_CORP_CLIENT_ID)
+          .eq('client_id', initialClientId)
           .order('date', {
             ascending: false,
           });
 
-        if (error) {
+        if (transactionError) {
           console.error(
             'Transaction fetch failed:',
-            error
+            transactionError
           );
         }
 
         if (mounted) {
           setTransactions(
-            (data as Transaction[]) || []
+            (transactionData as Transaction[]) || []
           );
         }
       } catch (error) {
@@ -393,12 +499,76 @@ export default function DashboardPage() {
 
   /*
    * ---------------------------------------------------------
-   * REFRESH CLIENT TRANSACTIONS
+   * LOAD TRANSACTIONS WHEN CLIENT CHANGES
+   * ---------------------------------------------------------
+   */
+
+  useEffect(() => {
+    if (!userId || !selectedClientId) {
+      return;
+    }
+
+    let mounted = true;
+
+    async function loadSelectedClientTransactions() {
+      setLoading(true);
+
+      try {
+        console.log(
+          '🔄 Switching to client:',
+          selectedClientId
+        );
+
+        const {
+          data,
+          error,
+        } = await supabase
+          .from('transactions')
+          .select('*')
+          .eq('user_id', userId)
+          .eq('client_id', selectedClientId)
+          .order('date', {
+            ascending: false,
+          });
+
+        if (error) {
+          console.error(
+            'Selected client transaction fetch failed:',
+            error
+          );
+
+          return;
+        }
+
+        if (mounted) {
+          setTransactions(
+            (data as Transaction[]) || []
+          );
+        }
+      } finally {
+        if (mounted) {
+          setLoading(false);
+        }
+      }
+    }
+
+    loadSelectedClientTransactions();
+
+    return () => {
+      mounted = false;
+    };
+  }, [userId, selectedClientId]);
+
+  /*
+   * ---------------------------------------------------------
+   * REFRESH SELECTED CLIENT TRANSACTIONS
    * ---------------------------------------------------------
    */
 
   async function refreshTransactions() {
-    if (!userId) return;
+    if (!userId || !selectedClientId) {
+      return;
+    }
 
     const {
       data,
@@ -407,7 +577,7 @@ export default function DashboardPage() {
       .from('transactions')
       .select('*')
       .eq('user_id', userId)
-      .eq('client_id', ACME_CORP_CLIENT_ID)
+      .eq('client_id', selectedClientId)
       .order('date', {
         ascending: false,
       });
@@ -435,6 +605,13 @@ export default function DashboardPage() {
     if (!userId) {
       setCategoryMessage(
         'No authenticated user found.'
+      );
+      return;
+    }
+
+    if (!selectedClientId) {
+      setCategoryMessage(
+        'Please select a client first.'
       );
       return;
     }
@@ -480,7 +657,7 @@ export default function DashboardPage() {
           })
           .eq('id', tx.id)
           .eq('user_id', userId)
-          .eq('client_id', ACME_CORP_CLIENT_ID);
+          .eq('client_id', selectedClientId);
 
         if (updateError) {
           console.error(
@@ -553,6 +730,10 @@ export default function DashboardPage() {
     merchantName: string,
     newCategory: string
   ) {
+    if (!userId || !selectedClientId) {
+      return;
+    }
+
     setTransactions((previous) =>
       previous.map((tx) =>
         tx.id === txId
@@ -573,7 +754,7 @@ export default function DashboardPage() {
       })
       .eq('id', txId)
       .eq('user_id', userId)
-      .eq('client_id', ACME_CORP_CLIENT_ID);
+      .eq('client_id', selectedClientId);
 
     if (txError) {
       console.error(
@@ -585,7 +766,7 @@ export default function DashboardPage() {
       return;
     }
 
-    if (userId && merchantName) {
+    if (merchantName) {
       const {
         error: ruleError,
       } = await supabase
@@ -715,7 +896,7 @@ export default function DashboardPage() {
    * ---------------------------------------------------------
    * CSV EXPORT
    * ---------------------------------------------------------
-   */
+ */
 
   function exportToCSV() {
     if (filteredTransactions.length === 0) {
@@ -785,7 +966,7 @@ export default function DashboardPage() {
     link.href = url;
 
     link.download =
-      `LedgerAI_Report_${dateFilter}_${new Date()
+      `LedgerAI_${selectedClientId || 'Report'}_${dateFilter}_${new Date()
         .toISOString()
         .split('T')[0]}.csv`;
 
@@ -924,6 +1105,10 @@ export default function DashboardPage() {
       </div>
     );
   }
+
+  const selectedClient = clients.find(
+    (client) => client.id === selectedClientId
+  );
 
   /*
    * ---------------------------------------------------------
@@ -1128,7 +1313,7 @@ export default function DashboardPage() {
             }}
           >
             <PlaidLinkButton
-              selectedClientId={ACME_CORP_CLIENT_ID}
+              selectedClientId={selectedClientId}
               onBankConnected={async () => {
                 setCategoryMessage(
                   'Bank connected successfully.'
@@ -1142,7 +1327,8 @@ export default function DashboardPage() {
               onClick={handleLocalCategorize}
               disabled={
                 isCategorizing ||
-                transactions.length === 0
+                transactions.length === 0 ||
+                !selectedClientId
               }
               style={{
                 padding: '11px 18px',
@@ -1157,12 +1343,14 @@ export default function DashboardPage() {
                 fontWeight: 600,
                 cursor:
                   isCategorizing ||
-                  transactions.length === 0
+                  transactions.length === 0 ||
+                  !selectedClientId
                     ? 'not-allowed'
                     : 'pointer',
                 fontSize: 14,
                 opacity:
-                  transactions.length === 0
+                  transactions.length === 0 ||
+                  !selectedClientId
                     ? 0.5
                     : 1,
               }}
@@ -1216,6 +1404,89 @@ export default function DashboardPage() {
               Sign Out
             </button>
           </div>
+        </div>
+
+        {/* CLIENT SELECTOR */}
+
+        <div
+          style={{
+            marginBottom: 20,
+            padding: '16px 20px',
+            backgroundColor: '#0f172a',
+            borderRadius: 12,
+            border:
+              '1px solid rgba(56,189,248,0.2)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 16,
+            flexWrap: 'wrap',
+          }}
+        >
+          <div>
+            <div
+              style={{
+                color: '#38bdf8',
+                fontSize: 11,
+                fontWeight: 700,
+                textTransform: 'uppercase',
+                letterSpacing: '0.08em',
+                marginBottom: 5,
+              }}
+            >
+              Active Client
+            </div>
+
+            <div
+              style={{
+                color: '#f8fafc',
+                fontSize: 14,
+                fontWeight: 600,
+              }}
+            >
+              {selectedClient?.business_name ||
+                'No client selected'}
+            </div>
+          </div>
+
+          <select
+            value={selectedClientId}
+            onChange={(event) => {
+              setSelectedClientId(event.target.value);
+              setCategoryMessage('');
+            }}
+            disabled={clients.length === 0}
+            style={{
+              minWidth: 260,
+              padding: '10px 14px',
+              borderRadius: 8,
+              border:
+                '1px solid rgba(56,189,248,0.35)',
+              backgroundColor: '#1e293b',
+              color: '#f8fafc',
+              fontSize: 14,
+              fontWeight: 600,
+              cursor:
+                clients.length === 0
+                  ? 'not-allowed'
+                  : 'pointer',
+            }}
+          >
+            {clients.length === 0 ? (
+              <option value="">
+                No clients available
+              </option>
+            ) : (
+              clients.map((client) => (
+                <option
+                  key={client.id}
+                  value={client.id}
+                >
+                  {client.business_name}
+                </option>
+              ))
+            )}
+          </select>
         </div>
 
         {/* CATEGORY STATUS */}
@@ -1525,9 +1796,9 @@ export default function DashboardPage() {
             marginBottom: 28,
           }}
         >
-          {userId && (
+          {userId && selectedClientId && (
             <QueryBar
-              clientId={ACME_CORP_CLIENT_ID}
+              clientId={selectedClientId}
             />
           )}
         </div>
@@ -1996,3 +2267,4 @@ export default function DashboardPage() {
     </div>
   );
 }
+```
