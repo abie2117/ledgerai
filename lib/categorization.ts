@@ -17,6 +17,12 @@ interface PendingTxn {
   raw_plaid_category: string | null;
 }
 
+interface MappingRule {
+  merchant_pattern: string;
+  category_id: string;
+  confidence_score: number;
+}
+
 export async function categorizePendingTransactions(clientId: string) {
   const supabase = supabaseAdmin();
   const { data: pending, error } = await supabase
@@ -38,7 +44,9 @@ export async function categorizePendingTransactions(clientId: string) {
     .select('merchant_pattern, category_id, confidence_score')
     .eq('client_id', clientId);
 
-  const ruleMap = new Map((rules ?? []).map((r: any) => [normalizeMerchant(r.merchant_pattern), r]));
+  const ruleMap = new Map<string, MappingRule>(
+    (rules ?? []).map((r: any) => [normalizeMerchant(r.merchant_pattern), r as MappingRule])
+  );
   const needsClaude: PendingTxn[] = [];
 
   for (const txn of pending as PendingTxn[]) {
@@ -164,6 +172,31 @@ export async function recordCorrection(
     .from('transactions')
     .update({ ai_category_id: toCategoryId, status: 'confirmed', updated_at: new Date().toISOString() })
     .eq('id', transactionId);
+}
+
+export async function saveCategoryRule(
+  clientId: string,
+  merchantPattern: string,
+  categoryId: string,
+  confidenceScore: number = 0.85
+) {
+  const supabase = supabaseAdmin();
+  const { data, error } = await supabase
+    .from('category_mapping_rules')
+    .upsert(
+      {
+        client_id: clientId,
+        merchant_pattern: normalizeMerchant(merchantPattern),
+        category_id: categoryId,
+        confidence_score: confidenceScore,
+      },
+      { onConflict: 'client_id,merchant_pattern' }
+    )
+    .select()
+    .single();
+
+  if (error) throw error;
+  return data;
 }
 
 export async function categorizeWithLocalRules(clientId: string): Promise<{ categorized: number; skipped: number }> {

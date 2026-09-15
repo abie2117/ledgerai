@@ -1,130 +1,662 @@
 // app/api/plaid/exchange/route.ts
-// Uses service role client for plaid_items, accounts, and transactions writes
-// to bypass RLS — these are server-side operations that need elevated access.
-// Auth check still happens first to confirm the user is logged in.
 
 import { NextResponse } from 'next/server';
-import { Configuration, PlaidApi, PlaidEnvironments } from 'plaid';
+import {
+  Configuration,
+  PlaidApi,
+  PlaidEnvironments,
+} from 'plaid';
 import { createRouteHandlerClient } from '@/lib/supabase-server';
 import { createClient } from '@supabase/supabase-js';
 
+export const dynamic = 'force-dynamic';
+
+const plaidEnv =
+  (process.env.PLAID_ENV as keyof typeof PlaidEnvironments) ||
+  'sandbox';
+
 const configuration = new Configuration({
-  basePath: PlaidEnvironments[(process.env.PLAID_ENV as keyof typeof PlaidEnvironments) || 'sandbox'],
+  basePath: PlaidEnvironments[plaidEnv],
   baseOptions: {
     headers: {
-      'PLAID-CLIENT-ID': process.env.PLAID_CLIENT_ID,
-      'PLAID-SECRET': process.env.PLAID_SECRET,
+      'PLAID-CLIENT-ID': process.env.PLAID_CLIENT_ID!,
+      'PLAID-SECRET': process.env.PLAID_SECRET!,
     },
   },
 });
+
 const plaidClient = new PlaidApi(configuration);
 
-function serviceRole() {
+function createServiceRoleClient() {
   return createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.SUPABASE_SERVICE_ROLE_KEY!,
-    { auth: { persistSession: false } }
+    {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+      },
+    }
   );
 }
 
 export async function POST(req: Request) {
-  // Auth check — confirm user is logged in
-  const authClient = createRouteHandlerClient();
-  const { data: { user } } = await authClient.auth.getUser();
-  if (!user) {
-    return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
-  }
-
-  const db = serviceRole(); // all writes use service role to bypass RLS
-
   try {
-    const { public_token, client_id, clientId } = await req.json();
-    const resolvedClientId = clientId || client_id;
+    // ---------------------------------------------------------
+    // 1. AUTHENTICATE CURRENT USER
+    // ---------------------------------------------------------
 
-    if (!public_token) {
-      return NextResponse.json({ error: 'Missing public_token' }, { status: 400 });
+    const authClient = await createRouteHandlerClient();
+
+    const {
+      data: { user },
+      error: authError,
+    } = await authClient.auth.getUser();
+
+    if (authError || !user) {
+      console.error(
+        '[plaid/exchange] Authentication failed:',
+        authError
+      );
+
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Not authenticated',
+        },
+        { status: 401 }
+      );
     }
 
-    // 1. Exchange public token
-    const exchangeResponse = await plaidClient.itemPublicTokenExchange({ public_token });
-    const accessToken = exchangeResponse.data.access_token;
-    const itemId = exchangeResponse.data.item_id;
+    // ---------------------------------------------------------
+    // 2. READ REQUEST BODY
+    // ---------------------------------------------------------
 
-    // 2. Upsert plaid_item
-    const { data: plaidItem, error: itemError } = await db
+    const body = await req.json();
+
+    const publicToken = body?.public_token;
+
+    if (
+      !publicToken ||
+      typeof publicToken !== 'string'
+    ) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Missing or invalid public_token.',
+        },
+        { status: 400 }
+      );
+    }
+
+    const requestedClientId =
+      body?.client_id ||
+      body?.clientId ||
+      null;
+
+    // ---------------------------------------------------------
+    // 3. CREATE SERVICE-ROLE DATABASE CLIENT
+    // ---------------------------------------------------------
+
+    const db = createServiceRoleClient();
+
+    // ---------------------------------------------------------
+    // 4. FIND THE USER'S FIRMS
+    // ---------------------------------------------------------
+
+    const {
+      data: memberships,
+      error: membershipError,
+    } = await db
+      .from('firm_users')
+      .select('firm_id, role')
+      .eq('user_id', user.id);
+
+    if (membershipError) {
+      console.error(
+        '[plaid/exchange] Failed to load firm memberships:',
+        membershipError
+      );
+
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Unable to verify firm membership.',
+        },
+        { status: 500 }
+      );
+    }
+
+    if (!memberships || memberships.length === 0) {
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            'You are not associated with an accounting firm.',
+        },
+        { status: 403 }
+      );
+    }
+
+    const firmIds = memberships.map(
+      (membership) => membership.firm_id
+    );
+
+    // ---------------------------------------------------------
+    // 5. DETERMINE AND VERIFY LEDGERAI CLIENT
+    // ---------------------------------------------------------
+
+    let clientId = requestedClientId;
+
+    if (clientId) {
+      const {
+        data: selectedClient,
+        error: selectedClientError,
+      } = await db
+        .from('clients')
+        .select(
+          'id, firm_id, business_name, status'
+        )
+        .eq('id', clientId)
+        .in('firm_id', firmIds)
+        .maybeSingle();
+
+      if (selectedClientError) {
+        console.error(
+          '[plaid/exchange] Selected client lookup failed:',
+          selectedClientError
+        );
+
+        return NextResponse.json(
+          {
+            success: false,
+            error:
+              'Failed to verify the selected LedgerAI client.',
+          },
+          { status: 500 }
+        );
+      }
+
+      if (!selectedClient) {
+        return NextResponse.json(
+          {
+            success: false,
+            error:
+              'The selected client does not belong to one of your firms.',
+          },
+          { status: 403 }
+        );
+      }
+
+      if (selectedClient.status !== 'active') {
+        return NextResponse.json(
+          {
+            success: false,
+            error:
+              'The selected LedgerAI client is not active.',
+          },
+          { status: 400 }
+        );
+      }
+
+      console.log(
+        '[plaid/exchange] Selected client:',
+        selectedClient.id,
+        selectedClient.business_name
+      );
+    } else {
+      const {
+        data: defaultClient,
+        error: defaultClientError,
+      } = await db
+        .from('clients')
+        .select(
+          'id, firm_id, business_name, status'
+        )
+        .in('firm_id', firmIds)
+        .eq('status', 'active')
+        .order('created_at', {
+          ascending: true,
+        })
+        .limit(1)
+        .maybeSingle();
+
+      if (defaultClientError) {
+        console.error(
+          '[plaid/exchange] Failed to find default client:',
+          defaultClientError
+        );
+
+        return NextResponse.json(
+          {
+            success: false,
+            error:
+              'Could not determine the LedgerAI client.',
+          },
+          { status: 500 }
+        );
+      }
+
+      if (!defaultClient) {
+        return NextResponse.json(
+          {
+            success: false,
+            error:
+              'No active LedgerAI client exists for your firm.',
+          },
+          { status: 400 }
+        );
+      }
+
+      clientId = defaultClient.id;
+
+      console.log(
+        '[plaid/exchange] Using default client:',
+        clientId,
+        defaultClient.business_name
+      );
+    }
+
+    // ---------------------------------------------------------
+    // 6. EXCHANGE PLAID PUBLIC TOKEN
+    // ---------------------------------------------------------
+
+    const exchangeResponse =
+      await plaidClient.itemPublicTokenExchange({
+        public_token: publicToken,
+      });
+
+    const accessToken =
+      exchangeResponse.data.access_token;
+
+    const plaidItemId =
+      exchangeResponse.data.item_id;
+
+    // ---------------------------------------------------------
+    // 7. GET PLAID ACCOUNTS
+    // ---------------------------------------------------------
+
+    const accountsResponse =
+      await plaidClient.accountsGet({
+        access_token: accessToken,
+      });
+
+    const plaidAccounts =
+      accountsResponse.data.accounts || [];
+
+    if (plaidAccounts.length === 0) {
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            'Plaid connected, but no bank accounts were returned.',
+        },
+        { status: 400 }
+      );
+    }
+
+    // ---------------------------------------------------------
+    // 8. SAVE PLAID ITEM
+    // ---------------------------------------------------------
+
+    /*
+     * This preserves your current storage format.
+     *
+     * Note: Base64 is encoding, not encryption. For production,
+     * replace this with real encryption using a server-side key.
+     */
+
+    const encryptedAccessToken =
+      Buffer.from(accessToken).toString('base64');
+
+    const {
+      data: plaidItem,
+      error: plaidItemError,
+    } = await db
       .from('plaid_items')
-      .upsert({
-        client_id: resolvedClientId,
-        plaid_item_id: itemId,
-        access_token_encrypted: Buffer.from(accessToken).toString('base64'),
-        status: 'active',
-        last_synced_at: new Date().toISOString(),
-      }, { onConflict: 'plaid_item_id' })
+      .upsert(
+        {
+          client_id: clientId,
+          plaid_item_id: plaidItemId,
+          access_token_encrypted:
+            encryptedAccessToken,
+          status: 'active',
+          last_synced_at:
+            new Date().toISOString(),
+          token_key_version: 1,
+        },
+        {
+          onConflict: 'plaid_item_id',
+        }
+      )
       .select('id')
       .single();
 
-    if (itemError) console.error('[exchange] plaid_item upsert failed:', itemError.message);
-    const plaidItemId = plaidItem?.id;
+    if (plaidItemError || !plaidItem) {
+      console.error(
+        '[plaid/exchange] Failed to save Plaid item:',
+        plaidItemError
+      );
 
-    // 3. Get and upsert accounts
-    const accountsResponse = await plaidClient.accountsGet({ access_token: accessToken });
-    const accountIdMap = new Map<string, string>();
-
-    for (const acct of accountsResponse.data.accounts) {
-      const { data: accountRow, error: acctError } = await db
-        .from('accounts')
-        .upsert({
-          plaid_item_id: plaidItemId,
-          plaid_account_id: acct.account_id,
-          name: acct.name,
-          mask: acct.mask,
-          type: acct.type,
-          subtype: acct.subtype,
-        }, { onConflict: 'plaid_account_id' })
-        .select('id, plaid_account_id')
-        .single();
-
-      if (acctError) console.error('[exchange] account upsert failed:', acctError.message);
-      else if (accountRow) accountIdMap.set(acct.account_id, accountRow.id);
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            plaidItemError?.message ||
+            'Failed to save Plaid connection.',
+        },
+        { status: 500 }
+      );
     }
 
-    // 4. Fetch and insert transactions
+    const plaidItemDatabaseId =
+      plaidItem.id;
+
+    // ---------------------------------------------------------
+    // 9. SAVE PLAID ACCOUNTS
+    // ---------------------------------------------------------
+
+    const accountIdMap =
+      new Map<string, string>();
+
+    for (const account of plaidAccounts) {
+      const {
+        data: accountRow,
+        error: accountError,
+      } = await db
+        .from('accounts')
+        .upsert(
+          {
+            plaid_item_id:
+              plaidItemDatabaseId,
+
+            plaid_account_id:
+              account.account_id,
+
+            name:
+              account.name ||
+              'Plaid Account',
+
+            mask:
+              account.mask || null,
+
+            type:
+              account.type || null,
+
+            subtype:
+              account.subtype || null,
+          },
+          {
+            onConflict: 'plaid_account_id',
+          }
+        )
+        .select(
+          'id, plaid_account_id'
+        )
+        .single();
+
+      if (accountError || !accountRow) {
+        console.error(
+          '[plaid/exchange] Failed to save account:',
+          {
+            plaidAccountId:
+              account.account_id,
+            error: accountError,
+          }
+        );
+
+        continue;
+      }
+
+      accountIdMap.set(
+        account.account_id,
+        accountRow.id
+      );
+    }
+
+    if (accountIdMap.size === 0) {
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            'Plaid connected, but no LedgerAI bank accounts could be saved.',
+        },
+        { status: 500 }
+      );
+    }
+
+    // ---------------------------------------------------------
+    // 10. GET TRANSACTIONS
+    // ---------------------------------------------------------
+
     const now = new Date();
-    const startDate = new Date(now.getFullYear(), now.getMonth() - 1, 1).toISOString().split('T')[0];
-    const endDate = now.toISOString().split('T')[0];
 
-    const { data: plaidTxData } = await plaidClient.transactionsGet({
-      access_token: accessToken,
-      start_date: startDate,
-      end_date: endDate,
-    });
+    const startDate =
+      new Date(
+        now.getFullYear(),
+        now.getMonth() - 2,
+        1
+      )
+        .toISOString()
+        .split('T')[0];
 
-    if (plaidTxData.transactions.length > 0) {
-      const records = plaidTxData.transactions.map((tx) => ({
-        plaid_transaction_id: tx.transaction_id,
-        account_id: accountIdMap.get(tx.account_id) ?? null,
-        client_id: resolvedClientId,
-        posted_date: tx.date,
-        amount: tx.amount,
-        merchant_name: tx.merchant_name || tx.name,
-        raw_plaid_category: tx.category ? tx.category.join(', ') : null,
-        status: 'pending_review',
-      }));
+    const endDate =
+      now.toISOString().split('T')[0];
 
-      const { error: txError } = await db
+    let plaidTransactions: any[] = [];
+
+    try {
+      const transactionsResponse =
+        await plaidClient.transactionsGet({
+          access_token: accessToken,
+          start_date: startDate,
+          end_date: endDate,
+        });
+
+      plaidTransactions =
+        transactionsResponse.data.transactions ||
+        [];
+    } catch (transactionError: any) {
+      console.error(
+        '[plaid/exchange] Transaction request failed:',
+        transactionError?.response?.data ||
+          transactionError
+      );
+
+      return NextResponse.json({
+        success: true,
+        plaid_item_id:
+          plaidItemDatabaseId,
+        client_id: clientId,
+        accounts:
+          accountIdMap.size,
+        count: 0,
+        message:
+          'Bank connected successfully. Transactions are not available yet.',
+      });
+    }
+
+    // ---------------------------------------------------------
+    // 11. BUILD TRANSACTION RECORDS
+    // ---------------------------------------------------------
+
+    const transactionRecords =
+      plaidTransactions
+        .map((tx) => {
+          const localAccountId =
+            accountIdMap.get(
+              tx.account_id
+            );
+
+          if (!localAccountId) {
+            console.warn(
+              '[plaid/exchange] Skipping transaction with unknown account:',
+              {
+                transactionId:
+                  tx.transaction_id,
+                plaidAccountId:
+                  tx.account_id,
+              }
+            );
+
+            return null;
+          }
+
+          return {
+            account_id:
+              localAccountId,
+
+            client_id:
+              clientId,
+
+            plaid_transaction_id:
+              tx.transaction_id,
+
+            posted_date:
+              tx.date,
+
+            amount:
+              tx.amount,
+
+            merchant_name:
+              tx.merchant_name ||
+              tx.name ||
+              'Unknown Merchant',
+
+            raw_plaid_category:
+              Array.isArray(tx.category)
+                ? tx.category.join(', ')
+                : null,
+
+            status:
+              'pending_review',
+          };
+        })
+        .filter(
+          (
+            record
+          ): record is NonNullable<
+            typeof record
+          > =>
+            record !== null
+        );
+
+    // ---------------------------------------------------------
+    // 12. SAVE TRANSACTIONS
+    // ---------------------------------------------------------
+
+    if (transactionRecords.length > 0) {
+      const {
+        error: transactionError,
+      } = await db
         .from('transactions')
-        .upsert(records, { onConflict: 'plaid_transaction_id' });
+        .upsert(
+          transactionRecords,
+          {
+            onConflict:
+              'plaid_transaction_id',
+          }
+        );
 
-      if (txError) {
-        console.error('[exchange] transactions insert failed:', txError.message);
-        return NextResponse.json({ error: txError.message }, { status: 500 });
+      if (transactionError) {
+        console.error(
+          '[plaid/exchange] Transaction save failed:',
+          transactionError
+        );
+
+        return NextResponse.json(
+          {
+            success: false,
+            error:
+              transactionError.message,
+          },
+          { status: 500 }
+        );
       }
     }
 
-    console.log(`[exchange] Synced ${plaidTxData.transactions.length} transactions for client ${resolvedClientId}`);
-    return NextResponse.json({ success: true, count: plaidTxData.transactions.length });
-  } catch (err: any) {
-    console.error('[exchange] failed:', err.response?.data || err.message);
-    return NextResponse.json({ error: 'Failed to exchange token' }, { status: 500 });
+    // ---------------------------------------------------------
+    // 13. UPDATE LAST SYNC TIME
+    // ---------------------------------------------------------
+
+    await db
+      .from('plaid_items')
+      .update({
+        status: 'active',
+        last_synced_at:
+          new Date().toISOString(),
+      })
+      .eq(
+        'id',
+        plaidItemDatabaseId
+      );
+
+    // ---------------------------------------------------------
+    // 14. SUCCESS
+    // ---------------------------------------------------------
+
+    console.log(
+      '[plaid/exchange] SUCCESS',
+      {
+        authenticatedUser:
+          user.id,
+
+        clientId,
+
+        plaidItemId,
+
+        localPlaidItemId:
+          plaidItemDatabaseId,
+
+        accounts:
+          accountIdMap.size,
+
+        plaidTransactions:
+          plaidTransactions.length,
+
+        savedTransactions:
+          transactionRecords.length,
+      }
+    );
+
+    return NextResponse.json({
+      success: true,
+
+      plaid_item_id:
+        plaidItemDatabaseId,
+
+      client_id:
+        clientId,
+
+      accounts:
+        accountIdMap.size,
+
+      plaid_transactions:
+        plaidTransactions.length,
+
+      count:
+        transactionRecords.length,
+
+      message:
+        'Bank connected and transactions synchronized successfully.',
+    });
+  } catch (error: any) {
+    console.error(
+      '[plaid/exchange] FAILED:',
+      error?.response?.data ||
+        error?.message ||
+        error
+    );
+
+    return NextResponse.json(
+      {
+        success: false,
+        error:
+          error?.response?.data?.error_message ||
+          error?.message ||
+          'Failed to connect bank account.',
+      },
+      { status: 500 }
+    );
   }
 }
