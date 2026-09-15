@@ -48,6 +48,12 @@ interface GroupedMerchant {
   count: number;
 }
 
+interface SupabaseClientRecord {
+  id: string;
+  firm_id: string;
+  business_name: string;
+}
+
 const CATEGORY_OPTIONS = [
   'Uncategorized',
   'Advertising',
@@ -118,6 +124,18 @@ function escapeCsvValue(
   const stringValue = String(value ?? '');
 
   return `"${stringValue.replace(/"/g, '""')}"`;
+}
+
+function normalizeClients(
+  data: SupabaseClientRecord[] | null,
+): Client[] {
+  return (data ?? [])
+    .map((client) => ({
+      id: client.id,
+      name: client.business_name,
+      firm_id: client.firm_id,
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 export default function DashboardPage() {
@@ -196,26 +214,28 @@ export default function DashboardPage() {
         if (firmIds.length > 0) {
           const { data: clientData, error: clientError } = await supabase
             .from('clients')
-            .select('id, name, firm_id')
-            .in('firm_id', firmIds)
-            .order('name', { ascending: true });
+            .select('id, firm_id, business_name')
+            .in('firm_id', firmIds);
 
           if (clientError) {
             throw clientError;
           }
 
-          loadedClients = (clientData || []) as Client[];
+          loadedClients = normalizeClients(
+            (clientData || []) as SupabaseClientRecord[],
+          );
         } else {
           const { data: clientData, error: clientError } = await supabase
             .from('clients')
-            .select('id, name, firm_id')
-            .order('name', { ascending: true });
+            .select('id, firm_id, business_name');
 
           if (clientError) {
             throw clientError;
           }
 
-          loadedClients = (clientData || []) as Client[];
+          loadedClients = normalizeClients(
+            (clientData || []) as SupabaseClientRecord[],
+          );
         }
 
         setClients(loadedClients);
