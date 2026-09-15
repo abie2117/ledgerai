@@ -75,6 +75,13 @@ const CATEGORY_OPTIONS = [
   'Utilities',
 ];
 
+const SUGGESTED_QUESTIONS = [
+  'How much did I spend on Food & Dining last month?',
+  'Show me all transactions over $50',
+  'What are my top 5 merchants by total spend?',
+  'How much did I spend in total this month?',
+];
+
 function formatCurrency(amount: number) {
   return new Intl.NumberFormat('en-US', {
     style: 'currency',
@@ -166,6 +173,10 @@ export default function DashboardPage() {
   const [savingCategoryId, setSavingCategoryId] = useState<string | null>(
     null,
   );
+
+  const [financeQuestion, setFinanceQuestion] = useState('');
+  const [askAnswer, setAskAnswer] = useState('');
+  const [isAsking, setIsAsking] = useState(false);
 
   useEffect(() => {
     async function loadDashboard() {
@@ -278,12 +289,6 @@ export default function DashboardPage() {
         setTransactionsLoading(true);
         setErrorMessage('');
 
-        /*
-         * Transactions are loaded using client_id only.
-         * We do not filter by the current user's user_id because
-         * transactions may have been created by another user but
-         * still belong to the selected client.
-         */
         const { data, error } = await supabase
           .from('transactions')
           .select('*')
@@ -459,6 +464,8 @@ export default function DashboardPage() {
     setAccountFilter('All Accounts');
     setStartDate('');
     setEndDate('');
+    setFinanceQuestion('');
+    setAskAnswer('');
     setSuccessMessage('');
     setErrorMessage('');
   }
@@ -504,6 +511,11 @@ export default function DashboardPage() {
     } finally {
       setTransactionsLoading(false);
     }
+  }
+
+  async function handleBankConnected() {
+    await refreshTransactions();
+    setSuccessMessage('Bank connected and transactions refreshed successfully.');
   }
 
   async function handleCategoryChange(
@@ -685,6 +697,182 @@ export default function DashboardPage() {
     }
   }
 
+  function answerFinanceQuestion(question: string) {
+    const normalizedQuestion = question.toLowerCase().trim();
+
+    if (!normalizedQuestion) {
+      setAskAnswer('Please enter a question about your finances.');
+      return;
+    }
+
+    if (transactions.length === 0) {
+      setAskAnswer(
+        'There are no transactions available for this client yet.',
+      );
+      return;
+    }
+
+    const now = new Date();
+    const currentMonth = now.getMonth();
+    const currentYear = now.getFullYear();
+
+    if (
+      normalizedQuestion.includes('food') &&
+      normalizedQuestion.includes('dining') &&
+      normalizedQuestion.includes('last month')
+    ) {
+      const lastMonthDate = new Date(
+        currentYear,
+        currentMonth - 1,
+        1,
+      );
+
+      const lastMonth = lastMonthDate.getMonth();
+      const lastMonthYear = lastMonthDate.getFullYear();
+
+      const total = transactions
+        .filter((transaction) => {
+          const date = new Date(`${transaction.date}T00:00:00`);
+          const category = getTransactionCategory(transaction)
+            .toLowerCase();
+
+          return (
+            date.getMonth() === lastMonth &&
+            date.getFullYear() === lastMonthYear &&
+            (category.includes('food') ||
+              category.includes('dining'))
+          );
+        })
+        .reduce(
+          (sum, transaction) => sum + Number(transaction.amount || 0),
+          0,
+        );
+
+      setAskAnswer(
+        `You spent ${formatCurrency(
+          total,
+        )} on Food & Dining last month.`,
+      );
+      return;
+    }
+
+    if (
+      normalizedQuestion.includes('over $50') ||
+      normalizedQuestion.includes('over 50')
+    ) {
+      const matchingTransactions = transactions.filter(
+        (transaction) => Number(transaction.amount || 0) > 50,
+      );
+
+      if (matchingTransactions.length === 0) {
+        setAskAnswer('There are no transactions over $50.');
+        return;
+      }
+
+      const transactionText = matchingTransactions
+        .slice(0, 10)
+        .map(
+          (transaction) =>
+            `${formatDate(transaction.date)} — ${getMerchantName(
+              transaction,
+            )} — ${formatCurrency(
+              Number(transaction.amount || 0),
+            )}`,
+        )
+        .join('\n');
+
+      const remainingCount = matchingTransactions.length - 10;
+
+      setAskAnswer(
+        `I found ${
+          matchingTransactions.length
+        } transaction${
+          matchingTransactions.length === 1 ? '' : 's'
+        } over $50:\n\n${transactionText}${
+          remainingCount > 0
+            ? `\n\n...and ${remainingCount} more.`
+            : ''
+        }`,
+      );
+      return;
+    }
+
+    if (
+      normalizedQuestion.includes('top 5') &&
+      normalizedQuestion.includes('merchant')
+    ) {
+      const merchantTotals = new Map<string, number>();
+
+      transactions.forEach((transaction) => {
+        const merchant = getMerchantName(transaction);
+        const currentTotal = merchantTotals.get(merchant) || 0;
+
+        merchantTotals.set(
+          merchant,
+          currentTotal + Number(transaction.amount || 0),
+        );
+      });
+
+      const topMerchants = Array.from(merchantTotals.entries())
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 5)
+        .map(
+          ([merchant, total], index) =>
+            `${index + 1}. ${merchant} — ${formatCurrency(total)}`,
+        )
+        .join('\n');
+
+      setAskAnswer(
+        `Your top 5 merchants by total spend are:\n\n${topMerchants}`,
+      );
+      return;
+    }
+
+    if (
+      normalizedQuestion.includes('total') &&
+      normalizedQuestion.includes('this month')
+    ) {
+      const total = transactions
+        .filter((transaction) => {
+          const date = new Date(`${transaction.date}T00:00:00`);
+
+          return (
+            date.getMonth() === currentMonth &&
+            date.getFullYear() === currentYear
+          );
+        })
+        .reduce(
+          (sum, transaction) => sum + Number(transaction.amount || 0),
+          0,
+        );
+
+      setAskAnswer(
+        `You have spent ${formatCurrency(
+          total,
+        )} in total this month.`,
+      );
+      return;
+    }
+
+    setAskAnswer(
+      'I can currently answer questions about Food & Dining spending, transactions over $50, top merchants, and total spending this month.',
+    );
+  }
+
+  function handleAskQuestion() {
+    setIsAsking(true);
+
+    window.setTimeout(() => {
+      answerFinanceQuestion(financeQuestion);
+      setIsAsking(false);
+    }, 250);
+  }
+
+  function handleSuggestedQuestion(question: string) {
+    setFinanceQuestion(question);
+    answerFinanceQuestion(question);
+  }
+
   function exportTransactionsToCsv() {
     if (filteredTransactions.length === 0) {
       setErrorMessage('There are no transactions to export.');
@@ -838,7 +1026,10 @@ export default function DashboardPage() {
               </div>
 
               <div className="flex flex-wrap gap-2">
-                <PlaidLinkButton />
+                <PlaidLinkButton
+                  selectedClientId={selectedClientId}
+                  onBankConnected={handleBankConnected}
+                />
 
                 <button
                   type="button"
@@ -919,6 +1110,63 @@ export default function DashboardPage() {
               Unique merchants in view
             </p>
           </div>
+        </section>
+
+        <section className="rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-xl">
+          <div className="mb-4">
+            <h2 className="text-lg font-semibold text-white">
+              🔍 Ask anything about your finances
+            </h2>
+
+            <p className="mt-1 text-sm text-slate-400">
+              Ask a question about your transaction history and spending.
+            </p>
+          </div>
+
+          <div className="flex flex-col gap-3 sm:flex-row">
+            <input
+              type="text"
+              value={financeQuestion}
+              onChange={(event) =>
+                setFinanceQuestion(event.target.value)
+              }
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  handleAskQuestion();
+                }
+              }}
+              placeholder="Ask a question about your finances..."
+              className="flex-1 rounded-lg border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white outline-none placeholder:text-slate-500 focus:border-cyan-400"
+            />
+
+            <button
+              type="button"
+              onClick={handleAskQuestion}
+              disabled={isAsking || !financeQuestion.trim()}
+              className="rounded-lg bg-cyan-500 px-5 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {isAsking ? 'Asking...' : 'Ask'}
+            </button>
+          </div>
+
+          <div className="mt-4 flex flex-wrap gap-2">
+            {SUGGESTED_QUESTIONS.map((question) => (
+              <button
+                key={question}
+                type="button"
+                onClick={() => handleSuggestedQuestion(question)}
+                className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-left text-xs text-slate-300 transition hover:border-cyan-400 hover:text-cyan-300"
+              >
+                {question}
+              </button>
+            ))}
+          </div>
+
+          {askAnswer && (
+            <div className="mt-5 whitespace-pre-line rounded-lg border border-slate-700 bg-slate-950/80 p-4 text-sm leading-6 text-slate-200">
+              {askAnswer}
+            </div>
+          )}
         </section>
 
         <section className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
