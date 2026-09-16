@@ -859,10 +859,10 @@ export default function DashboardPage() {
     );
   }
 
-  async function handleAskQuestion() {
-  const question = financeQuestion.trim();
+ async function askQuestion(question: string) {
+  const trimmedQuestion = question.trim();
 
-  if (!question) {
+  if (!trimmedQuestion) {
     setAskAnswer('Please enter a question about your finances.');
     return;
   }
@@ -882,7 +882,7 @@ export default function DashboardPage() {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        question,
+        question: trimmedQuestion,
         selectedClientId,
       }),
     });
@@ -906,6 +906,10 @@ export default function DashboardPage() {
   } finally {
     setIsAsking(false);
   }
+}
+
+function handleAskQuestion() {
+  void askQuestion(financeQuestion);
 }
 
   function handleSuggestedQuestion(question: string) {
