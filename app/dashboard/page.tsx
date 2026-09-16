@@ -912,10 +912,10 @@ function handleAskQuestion() {
   void askQuestion(financeQuestion);
 }
 
-  function handleSuggestedQuestion(question: string) {
-    setFinanceQuestion(question);
-    answerFinanceQuestion(question);
-  }
+ function handleSuggestedQuestion(question: string) {
+  setFinanceQuestion(question);
+  void askQuestion(question);
+}
 
   function exportTransactionsToCsv() {
     if (filteredTransactions.length === 0) {
