@@ -121,6 +121,39 @@ function getTransactionCategory(transaction: Transaction) {
   return 'Uncategorized';
 }
 
+const OPERATING_EXPENSE_CATEGORIES = new Set([
+  'advertising & marketing',
+  'bank fees',
+  'cost of goods sold',
+  'contractors',
+  'education & training',
+  'insurance',
+  'legal & professional',
+  'meals & entertainment',
+  'office supplies',
+  'other business expenses',
+  'payroll',
+  'rent & lease',
+  'repairs & maintenance',
+  'software & subscriptions',
+  'taxes & licenses',
+  'transportation',
+  'travel',
+  'utilities',
+]);
+
+function isOperatingExpenseTransaction(transaction: Transaction) {
+  const amount = Number(transaction.amount || 0);
+
+  if (amount <= 0) {
+    return false;
+  }
+
+  const category = getTransactionCategory(transaction).toLowerCase().trim();
+
+  return OPERATING_EXPENSE_CATEGORIES.has(category);
+}
+
 function escapeCsvValue(
   value: string | number | boolean | null | undefined,
 ) {
@@ -457,27 +490,32 @@ export default function DashboardPage() {
     endDate,
   ]);
 
+  const spendingTransactions = useMemo(() => {
+    return filteredTransactions.filter(isOperatingExpenseTransaction);
+  }, [filteredTransactions]);
+
   const totalSpending = useMemo(() => {
-    return filteredTransactions.reduce(
+    return spendingTransactions.reduce(
       (total, transaction) => total + Number(transaction.amount || 0),
       0,
     );
-  }, [filteredTransactions]);
+  }, [spendingTransactions]);
 
   const transactionCount = filteredTransactions.length;
+  const spendingTransactionCount = spendingTransactions.length;
 
   const averageTransaction = useMemo(() => {
-    if (transactionCount === 0) {
+    if (spendingTransactionCount === 0) {
       return 0;
     }
 
-    return totalSpending / transactionCount;
-  }, [totalSpending, transactionCount]);
+    return totalSpending / spendingTransactionCount;
+  }, [totalSpending, spendingTransactionCount]);
 
   const merchantSummary = useMemo<GroupedMerchant[]>(() => {
     const merchantMap = new Map<string, GroupedMerchant>();
 
-    filteredTransactions.forEach((transaction) => {
+    spendingTransactions.forEach((transaction) => {
       const merchant = getMerchantName(transaction);
       const current = merchantMap.get(merchant);
       const amount = Number(transaction.amount || 0);
@@ -497,12 +535,12 @@ export default function DashboardPage() {
     return Array.from(merchantMap.values()).sort(
       (a, b) => b.total - a.total,
     );
-  }, [filteredTransactions]);
+  }, [spendingTransactions]);
 
   const categorySummary = useMemo(() => {
     const categoryMap = new Map<string, number>();
 
-    filteredTransactions.forEach((transaction) => {
+    spendingTransactions.forEach((transaction) => {
       const category = getTransactionCategory(transaction);
       const amount = Number(transaction.amount || 0);
 
@@ -518,7 +556,7 @@ export default function DashboardPage() {
         total,
       }))
       .sort((a, b) => b.total - a.total);
-  }, [filteredTransactions]);
+  }, [spendingTransactions]);
 
   function handleClientChange(
     event: ChangeEvent<HTMLSelectElement>,
@@ -1191,7 +1229,7 @@ function handleAskQuestion() {
 
           <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
             <p className="text-sm text-slate-400">
-              Average Transaction
+              Average Spend
             </p>
 
             <p className="mt-2 text-2xl font-bold text-white">
@@ -1199,7 +1237,7 @@ function handleAskQuestion() {
             </p>
 
             <p className="mt-1 text-xs text-slate-500">
-              Average amount per transaction
+              Average operating expense
             </p>
           </div>
 
