@@ -19,6 +19,11 @@ interface Transaction {
   name?: string | null;
   amount: number;
   category?: string | null;
+  ai_category_id?: string | null;
+  canonical_category?: {
+    id: string;
+    name: string;
+  } | null;
   account_name?: string | null;
   account_mask?: string | null;
   pending?: boolean | null;
@@ -114,6 +119,10 @@ function getMerchantName(transaction: Transaction) {
 }
 
 function getTransactionCategory(transaction: Transaction) {
+  if (transaction.canonical_category?.name) {
+    return transaction.canonical_category.name;
+  }
+
   if (transaction.category) {
     return transaction.category;
   }
@@ -299,6 +308,10 @@ export default function DashboardPage() {
               mask,
               type,
               subtype
+            ),
+            canonical_category:categories!transactions_ai_category_id_fkey (
+              id,
+              name
             )
           `)
           .eq('client_id', selectedClientId)
@@ -515,6 +528,10 @@ export default function DashboardPage() {
             mask,
             type,
             subtype
+          ),
+          canonical_category:categories!transactions_ai_category_id_fkey (
+            id,
+            name
           )
         `)
         .eq('client_id', selectedClientId)
@@ -640,6 +657,10 @@ export default function DashboardPage() {
             mask,
             type,
             subtype
+          ),
+          canonical_category:categories!transactions_ai_category_id_fkey (
+            id,
+            name
           )
         `)
         .eq('client_id', selectedClientId)
