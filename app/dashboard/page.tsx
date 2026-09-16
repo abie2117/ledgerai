@@ -15,6 +15,7 @@ interface Transaction {
   user_id?: string | null;
   client_id?: string | null;
   date: string;
+  posted_date?: string | null;
   merchant_name?: string | null;
   name?: string | null;
   amount: number;
@@ -95,6 +96,10 @@ function formatDate(date: string) {
     day: 'numeric',
     year: 'numeric',
   });
+}
+
+function getTransactionDate(transaction: Transaction) {
+  return transaction.posted_date || transaction.date;
 }
 
 function getMerchantName(transaction: Transaction) {
@@ -380,7 +385,7 @@ export default function DashboardPage() {
             )
           `)
           .eq('client_id', selectedClientId)
-          .order('date', {
+          .order('posted_date', {
             ascending: false,
           });
 
@@ -468,10 +473,10 @@ export default function DashboardPage() {
         account === accountFilter;
 
       const matchesStartDate =
-        !startDate || transaction.date >= startDate;
+        !startDate || getTransactionDate(transaction) >= startDate;
 
       const matchesEndDate =
-        !endDate || transaction.date <= endDate;
+        !endDate || getTransactionDate(transaction) <= endDate;
 
       return (
         matchesSearch &&
@@ -608,7 +613,7 @@ export default function DashboardPage() {
           )
         `)
         .eq('client_id', selectedClientId)
-        .order('date', {
+        .order('posted_date', {
           ascending: false,
         });
 
@@ -749,7 +754,7 @@ export default function DashboardPage() {
           )
         `)
         .eq('client_id', selectedClientId)
-        .order('date', {
+        .order('posted_date', {
           ascending: false,
         });
 
@@ -830,7 +835,7 @@ export default function DashboardPage() {
 
       const total = transactions
         .filter((transaction) => {
-          const date = new Date(`${transaction.date}T00:00:00`);
+          const date = new Date(`${getTransactionDate(transaction)}T00:00:00`);
           const category = getTransactionCategory(transaction)
             .toLowerCase();
 
@@ -871,7 +876,7 @@ export default function DashboardPage() {
         .slice(0, 10)
         .map(
           (transaction) =>
-            `${formatDate(transaction.date)} — ${getMerchantName(
+            `${formatDate(getTransactionDate(transaction))} — ${getMerchantName(
               transaction,
             )} — ${formatCurrency(
               Number(transaction.amount || 0),
@@ -932,7 +937,7 @@ export default function DashboardPage() {
     ) {
       const total = transactions
         .filter((transaction) => {
-          const date = new Date(`${transaction.date}T00:00:00`);
+          const date = new Date(`${getTransactionDate(transaction)}T00:00:00`);
 
           return (
             date.getMonth() === currentMonth &&
@@ -1034,7 +1039,7 @@ function handleAskQuestion() {
     ];
 
     const rows = filteredTransactions.map((transaction) => [
-      transaction.date,
+      getTransactionDate(transaction),
       getMerchantName(transaction),
       Number(transaction.amount || 0).toFixed(2),
       getTransactionCategory(transaction),
@@ -1532,7 +1537,7 @@ function handleAskQuestion() {
                           className="transition hover:bg-slate-800/40"
                         >
                           <td className="whitespace-nowrap px-5 py-4 text-sm text-slate-300">
-                            {formatDate(transaction.date)}
+                            {formatDate(getTransactionDate(transaction))}
                           </td>
 
                           <td className="px-5 py-4">
