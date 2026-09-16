@@ -352,7 +352,8 @@ async function categorizeBatchWithClaude(
       max_tokens: 2000,
       system:
         'You are a bookkeeping categorization engine. ' +
-        'You must choose exactly one category_id from the provided list for each transaction. ' +
+        'Choose a category_id only when an appropriate category exists in the supplied list. ' +
+        'If no supplied category is appropriate or confidence is low, return category_id as null. ' +
         'Never invent a category_id. ' +
         'Respond ONLY with a JSON array, no prose, no markdown fences.',
       messages: [
@@ -418,6 +419,10 @@ async function categorizeBatchWithClaude(
         Number(result.confidence || 0),
       ),
     );
+
+    if (!categoryId || confidence < 0.75) {
+      continue;
+    }
 
     await applyCategory(
       supabase,
@@ -798,10 +803,38 @@ export async function categorizeWithLocalRules(
         'transfer',
       ],
     },
+    {
+      pattern:
+        /food and drink|restaurants|fast food|coffee shop|mcdonald|starbucks/i,
+      hints: [
+        'Food & Dining',
+        'Meals',
+        'Restaurants',
+        'Food',
+      ],
+    },
+    {
+      pattern:
+        /travel.*taxi|taxi|rideshare|uber|lyft/i,
+      hints: [
+        'Travel',
+        'Transportation',
+      ],
+    },
+    {
+      pattern:
+        /travel.*airline|airlines|aviation|united airlines/i,
+      hints: [
+        'Travel',
+        'Airfare',
+        'Transportation',
+      ],
+    },
   ];
 
   let categorized = 0;
   let skipped = 0;
+  const needsClaude: PendingTxn[] = [];
 
   for (const txn of pending) {
     const merchantKey = normalizeMerchant(
@@ -875,7 +908,7 @@ export async function categorizeWithLocalRules(
     }
 
     if (!matchedCategory) {
-      skipped++;
+      needsClaude.push(txn as PendingTxn);
       continue;
     }
 
@@ -888,6 +921,30 @@ export async function categorizeWithLocalRules(
 
     categorized++;
   }
+
+  if (needsClaude.length > 0) {
+    await categorizeBatchWithClaude(
+      supabase,
+      clientId,
+      needsClaude,
+      categories,
+    );
+  }
+
+  const { count: remainingCount, error: remainingError } =
+    await supabase
+      .from('transactions')
+      .select('id', { count: 'exact', head: true })
+      .eq('client_id', clientId)
+      .eq('status', 'pending_review')
+      .is('ai_category_id', null);
+
+  if (remainingError) {
+    throw remainingError;
+  }
+
+  skipped = remainingCount || 0;
+  categorized = pending.length - skipped;
 
   return {
     categorized,
