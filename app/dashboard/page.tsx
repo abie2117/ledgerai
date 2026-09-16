@@ -602,132 +602,90 @@ export default function DashboardPage() {
   }
 
   async function handleLocalCategorize() {
-    if (!selectedClientId || filteredTransactions.length === 0) {
+    if (!selectedClientId) {
+      setErrorMessage('Please select a client first.');
       return;
     }
 
     try {
+      setTransactionsLoading(true);
       setErrorMessage('');
       setSuccessMessage('');
 
-      const updates = filteredTransactions
-        .filter(
-          (transaction) =>
-            !transaction.category ||
-            transaction.category === 'Uncategorized',
-        )
-        .map((transaction) => {
-          const merchant = getMerchantName(transaction).toLowerCase();
+      const response = await fetch('/api/categorize-local', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          clientId: selectedClientId,
+        }),
+      });
 
-          let category = 'Uncategorized';
+      const result = await response.json();
 
-          if (
-            merchant.includes('uber') ||
-            merchant.includes('lyft') ||
-            merchant.includes('airline') ||
-            merchant.includes('hotel')
-          ) {
-            category = 'Travel';
-          } else if (
-            merchant.includes('google') ||
-            merchant.includes('microsoft') ||
-            merchant.includes('adobe') ||
-            merchant.includes('slack') ||
-            merchant.includes('notion') ||
-            merchant.includes('software')
-          ) {
-            category = 'Software';
-          } else if (
-            merchant.includes('amazon') ||
-            merchant.includes('office') ||
-            merchant.includes('staples')
-          ) {
-            category = 'Office Supplies';
-          } else if (
-            merchant.includes('restaurant') ||
-            merchant.includes('cafe') ||
-            merchant.includes('coffee') ||
-            merchant.includes('doordash') ||
-            merchant.includes('grubhub')
-          ) {
-            category = 'Food & Dining';
-          } else if (
-            merchant.includes('facebook') ||
-            merchant.includes('meta') ||
-            merchant.includes('google ads') ||
-            merchant.includes('advertising')
-          ) {
-            category = 'Advertising';
-          } else if (
-            merchant.includes('electric') ||
-            merchant.includes('water') ||
-            merchant.includes('utility') ||
-            merchant.includes('internet')
-          ) {
-            category = 'Utilities';
-          } else if (
-            merchant.includes('bank') ||
-            merchant.includes('fee') ||
-            merchant.includes('stripe')
-          ) {
-            category = 'Bank Fees';
-          }
+      if (!response.ok) {
+        throw new Error(
+          result.error || 'Unable to categorize transactions.',
+        );
+      }
 
-          return {
-            id: transaction.id,
-            category,
-          };
+      const { data, error } = await supabase
+        .from('transactions')
+        .select(`
+          *,
+          accounts (
+            id,
+            name,
+            mask,
+            type,
+            subtype
+          )
+        `)
+        .eq('client_id', selectedClientId)
+        .order('date', {
+          ascending: false,
         });
 
-      if (updates.length === 0) {
-        setSuccessMessage(
-          'There are no uncategorized transactions to update.',
-        );
-        return;
+      if (error) {
+        throw error;
       }
 
-      for (const update of updates) {
-        const { error } = await supabase
-          .from('transactions')
-          .update({
-            category: update.category,
-          })
-          .eq('id', update.id)
-          .eq('client_id', selectedClientId);
-
-        if (error) {
-          throw error;
-        }
-      }
-
-      setTransactions((currentTransactions) =>
-        currentTransactions.map((transaction) => {
-          const update = updates.find(
-            (item) => item.id === transaction.id,
-          );
-
-          if (!update) {
-            return transaction;
-          }
-
-          return {
-            ...transaction,
-            category: update.category,
-          };
+      const formattedTransactions = (data || []).map(
+        (transaction: any) => ({
+          ...transaction,
+          account_name: transaction.accounts?.name || null,
+          account_mask: transaction.accounts?.mask || null,
         }),
       );
 
-      setSuccessMessage(
-        `${updates.length} transaction${
-          updates.length === 1 ? '' : 's'
-        } categorized successfully.`,
-      );
+      setTransactions(formattedTransactions as Transaction[]);
+
+      if (result.categorized > 0) {
+        setSuccessMessage(
+          `${result.categorized} transaction${
+            result.categorized === 1 ? '' : 's'
+          } categorized successfully.${
+            result.skipped > 0
+              ? ` ${result.skipped} left for review.`
+              : ''
+          }`,
+        );
+      } else {
+        setSuccessMessage(
+          result.skipped > 0
+            ? `No additional transactions matched the available local rules. ${result.skipped} left for review.`
+            : 'There are no transactions waiting for local categorization.',
+        );
+      }
     } catch (error: any) {
       console.error('Error categorizing transactions:', error);
 
       setErrorMessage(
         error?.message || 'Unable to categorize transactions.',
       );
+    } finally {
+      setTransactionsLoading(false);
     }
   }
 
