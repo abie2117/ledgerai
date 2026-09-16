@@ -1,16 +1,9 @@
-import { NextResponse } from "next/server";
-import { createRouteHandlerClient } from "../../../lib/supabase-server";
-import { createClient } from "@supabase/supabase-js";
+import { NextResponse } from 'next/server';
+import { createRouteHandlerClient } from '../../../lib/supabase-server';
+import { createClient } from '@supabase/supabase-js';
+import { categorizeWithLocalRules } from '../../../lib/categorization';
 
-export const dynamic = "force-dynamic";
-
-type Transaction = {
-  id: string;
-  merchant_name: string | null;
-  raw_plaid_category: string | null;
-  category: string | null;
-  client_id: string;
-};
+export const dynamic = 'force-dynamic';
 
 function serviceRoleClient() {
   return createClient(
@@ -20,145 +13,8 @@ function serviceRoleClient() {
       auth: {
         persistSession: false,
       },
-    }
+    },
   );
-}
-
-function categorizeTransaction(
-  merchantName: string | null,
-  plaidCategory: string | null
-): string {
-  const merchant = (merchantName || "")
-    .toLowerCase()
-    .trim();
-
-  const plaid = (plaidCategory || "")
-    .toLowerCase()
-    .trim();
-
-  // FOOD & DINING
-  if (
-    merchant.includes("mcdonald") ||
-    merchant.includes("starbucks") ||
-    merchant.includes("restaurant") ||
-    merchant.includes("doordash") ||
-    merchant.includes("uber eats") ||
-    merchant.includes("grubhub") ||
-    merchant.includes("subway") ||
-    merchant.includes("chipotle") ||
-    merchant.includes("pizza") ||
-    merchant.includes("burger") ||
-    plaid.includes("food") ||
-    plaid.includes("restaurant")
-  ) {
-    return "Food & Dining";
-  }
-
-  // TRANSPORTATION
-  if (
-    merchant === "uber" ||
-    merchant.startsWith("uber ") ||
-    merchant.includes("lyft") ||
-    merchant.includes("taxi") ||
-    merchant.includes("shell") ||
-    merchant.includes("chevron") ||
-    merchant.includes("exxon") ||
-    merchant.includes("bp ") ||
-    merchant.includes("fuel") ||
-    merchant.includes("gas station") ||
-    plaid.includes("transportation") ||
-    plaid.includes("transport")
-  ) {
-    return "Transportation";
-  }
-
-  // AIRLINES / TRAVEL
-  if (
-    merchant.includes("united airlines") ||
-    merchant.includes("american airlines") ||
-    merchant.includes("delta") ||
-    merchant.includes("southwest") ||
-    merchant.includes("jetblue") ||
-    merchant.includes("airbnb") ||
-    merchant.includes("hotel") ||
-    merchant.includes("marriott") ||
-    merchant.includes("hilton") ||
-    merchant.includes("booking.com") ||
-    plaid.includes("airlines") ||
-    plaid.includes("lodging") ||
-    plaid.includes("travel")
-  ) {
-    return "Transportation";
-  }
-
-  // SOFTWARE & TECHNOLOGY
-  if (
-    merchant.includes("openai") ||
-    merchant.includes("anthropic") ||
-    merchant.includes("vercel") ||
-    merchant.includes("github") ||
-    merchant.includes("google cloud") ||
-    merchant.includes("aws") ||
-    merchant.includes("amazon web services") ||
-    merchant.includes("microsoft") ||
-    merchant.includes("adobe") ||
-    merchant.includes("dropbox") ||
-    merchant.includes("notion") ||
-    merchant.includes("slack") ||
-    merchant.includes("zoom") ||
-    plaid.includes("software") ||
-    plaid.includes("technology")
-  ) {
-    return "Software & Tech";
-  }
-
-  // BILLS & UTILITIES
-  if (
-    merchant.includes("electric") ||
-    merchant.includes("power") ||
-    merchant.includes("water") ||
-    merchant.includes("internet") ||
-    merchant.includes("comcast") ||
-    merchant.includes("verizon") ||
-    merchant.includes("at&t") ||
-    merchant.includes("t-mobile") ||
-    merchant.includes("utility") ||
-    merchant.includes("insurance") ||
-    plaid.includes("utilities") ||
-    plaid.includes("utility") ||
-    plaid.includes("bills")
-  ) {
-    return "Bills & Utilities";
-  }
-
-  // SHOPPING
-  if (
-    merchant.includes("amazon") ||
-    merchant.includes("walmart") ||
-    merchant.includes("target") ||
-    merchant.includes("costco") ||
-    merchant.includes("ebay") ||
-    merchant.includes("etsy") ||
-    merchant.includes("shop") ||
-    plaid.includes("shops") ||
-    plaid.includes("shopping")
-  ) {
-    return "Shopping";
-  }
-
-  // INCOME / TRANSFERS
-  if (
-    merchant.includes("payroll") ||
-    merchant.includes("salary") ||
-    merchant.includes("direct deposit") ||
-    merchant.includes("deposit") ||
-    merchant.includes("income") ||
-    merchant.includes("transfer")
-  ) {
-    return "Transfer / Income";
-  }
-
-  return "Uncategorized";
 }
 
 export async function POST(req: Request) {
@@ -179,17 +35,17 @@ export async function POST(req: Request) {
 
     if (authError || !user) {
       console.error(
-        "[categorize-local] Authentication failed:",
-        authError
+        '[categorize-local] Authentication failed:',
+        authError,
       );
 
       return NextResponse.json(
         {
-          error: "Not authenticated",
+          error: 'Not authenticated',
         },
         {
           status: 401,
-        }
+        },
       );
     }
 
@@ -209,143 +65,187 @@ export async function POST(req: Request) {
       body = {};
     }
 
+    const clientId =
+      typeof body.clientId === 'string'
+        ? body.clientId.trim()
+        : '';
+
     /*
-     * For LedgerAI users, the authenticated Supabase
-     * user ID is the correct transaction client ID.
+     * A LedgerAI user is a firm user/bookkeeper.
+     * The authenticated user ID is NOT the client ID.
+     *
+     * Never silently fall back to user.id.
      */
 
-    const clientId =
-      body.clientId || user.id;
+    if (!clientId) {
+      return NextResponse.json(
+        {
+          error: 'clientId is required',
+        },
+        {
+          status: 400,
+        },
+      );
+    }
 
     /*
      * ---------------------------------------------------------
-     * 3. USE SERVICE ROLE FOR SERVER-SIDE UPDATES
+     * 3. VERIFY USER BELONGS TO A FIRM
      * ---------------------------------------------------------
-     *
-     * This bypasses Supabase RLS for the controlled
-     * server-side categorization operation.
      */
 
     const db = serviceRoleClient();
 
-    /*
-     * ---------------------------------------------------------
-     * 4. FETCH TRANSACTIONS
-     * ---------------------------------------------------------
-     */
-
     const {
-      data: transactions,
-      error: fetchError,
+      data: firmMemberships,
+      error: membershipError,
     } = await db
-      .from("transactions")
-      .select(
-        "id, merchant_name, raw_plaid_category, category, client_id"
-      )
-      .eq("client_id", clientId);
+      .from('firm_users')
+      .select('firm_id')
+      .eq('user_id', user.id);
 
-    if (fetchError) {
+    if (membershipError) {
       console.error(
-        "[categorize-local] Transaction fetch failed:",
-        fetchError
+        '[categorize-local] Firm membership lookup failed:',
+        membershipError,
       );
 
       return NextResponse.json(
         {
-          error: fetchError.message,
+          error: 'Unable to verify firm membership',
         },
         {
           status: 500,
-        }
+        },
       );
     }
 
-    const rows =
-      (transactions as Transaction[]) || [];
-
-    console.log(
-      `[categorize-local] Found ${rows.length} transactions for client ${clientId}`
+    const firmIds = Array.from(
+      new Set(
+        (firmMemberships || [])
+          .map((membership: any) => membership.firm_id)
+          .filter(Boolean),
+      ),
     );
+
+    if (!firmIds.length) {
+      console.warn(
+        '[categorize-local] User has no firm membership:',
+        user.id,
+      );
+
+      return NextResponse.json(
+        {
+          error: 'No firm membership found',
+        },
+        {
+          status: 403,
+        },
+      );
+    }
 
     /*
      * ---------------------------------------------------------
-     * 5. CATEGORIZE + UPDATE
+     * 4. VERIFY CLIENT BELONGS TO USER'S FIRM
      * ---------------------------------------------------------
      */
 
-    let updated = 0;
-    let unchanged = 0;
-    let failed = 0;
+    const {
+      data: client,
+      error: clientError,
+    } = await db
+      .from('clients')
+      .select('id, firm_id, name, status')
+      .eq('id', clientId)
+      .in('firm_id', firmIds)
+      .maybeSingle();
 
-    for (const transaction of rows) {
-      const newCategory =
-        categorizeTransaction(
-          transaction.merchant_name,
-          transaction.raw_plaid_category
-        );
+    if (clientError) {
+      console.error(
+        '[categorize-local] Client verification failed:',
+        clientError,
+      );
 
-      /*
-       * If already correctly categorized,
-       * don't perform another database write.
-       */
-
-      if (
-        transaction.category ===
-        newCategory
-      ) {
-        unchanged++;
-        continue;
-      }
-
-      const {
-        data: updatedRows,
-        error: updateError,
-      } = await db
-        .from("transactions")
-        .update({
-          category: newCategory,
-          updated_at:
-            new Date().toISOString(),
-        })
-        .eq("id", transaction.id)
-        .eq("client_id", clientId)
-        .select("id, category");
-
-      if (updateError) {
-        failed++;
-
-        console.error(
-          "[categorize-local] Update failed:",
-          {
-            transactionId:
-              transaction.id,
-            merchant:
-              transaction.merchant_name,
-            error: updateError,
-          }
-        );
-
-        continue;
-      }
-
-      if (
-        updatedRows &&
-        updatedRows.length > 0
-      ) {
-        updated++;
-
-        console.log(
-          `[categorize-local] ${transaction.merchant_name} → ${newCategory}`
-        );
-      } else {
-        failed++;
-
-        console.error(
-          "[categorize-local] Update returned no rows:",
-          transaction.id
-        );
-      }
+      return NextResponse.json(
+        {
+          error: 'Unable to verify client',
+        },
+        {
+          status: 500,
+        },
+      );
     }
+
+    if (!client) {
+      console.warn(
+        '[categorize-local] Client is not accessible to user:',
+        {
+          userId: user.id,
+          clientId,
+        },
+      );
+
+      return NextResponse.json(
+        {
+          error: 'Client not found or access denied',
+        },
+        {
+          status: 403,
+        },
+      );
+    }
+
+    /*
+     * Do not categorize transactions for an inactive client.
+     *
+     * This accepts either a boolean is_active column elsewhere
+     * in the app or the status-style model used by this query.
+     * Here we only reject an explicitly inactive status.
+     */
+
+    if (
+      typeof client.status === 'string' &&
+      client.status.toLowerCase() === 'inactive'
+    ) {
+      return NextResponse.json(
+        {
+          error: 'Client is inactive',
+        },
+        {
+          status: 400,
+        },
+      );
+    }
+
+    /*
+     * ---------------------------------------------------------
+     * 5. RUN THE SINGLE LOCAL CATEGORIZATION ENGINE
+     * ---------------------------------------------------------
+     *
+     * The actual categorization logic now lives in:
+     *
+     * lib/categorization.ts
+     *
+     * That function:
+     * - uses client-specific learned mapping rules first
+     * - resolves canonical category IDs
+     * - prioritizes client categories over global duplicates
+     * - synchronizes ai_category_id + category
+     * - leaves transactions untouched when no safe match exists
+     * - does NOT call Claude
+     */
+
+    console.log(
+      '[categorize-local] Starting categorization:',
+      {
+        userId: user.id,
+        clientId,
+        clientName: client.name,
+      },
+    );
+
+    const result =
+      await categorizeWithLocalRules(clientId);
 
     /*
      * ---------------------------------------------------------
@@ -354,41 +254,41 @@ export async function POST(req: Request) {
      */
 
     console.log(
-      "[categorize-local] COMPLETE:",
+      '[categorize-local] COMPLETE:',
       {
         userId: user.id,
         clientId,
-        total: rows.length,
-        updated,
-        unchanged,
-        failed,
-      }
+        clientName: client.name,
+        categorized: result.categorized,
+        skipped: result.skipped,
+      },
     );
 
     return NextResponse.json({
       success: true,
-      total: rows.length,
-      updated,
-      unchanged,
-      failed,
+      clientId,
+      categorized: result.categorized,
+      skipped: result.skipped,
       message:
-        `Categorized ${updated} transaction(s).`,
+        result.categorized > 0
+          ? `Categorized ${result.categorized} transaction(s).`
+          : 'No uncategorized transactions matched the available local rules.',
     });
   } catch (error: any) {
     console.error(
-      "[categorize-local] FAILED:",
-      error?.message || error
+      '[categorize-local] FAILED:',
+      error?.message || error,
     );
 
     return NextResponse.json(
       {
         error:
           error?.message ||
-          "Local categorization failed.",
+          'Local categorization failed.',
       },
       {
         status: 500,
-      }
+      },
     );
   }
 }
