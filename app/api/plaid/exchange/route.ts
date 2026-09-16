@@ -72,7 +72,7 @@ export async function POST(req: Request) {
     // 2. READ REQUEST BODY
     // ---------------------------------------------------------
 
-    const body = await req.json();
+    const body = await req.json().catch(() => ({}));
 
     const publicToken = body?.public_token;
 
@@ -89,10 +89,31 @@ export async function POST(req: Request) {
       );
     }
 
-    const requestedClientId =
+    const clientId =
       body?.client_id ||
       body?.clientId ||
       null;
+
+    /*
+     * IMPORTANT:
+     *
+     * Never guess which LedgerAI client owns a bank connection.
+     * The frontend must explicitly provide the selected clients.id.
+     */
+
+    if (
+      !clientId ||
+      typeof clientId !== 'string'
+    ) {
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            'A LedgerAI client must be selected before connecting a bank.',
+        },
+        { status: 400 }
+      );
+    }
 
     // ---------------------------------------------------------
     // 3. CREATE SERVICE-ROLE DATABASE CLIENT
@@ -143,119 +164,64 @@ export async function POST(req: Request) {
     );
 
     // ---------------------------------------------------------
-    // 5. DETERMINE AND VERIFY LEDGERAI CLIENT
+    // 5. VERIFY THE SELECTED LEDGERAI CLIENT
     // ---------------------------------------------------------
 
-    let clientId = requestedClientId;
+    const {
+      data: selectedClient,
+      error: selectedClientError,
+    } = await db
+      .from('clients')
+      .select(
+        'id, firm_id, business_name, status'
+      )
+      .eq('id', clientId)
+      .in('firm_id', firmIds)
+      .maybeSingle();
 
-    if (clientId) {
-      const {
-        data: selectedClient,
-        error: selectedClientError,
-      } = await db
-        .from('clients')
-        .select(
-          'id, firm_id, business_name, status'
-        )
-        .eq('id', clientId)
-        .in('firm_id', firmIds)
-        .maybeSingle();
-
-      if (selectedClientError) {
-        console.error(
-          '[plaid/exchange] Selected client lookup failed:',
-          selectedClientError
-        );
-
-        return NextResponse.json(
-          {
-            success: false,
-            error:
-              'Failed to verify the selected LedgerAI client.',
-          },
-          { status: 500 }
-        );
-      }
-
-      if (!selectedClient) {
-        return NextResponse.json(
-          {
-            success: false,
-            error:
-              'The selected client does not belong to one of your firms.',
-          },
-          { status: 403 }
-        );
-      }
-
-      if (selectedClient.status !== 'active') {
-        return NextResponse.json(
-          {
-            success: false,
-            error:
-              'The selected LedgerAI client is not active.',
-          },
-          { status: 400 }
-        );
-      }
-
-      console.log(
-        '[plaid/exchange] Selected client:',
-        selectedClient.id,
-        selectedClient.business_name
+    if (selectedClientError) {
+      console.error(
+        '[plaid/exchange] Selected client lookup failed:',
+        selectedClientError
       );
-    } else {
-      const {
-        data: defaultClient,
-        error: defaultClientError,
-      } = await db
-        .from('clients')
-        .select(
-          'id, firm_id, business_name, status'
-        )
-        .in('firm_id', firmIds)
-        .eq('status', 'active')
-        .order('created_at', {
-          ascending: true,
-        })
-        .limit(1)
-        .maybeSingle();
 
-      if (defaultClientError) {
-        console.error(
-          '[plaid/exchange] Failed to find default client:',
-          defaultClientError
-        );
-
-        return NextResponse.json(
-          {
-            success: false,
-            error:
-              'Could not determine the LedgerAI client.',
-          },
-          { status: 500 }
-        );
-      }
-
-      if (!defaultClient) {
-        return NextResponse.json(
-          {
-            success: false,
-            error:
-              'No active LedgerAI client exists for your firm.',
-          },
-          { status: 400 }
-        );
-      }
-
-      clientId = defaultClient.id;
-
-      console.log(
-        '[plaid/exchange] Using default client:',
-        clientId,
-        defaultClient.business_name
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            'Failed to verify the selected LedgerAI client.',
+        },
+        { status: 500 }
       );
     }
+
+    if (!selectedClient) {
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            'The selected client does not belong to one of your firms.',
+        },
+        { status: 403 }
+      );
+    }
+
+    if (selectedClient.status !== 'active') {
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            'The selected LedgerAI client is not active.',
+        },
+        { status: 400 }
+      );
+    }
+
+    console.log(
+      '[plaid/exchange] Selected client:',
+      selectedClient.id,
+      selectedClient.business_name
+    );
 
     // ---------------------------------------------------------
     // 6. EXCHANGE PLAID PUBLIC TOKEN
@@ -300,10 +266,11 @@ export async function POST(req: Request) {
     // ---------------------------------------------------------
 
     /*
-     * This preserves your current storage format.
+     * This preserves the existing storage format.
      *
-     * Note: Base64 is encoding, not encryption. For production,
-     * replace this with real encryption using a server-side key.
+     * NOTE:
+     * Base64 is encoding, not encryption.
+     * The access-token storage should be upgraded separately.
      */
 
     const encryptedAccessToken =
