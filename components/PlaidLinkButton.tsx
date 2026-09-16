@@ -33,6 +33,9 @@ export default function PlaidLinkButton({
           headers: {
             'Content-Type': 'application/json',
           },
+          body: JSON.stringify({
+            client_id: selectedClientId,
+          }),
         });
 
         const data = await res.json();
