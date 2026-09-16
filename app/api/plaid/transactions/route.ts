@@ -6,37 +6,90 @@ export const dynamic = 'force-dynamic';
 export async function POST(req: Request) {
   try {
     const body = await req.json().catch(() => ({}));
-    const clientId = body.client_id || body.client_name;
+
+    const clientId = body?.client_id;
+
+    if (!clientId || typeof clientId !== 'string') {
+      return NextResponse.json(
+        {
+          transactions: [],
+          error: 'A valid client_id is required.',
+        },
+        { status: 400 }
+      );
+    }
+
     const supabase = await createServerComponentClient();
 
-    // 1. First attempt: Query transactions matching client identifier
-    let transactions: any[] = [];
-    if (clientId) {
-      const { data } = await supabase
-        .from('transactions')
-        .select('*')
-        .eq('client_id', clientId);
-      if (data && data.length > 0) {
-        transactions = data;
-      }
+    const {
+      data: transactions,
+      error,
+    } = await supabase
+      .from('transactions')
+      .select(`
+        *,
+        accounts (
+          id,
+          name,
+          mask,
+          type,
+          subtype
+        )
+      `)
+      .eq('client_id', clientId)
+      .order('posted_date', { ascending: false });
+
+    if (error) {
+      console.error(
+        'Supabase transactions query error:',
+        error.message
+      );
+
+      return NextResponse.json(
+        {
+          transactions: [],
+          error: 'Unable to load transactions.',
+        },
+        { status: 500 }
+      );
     }
 
-    // 2. Fallback: If no client match or client_id is missing, load all transactions
-    if (transactions.length === 0) {
-      const { data: allTransactions, error } = await supabase
-        .from('transactions')
-        .select('*');
+    const formattedTransactions = (transactions || []).map(
+      (transaction: any) => ({
+        ...transaction,
 
-      if (error) {
-        console.error('Supabase Query Error:', error.message);
-        return NextResponse.json({ transactions: [] }, { status: 200 });
-      }
-      transactions = allTransactions || [];
-    }
+        account_name:
+          transaction.accounts?.name || null,
 
-    return NextResponse.json({ transactions }, { status: 200 });
+        account_mask:
+          transaction.accounts?.mask || null,
+
+        account_type:
+          transaction.accounts?.type || null,
+
+        account_subtype:
+          transaction.accounts?.subtype || null,
+      })
+    );
+
+    return NextResponse.json(
+      {
+        transactions: formattedTransactions,
+      },
+      { status: 200 }
+    );
   } catch (err: any) {
-    console.error('Error in transactions route:', err);
-    return NextResponse.json({ transactions: [] }, { status: 200 });
+    console.error(
+      'Error in transactions route:',
+      err
+    );
+
+    return NextResponse.json(
+      {
+        transactions: [],
+        error: 'Unable to load transactions.',
+      },
+      { status: 500 }
+    );
   }
 }
