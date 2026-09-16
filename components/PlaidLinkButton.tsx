@@ -13,19 +13,33 @@ export default function PlaidLinkButton({
   onBankConnected,
 }: PlaidLinkButtonProps) {
   const [token, setToken] = useState<string | null>(null);
-  const [loadingToken, setLoadingToken] = useState(true);
+  const [loadingToken, setLoadingToken] = useState(false);
   const [isExchanging, setIsExchanging] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   useEffect(() => {
     let mounted = true;
 
+    if (!selectedClientId) {
+      setToken(null);
+      setLoadingToken(false);
+      setErrorMessage(null);
+
+      return () => {
+        mounted = false;
+      };
+    }
+
     async function fetchLinkToken() {
       try {
+        setToken(null);
         setLoadingToken(true);
         setErrorMessage(null);
 
-        console.log('🔐 Requesting Plaid Link token...');
+        console.log(
+          '🔐 Requesting Plaid Link token for client:',
+          selectedClientId
+        );
 
         const res = await fetch('/api/plaid/create-link-token', {
           method: 'POST',
@@ -75,7 +89,11 @@ export default function PlaidLinkButton({
 
         if (mounted) {
           setToken(data.link_token);
-          console.log('✅ Plaid Link token created');
+
+          console.log(
+            '✅ Plaid Link token created for client:',
+            selectedClientId
+          );
         }
       } catch (error) {
         console.error(
@@ -100,7 +118,7 @@ export default function PlaidLinkButton({
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [selectedClientId]);
 
   const onSuccess = useCallback(
     async (publicToken: string) => {
@@ -110,11 +128,6 @@ export default function PlaidLinkButton({
 
         console.log('🏦 Plaid bank selected successfully');
         console.log('🔄 Exchanging Plaid public token...');
-
-        /*
-         * selectedClientId must be a real clients.id UUID.
-         * Do not fall back to the Supabase auth user ID.
-         */
 
         if (!selectedClientId) {
           console.error(
@@ -195,6 +208,7 @@ export default function PlaidLinkButton({
   const isReady =
     ready &&
     !!token &&
+    !!selectedClientId &&
     !loadingToken &&
     !isExchanging;
 
