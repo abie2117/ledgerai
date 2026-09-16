@@ -923,12 +923,28 @@ export async function categorizeWithLocalRules(
   }
 
   if (needsClaude.length > 0) {
-    await categorizeBatchWithClaude(
-      supabase,
-      clientId,
-      needsClaude,
-      categories,
-    );
+    try {
+      await categorizeBatchWithClaude(
+        supabase,
+        clientId,
+        needsClaude,
+        categories,
+      );
+    } catch (error: any) {
+      /*
+       * Claude is an optional fallback.
+       *
+       * If the AI provider is unavailable, out of credits,
+       * rate-limited, or returns an unexpected response,
+       * keep every category already applied by learned/local
+       * rules and leave the remaining transactions safely
+       * pending for manual review.
+       */
+      console.warn(
+        '[categorization] AI fallback unavailable. Remaining transactions were left for review:',
+        error?.message || error,
+      );
+    }
   }
 
   const { count: remainingCount, error: remainingError } =
