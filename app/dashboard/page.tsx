@@ -41,6 +41,13 @@ interface Client {
   firm_id?: string | null;
 }
 
+interface Category {
+  id: string;
+  name: string;
+  client_id?: string | null;
+  coa_code?: string | null;
+}
+
 interface FirmMembership {
   firm_id: string;
   user_id: string;
@@ -59,26 +66,6 @@ interface SupabaseClientRecord {
   business_name: string;
 }
 
-const CATEGORY_OPTIONS = [
-  'Uncategorized',
-  'Advertising',
-  'Bank Fees',
-  'Contractors',
-  'Education',
-  'Entertainment',
-  'Food & Dining',
-  'Insurance',
-  'Interest',
-  'Legal & Professional',
-  'Meals',
-  'Office Supplies',
-  'Payroll',
-  'Rent',
-  'Software',
-  'Taxes',
-  'Travel',
-  'Utilities',
-];
 
 const SUGGESTED_QUESTIONS = [
   'How much did I spend on Food & Dining last month?',
@@ -163,6 +150,7 @@ export default function DashboardPage() {
 
   const [selectedClientId, setSelectedClientId] = useState<string>('');
   const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
 
   const [loading, setLoading] = useState(true);
   const [transactionsLoading, setTransactionsLoading] = useState(false);
@@ -288,6 +276,50 @@ export default function DashboardPage() {
   }, []);
 
   useEffect(() => {
+    async function loadAvailableCategories() {
+      if (!selectedClientId) {
+        setCategories([]);
+        return;
+      }
+
+      try {
+        const { data, error } = await supabase
+          .from('categories')
+          .select('id, name, client_id, coa_code')
+          .or(`client_id.eq.${selectedClientId},client_id.is.null`)
+          .order('name', { ascending: true });
+
+        if (error) throw error;
+
+        const byName = new Map<string, Category>();
+
+        for (const category of (data || []) as Category[]) {
+          const key = category.name.toLowerCase().trim();
+          const existing = byName.get(key);
+
+          if (!existing || category.client_id === selectedClientId) {
+            byName.set(key, category);
+          }
+        }
+
+        setCategories(
+          Array.from(byName.values()).sort((a, b) =>
+            a.name.localeCompare(b.name),
+          ),
+        );
+      } catch (error: any) {
+        console.error('Error loading categories:', error);
+        setCategories([]);
+        setErrorMessage(
+          error?.message || 'Unable to load categories for this client.',
+        );
+      }
+    }
+
+    loadAvailableCategories();
+  }, [selectedClientId]);
+
+  useEffect(() => {
     async function loadSelectedClientTransactions() {
       if (!selectedClientId) {
         setTransactions([]);
@@ -367,15 +399,18 @@ export default function DashboardPage() {
   }, [transactions]);
 
   const categoryOptions = useMemo(() => {
-    const categories = transactions.map((transaction) =>
-      getTransactionCategory(transaction),
-    );
+    const categoryNames = [
+      ...categories.map((category) => category.name),
+      ...transactions.map((transaction) =>
+        getTransactionCategory(transaction),
+      ),
+    ];
 
     return [
       'All Categories',
-      ...Array.from(new Set([...CATEGORY_OPTIONS, ...categories])).sort(),
+      ...Array.from(new Set(categoryNames)).sort(),
     ];
-  }, [transactions]);
+  }, [categories, transactions]);
 
   const filteredTransactions = useMemo(() => {
     return transactions.filter((transaction) => {
@@ -571,27 +606,31 @@ export default function DashboardPage() {
 
   async function handleCategoryChange(
     transactionId: string,
-    category: string,
+    categoryId: string,
   ) {
-    if (!selectedClientId) {
-      return;
-    }
+    if (!selectedClientId || !categoryId) return;
 
     try {
       setSavingCategoryId(transactionId);
       setErrorMessage('');
       setSuccessMessage('');
 
-      const { error } = await supabase
-        .from('transactions')
-        .update({
-          category,
-        })
-        .eq('id', transactionId)
-        .eq('client_id', selectedClientId);
+      const response = await fetch('/api/category-correction', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          transactionId,
+          clientId: selectedClientId,
+          categoryId,
+        }),
+      });
 
-      if (error) {
-        throw error;
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          result.error || 'Unable to update transaction category.',
+        );
       }
 
       setTransactions((currentTransactions) =>
@@ -599,17 +638,25 @@ export default function DashboardPage() {
           transaction.id === transactionId
             ? {
                 ...transaction,
-                category,
+                ai_category_id: result.category.id,
+                category: result.category.name,
+                canonical_category: {
+                  id: result.category.id,
+                  name: result.category.name,
+                },
               }
             : transaction,
         ),
       );
 
       setEditingCategoryId(null);
-      setSuccessMessage('Category updated successfully.');
+      setSuccessMessage(
+        result.unchanged
+          ? 'Category is already up to date.'
+          : 'Category updated and learning saved successfully.',
+      );
     } catch (error: any) {
       console.error('Error updating transaction category:', error);
-
       setErrorMessage(
         error?.message || 'Unable to update transaction category.',
       );
@@ -1482,7 +1529,7 @@ function handleAskQuestion() {
                           <td className="px-5 py-4">
                             {isEditing ? (
                               <select
-                                value={category}
+                                value={transaction.ai_category_id || ''}
                                 disabled={isSaving}
                                 onChange={(event) =>
                                   handleCategoryChange(
@@ -1496,16 +1543,22 @@ function handleAskQuestion() {
                                 autoFocus
                                 className="rounded-lg border border-cyan-400 bg-slate-950 px-2 py-1.5 text-sm text-white outline-none"
                               >
-                                {CATEGORY_OPTIONS.map(
-                                  (categoryOption) => (
-                                    <option
-                                      key={categoryOption}
-                                      value={categoryOption}
-                                    >
-                                      {categoryOption}
-                                    </option>
-                                  ),
+                                {!transaction.ai_category_id && (
+                                  <option value="" disabled>
+                                    Select category
+                                  </option>
                                 )}
+
+                                {categories.map((categoryOption) => (
+                                  <option
+                                    key={categoryOption.id}
+                                    value={categoryOption.id}
+                                  >
+                                    {categoryOption.coa_code
+                                      ? `${categoryOption.coa_code} — ${categoryOption.name}`
+                                      : categoryOption.name}
+                                  </option>
+                                ))}
                               </select>
                             ) : (
                               <button
