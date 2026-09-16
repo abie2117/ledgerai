@@ -1,294 +1,160 @@
 import { NextResponse } from 'next/server';
-import { createRouteHandlerClient } from '../../../lib/supabase-server';
 import { createClient } from '@supabase/supabase-js';
+import { createServerSupabaseClient } from '../../../lib/supabase-server';
 import { categorizeWithLocalRules } from '../../../lib/categorization';
 
-export const dynamic = 'force-dynamic';
-
-function serviceRoleClient() {
-  return createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
-    {
-      auth: {
-        persistSession: false,
-      },
-    },
-  );
-}
-
-export async function POST(req: Request) {
+export async function POST(request: Request) {
   try {
-    /*
-     * ---------------------------------------------------------
-     * 1. AUTHENTICATE CURRENT USER
-     * ---------------------------------------------------------
-     */
-
-    const authClient =
-      await createRouteHandlerClient();
+    // Authenticate the currently signed-in bookkeeper/user.
+    const supabase = await createServerSupabaseClient();
 
     const {
       data: { user },
       error: authError,
-    } = await authClient.auth.getUser();
+    } = await supabase.auth.getUser();
 
     if (authError || !user) {
-      console.error(
-        '[categorize-local] Authentication failed:',
-        authError,
-      );
-
       return NextResponse.json(
-        {
-          error: 'Not authenticated',
-        },
-        {
-          status: 401,
-        },
+        { error: 'Unauthorized' },
+        { status: 401 },
       );
     }
 
-    /*
-     * ---------------------------------------------------------
-     * 2. READ REQUEST
-     * ---------------------------------------------------------
-     */
+    // Read the selected client explicitly.
+    const body = await request.json();
 
-    let body: {
-      clientId?: string;
-    } = {};
-
-    try {
-      body = await req.json();
-    } catch {
-      body = {};
-    }
-
-    const clientId =
-      typeof body.clientId === 'string'
-        ? body.clientId.trim()
-        : '';
-
-    /*
-     * A LedgerAI user is a firm user/bookkeeper.
-     * The authenticated user ID is NOT the client ID.
-     *
-     * Never silently fall back to user.id.
-     */
+    const clientId = body.clientId || body.client_id;
 
     if (!clientId) {
       return NextResponse.json(
-        {
-          error: 'clientId is required',
-        },
-        {
-          status: 400,
-        },
+        { error: 'Missing clientId' },
+        { status: 400 },
       );
     }
 
-    /*
-     * ---------------------------------------------------------
-     * 3. VERIFY USER BELONGS TO A FIRM
-     * ---------------------------------------------------------
-     */
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-    const db = serviceRoleClient();
+    if (!supabaseUrl || !serviceRoleKey) {
+      console.error(
+        'Missing NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY.',
+      );
 
+      return NextResponse.json(
+        { error: 'Server configuration error' },
+        { status: 500 },
+      );
+    }
+
+    const admin = createClient(
+      supabaseUrl,
+      serviceRoleKey,
+      {
+        auth: {
+          autoRefreshToken: false,
+          persistSession: false,
+        },
+      },
+    );
+
+    // Find the firms this authenticated user belongs to.
     const {
-      data: firmMemberships,
+      data: memberships,
       error: membershipError,
-    } = await db
+    } = await admin
       .from('firm_users')
       .select('firm_id')
       .eq('user_id', user.id);
 
     if (membershipError) {
       console.error(
-        '[categorize-local] Firm membership lookup failed:',
+        'Unable to verify firm membership:',
         membershipError,
       );
 
       return NextResponse.json(
-        {
-          error: 'Unable to verify firm membership',
-        },
-        {
-          status: 500,
-        },
+        { error: 'Unable to verify firm membership.' },
+        { status: 500 },
       );
     }
 
-    const firmIds = Array.from(
-      new Set(
-        (firmMemberships || [])
-          .map((membership: any) => membership.firm_id)
-          .filter(Boolean),
-      ),
-    );
+    const firmIds = (memberships || [])
+      .map((membership: any) => membership.firm_id)
+      .filter(Boolean);
 
-    if (!firmIds.length) {
-      console.warn(
-        '[categorize-local] User has no firm membership:',
-        user.id,
-      );
-
+    if (firmIds.length === 0) {
       return NextResponse.json(
-        {
-          error: 'No firm membership found',
-        },
-        {
-          status: 403,
-        },
+        { error: 'You do not belong to a firm.' },
+        { status: 403 },
       );
     }
 
-    /*
-     * ---------------------------------------------------------
-     * 4. VERIFY CLIENT BELONGS TO USER'S FIRM
-     * ---------------------------------------------------------
-     */
-
+    // Verify that the selected client belongs to one of the
+    // authenticated user's firms.
+    //
+    // These are the client columns already used successfully
+    // by the dashboard.
     const {
       data: client,
       error: clientError,
-    } = await db
+    } = await admin
       .from('clients')
-      .select('id, firm_id, name, status')
+      .select('id, firm_id, business_name')
       .eq('id', clientId)
       .in('firm_id', firmIds)
       .maybeSingle();
 
     if (clientError) {
       console.error(
-        '[categorize-local] Client verification failed:',
+        'Unable to verify client:',
         clientError,
       );
 
       return NextResponse.json(
-        {
-          error: 'Unable to verify client',
-        },
-        {
-          status: 500,
-        },
+        { error: 'Unable to verify client.' },
+        { status: 500 },
       );
     }
 
     if (!client) {
-      console.warn(
-        '[categorize-local] Client is not accessible to user:',
-        {
-          userId: user.id,
-          clientId,
-        },
-      );
-
       return NextResponse.json(
         {
-          error: 'Client not found or access denied',
+          error:
+            'Selected client was not found or does not belong to your firm.',
         },
-        {
-          status: 403,
-        },
+        { status: 403 },
       );
     }
 
-    /*
-     * Do not categorize transactions for an inactive client.
-     *
-     * This accepts either a boolean is_active column elsewhere
-     * in the app or the status-style model used by this query.
-     * Here we only reject an explicitly inactive status.
-     */
-
-    if (
-      typeof client.status === 'string' &&
-      client.status.toLowerCase() === 'inactive'
-    ) {
-      return NextResponse.json(
-        {
-          error: 'Client is inactive',
-        },
-        {
-          status: 400,
-        },
-      );
-    }
-
-    /*
-     * ---------------------------------------------------------
-     * 5. RUN THE SINGLE LOCAL CATEGORIZATION ENGINE
-     * ---------------------------------------------------------
-     *
-     * The actual categorization logic now lives in:
-     *
-     * lib/categorization.ts
-     *
-     * That function:
-     * - uses client-specific learned mapping rules first
-     * - resolves canonical category IDs
-     * - prioritizes client categories over global duplicates
-     * - synchronizes ai_category_id + category
-     * - leaves transactions untouched when no safe match exists
-     * - does NOT call Claude
-     */
-
     console.log(
-      '[categorize-local] Starting categorization:',
-      {
-        userId: user.id,
-        clientId,
-        clientName: client.name,
-      },
+      'Running local categorization for client:',
+      client.id,
+      client.business_name,
     );
 
-    const result =
-      await categorizeWithLocalRules(clientId);
-
-    /*
-     * ---------------------------------------------------------
-     * 6. SUCCESS
-     * ---------------------------------------------------------
-     */
-
-    console.log(
-      '[categorize-local] COMPLETE:',
-      {
-        userId: user.id,
-        clientId,
-        clientName: client.name,
-        categorized: result.categorized,
-        skipped: result.skipped,
-      },
-    );
+    // Run the centralized categorization logic.
+    const result = await categorizeWithLocalRules(client.id);
 
     return NextResponse.json({
       success: true,
-      clientId,
+      clientId: client.id,
+      clientName: client.business_name,
       categorized: result.categorized,
       skipped: result.skipped,
-      message:
-        result.categorized > 0
-          ? `Categorized ${result.categorized} transaction(s).`
-          : 'No uncategorized transactions matched the available local rules.',
     });
   } catch (error: any) {
     console.error(
-      '[categorize-local] FAILED:',
-      error?.message || error,
+      'Local categorization route error:',
+      error,
     );
 
     return NextResponse.json(
       {
         error:
           error?.message ||
-          'Local categorization failed.',
+          'Unable to categorize transactions.',
       },
-      {
-        status: 500,
-      },
+      { status: 500 },
     );
   }
 }
