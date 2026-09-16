@@ -291,7 +291,16 @@ export default function DashboardPage() {
 
         const { data, error } = await supabase
           .from('transactions')
-          .select('*')
+          .select(`
+            *,
+            accounts (
+              id,
+              name,
+              mask,
+              type,
+              subtype
+            )
+          `)
           .eq('client_id', selectedClientId)
           .order('date', {
             ascending: false,
@@ -301,7 +310,15 @@ export default function DashboardPage() {
           throw error;
         }
 
-        setTransactions((data || []) as Transaction[]);
+        const formattedTransactions = (data || []).map(
+          (transaction: any) => ({
+            ...transaction,
+            account_name: transaction.accounts?.name || null,
+            account_mask: transaction.accounts?.mask || null,
+          }),
+        );
+
+        setTransactions(formattedTransactions as Transaction[]);
       } catch (error: any) {
         console.error(
           'Error loading selected client transactions:',
@@ -490,7 +507,16 @@ export default function DashboardPage() {
 
       const { data, error } = await supabase
         .from('transactions')
-        .select('*')
+        .select(`
+          *,
+          accounts (
+            id,
+            name,
+            mask,
+            type,
+            subtype
+          )
+        `)
         .eq('client_id', selectedClientId)
         .order('date', {
           ascending: false,
@@ -500,7 +526,15 @@ export default function DashboardPage() {
         throw error;
       }
 
-      setTransactions((data || []) as Transaction[]);
+      const formattedTransactions = (data || []).map(
+        (transaction: any) => ({
+          ...transaction,
+          account_name: transaction.accounts?.name || null,
+          account_mask: transaction.accounts?.mask || null,
+        }),
+      );
+
+      setTransactions(formattedTransactions as Transaction[]);
       setSuccessMessage('Transactions refreshed successfully.');
     } catch (error: any) {
       console.error('Error refreshing transactions:', error);
