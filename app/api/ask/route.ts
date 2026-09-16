@@ -1,58 +1,95 @@
-async function askQuestion(question: string) {
-  const trimmedQuestion = question.trim();
+import { NextResponse } from 'next/server';
+import Anthropic from '@anthropic-ai/sdk';
+import { createServerSupabaseClient } from '@/lib/supabase-server';
 
-  if (!trimmedQuestion) {
-    setAskAnswer('Please enter a question about your finances.');
-    return;
-  }
+const anthropic = new Anthropic({
+  apiKey: process.env.ANTHROPIC_API_KEY,
+});
 
-  if (!selectedClientId) {
-    setAskAnswer('Please select a client first.');
-    return;
-  }
-
-  setIsAsking(true);
-  setAskAnswer('');
-
+export async function POST(request: Request) {
   try {
-    const response = await fetch('/api/ask', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        question: trimmedQuestion,
-        selectedClientId,
-      }),
-    });
+    const { question, selectedClientId } = await request.json();
 
-    const result = await response.json();
-
-    if (!response.ok) {
-      setAskAnswer(
-        result.error ||
-          'Unable to answer your question right now.',
+    if (!question || !selectedClientId) {
+      return NextResponse.json(
+        { error: 'Question and client are required.' },
+        { status: 400 },
       );
-      return;
     }
 
-    setAskAnswer(result.answer || 'No answer was returned.');
+    const supabase = await createServerSupabaseClient();
+
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+      return NextResponse.json(
+        { error: 'You must be signed in.' },
+        { status: 401 },
+      );
+    }
+
+    const { data: transactions, error } = await supabase
+      .from('transactions')
+      .select('*')
+      .eq('client_id', selectedClientId)
+      .order('date', { ascending: false });
+
+    if (error) {
+      console.error('Transaction query error:', error);
+
+      return NextResponse.json(
+        { error: 'Unable to load transactions.' },
+        { status: 500 },
+      );
+    }
+
+    const prompt = `
+You are a helpful financial dashboard assistant.
+
+Answer the user's question using only the transaction data provided below.
+
+Rules:
+- Do not invent information.
+- Be clear and concise.
+- If the data does not answer the question, say so.
+- Positive amounts represent spending.
+- Negative amounts represent income or refunds.
+
+User question:
+${question}
+
+Transaction data:
+${JSON.stringify(transactions || [], null, 2)}
+`;
+
+    const response = await anthropic.messages.create({
+      model:
+        process.env.ANTHROPIC_MODEL ||
+        'claude-3-5-sonnet-20240620',
+      max_tokens: 800,
+      temperature: 0,
+      messages: [
+        {
+          role: 'user',
+          content: prompt,
+        },
+      ],
+    });
+
+    const answer = response.content
+      .filter((block) => block.type === 'text')
+      .map((block) => block.text)
+      .join('\n');
+
+    return NextResponse.json({ answer });
   } catch (error) {
-    console.error('Ask question error:', error);
+    console.error('Ask API error:', error);
 
-    setAskAnswer(
-      'Unable to connect to the finance assistant. Please try again.',
+    return NextResponse.json(
+      { error: 'Something went wrong. Please try again.' },
+      { status: 500 },
     );
-  } finally {
-    setIsAsking(false);
   }
-}
-
-function handleAskQuestion() {
-  void askQuestion(financeQuestion);
-}
-
-function handleSuggestedQuestion(question: string) {
-  setFinanceQuestion(question);
-  void askQuestion(question);
 }
