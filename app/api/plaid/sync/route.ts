@@ -246,12 +246,13 @@ export async function POST(req: Request) {
     }
 
     // ---------------------------------------------------------
-    // 5. LOAD ACTIVE, MIGRATED PLAID ITEMS
+    // 5. LOAD ACTIVE PLAID ITEMS
     //
-    // Permanent sync intentionally requires a real stored
-    // cursor. Legacy Items must first pass through the migration
-    // route. This prevents this endpoint from guessing whether
-    // a null cursor represents an old or newly connected Item.
+    // Permanent sync supports both:
+    // - initialized Items with a stored cursor
+    // - newly connected Items whose first sync returned no cursor yet
+    //
+    // Legacy fake test rows are excluded explicitly.
     // ---------------------------------------------------------
 
     const {
@@ -270,7 +271,7 @@ export async function POST(req: Request) {
       `)
       .eq('client_id', clientId)
       .eq('status', 'active')
-      .not('cursor', 'is', null);
+      .not('plaid_item_id', 'like', 'item_test_%');
 
     if (plaidItemsError) {
       console.error(
@@ -293,7 +294,7 @@ export async function POST(req: Request) {
         {
           success: false,
           error:
-            'No sync-ready Plaid Items were found for this client.',
+            'No active Plaid Items were found for this client.',
         },
         { status: 400 }
       );
@@ -371,33 +372,44 @@ export async function POST(req: Request) {
         // original stored cursor.
         // -----------------------------------------------------
 
-        const originalCursor = item.cursor as string;
+        const originalCursor =
+          typeof item.cursor === 'string' && item.cursor.length > 0
+            ? item.cursor
+            : null;
 
         let addedTransactions: any[] = [];
         let modifiedTransactions: any[] = [];
         let removedTransactions: any[] = [];
-        let finalCursor = originalCursor;
+        let finalCursor = originalCursor || '';
 
         const maxPaginationRestarts = 3;
         let paginationRestartCount = 0;
 
         while (true) {
-          let pageCursor = originalCursor;
+          let pageCursor: string | null = originalCursor;
           let hasMore = true;
 
           addedTransactions = [];
           modifiedTransactions = [];
           removedTransactions = [];
-          finalCursor = originalCursor;
+          finalCursor = originalCursor || '';
 
           try {
             while (hasMore) {
+              const syncRequest: any = {
+                access_token: accessToken,
+                count: 500,
+              };
+
+              // A brand-new Item must omit cursor on its first
+              // /transactions/sync request. Initialized Items
+              // continue from their stored cursor.
+              if (pageCursor) {
+                syncRequest.cursor = pageCursor;
+              }
+
               const syncResponse =
-                await plaidClient.transactionsSync({
-                  access_token: accessToken,
-                  cursor: pageCursor,
-                  count: 500,
-                });
+                await plaidClient.transactionsSync(syncRequest);
 
               const data = syncResponse.data;
 
@@ -450,10 +462,7 @@ export async function POST(req: Request) {
           }
         }
 
-        if (
-          !finalCursor ||
-          typeof finalCursor !== 'string'
-        ) {
+        if (typeof finalCursor !== 'string') {
           throw new Error(
             'Plaid did not return a valid sync cursor.'
           );
@@ -672,19 +681,24 @@ export async function POST(req: Request) {
         // other's cursor.
         // -----------------------------------------------------
 
-        const {
-          data: updatedItem,
-          error: cursorUpdateError,
-        } = await db
+        let cursorUpdateQuery = db
           .from('plaid_items')
           .update({
-            cursor: finalCursor,
+            cursor: finalCursor || null,
             last_synced_at:
               new Date().toISOString(),
           })
           .eq('id', item.id)
-          .eq('client_id', clientId)
-          .eq('cursor', originalCursor)
+          .eq('client_id', clientId);
+
+        cursorUpdateQuery = originalCursor
+          ? cursorUpdateQuery.eq('cursor', originalCursor)
+          : cursorUpdateQuery.is('cursor', null);
+
+        const {
+          data: updatedItem,
+          error: cursorUpdateError,
+        } = await cursorUpdateQuery
           .select('id, cursor')
           .maybeSingle();
 
