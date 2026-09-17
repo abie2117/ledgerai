@@ -132,6 +132,7 @@ const OPERATING_EXPENSE_CATEGORIES = new Set([
   'cost of goods sold',
   'contractors',
   'education & training',
+  'food & dining',
   'insurance',
   'legal & professional',
   'meals & entertainment',
