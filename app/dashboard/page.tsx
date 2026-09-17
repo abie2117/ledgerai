@@ -609,6 +609,25 @@ export default function DashboardPage() {
       setErrorMessage('');
       setSuccessMessage('');
 
+      const syncResponse = await fetch('/api/plaid/sync', {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          client_id: selectedClientId,
+        }),
+      });
+
+      const syncResult = await syncResponse.json().catch(() => ({}));
+
+      if (!syncResponse.ok || syncResult?.success === false) {
+        throw new Error(
+          syncResult?.error || 'Unable to synchronize transactions with Plaid.',
+        );
+      }
+
       const { data, error } = await supabase
         .from('transactions')
         .select(`
@@ -643,7 +662,7 @@ export default function DashboardPage() {
       );
 
       setTransactions(formattedTransactions as Transaction[]);
-      setSuccessMessage('Transactions refreshed successfully.');
+      setSuccessMessage('Bank transactions synchronized and refreshed successfully.');
     } catch (error: any) {
       console.error('Error refreshing transactions:', error);
 
