@@ -40,6 +40,14 @@ function createServiceRoleClient() {
   );
 }
 
+function getPlaidErrorCode(error: any) {
+  return (
+    error?.response?.data?.error_code ||
+    error?.error_code ||
+    null
+  );
+}
+
 export async function POST(req: Request) {
   try {
     // ---------------------------------------------------------
@@ -270,7 +278,11 @@ export async function POST(req: Request) {
      *
      * NOTE:
      * Base64 is encoding, not encryption.
-     * The access-token storage should be upgraded separately.
+     * Access-token encryption should be upgraded separately.
+     *
+     * New Items begin with cursor = null.
+     * A usable cursor is persisted only after a complete
+     * /transactions/sync pagination cycle succeeds.
      */
 
     const encryptedAccessToken =
@@ -288,8 +300,8 @@ export async function POST(req: Request) {
           access_token_encrypted:
             encryptedAccessToken,
           status: 'active',
-          last_synced_at:
-            new Date().toISOString(),
+          cursor: null,
+          last_synced_at: null,
           token_key_version: 1,
         },
         {
@@ -393,43 +405,160 @@ export async function POST(req: Request) {
     }
 
     // ---------------------------------------------------------
-    // 10. GET TRANSACTIONS
+    // 10. INITIALIZE TRANSACTIONS WITH /TRANSACTIONS/SYNC
     // ---------------------------------------------------------
 
-    const now = new Date();
+    /*
+     * For a brand-new Item:
+     *
+     * - Do NOT use cursor: "now".
+     * - Do NOT provide a cursor on the first request.
+     * - Pull every available page.
+     * - Persist the final next_cursor only after the entire
+     *   pagination cycle and database mutations succeed.
+     *
+     * Plaid may legitimately return no transactions and an
+     * empty next_cursor immediately after Link. That is not
+     * treated as a failed bank connection.
+     */
 
-    const startDate =
-      new Date(
-        now.getFullYear(),
-        now.getMonth() - 2,
-        1
-      )
-        .toISOString()
-        .split('T')[0];
+    let addedTransactions: any[] = [];
+    let modifiedTransactions: any[] = [];
+    let removedTransactions: any[] = [];
 
-    const endDate =
-      now.toISOString().split('T')[0];
+    let finalCursor = '';
+    let syncCompleted = false;
+    let syncAttempt = 0;
 
-    let plaidTransactions: any[] = [];
+    const maxSyncAttempts = 3;
 
-    try {
-      const transactionsResponse =
-        await plaidClient.transactionsGet({
-          access_token: accessToken,
-          start_date: startDate,
-          end_date: endDate,
+    while (
+      !syncCompleted &&
+      syncAttempt < maxSyncAttempts
+    ) {
+      syncAttempt += 1;
+
+      addedTransactions = [];
+      modifiedTransactions = [];
+      removedTransactions = [];
+
+      let requestCursor: string | undefined =
+        undefined;
+
+      let hasMore = true;
+
+      try {
+        while (hasMore) {
+          const syncRequest: any = {
+            access_token: accessToken,
+            count: 500,
+          };
+
+          /*
+           * The very first request intentionally omits cursor.
+           * Subsequent pagination requests use next_cursor.
+           */
+
+          if (requestCursor) {
+            syncRequest.cursor =
+              requestCursor;
+          }
+
+          const syncResponse =
+            await plaidClient.transactionsSync(
+              syncRequest
+            );
+
+          const syncData =
+            syncResponse.data;
+
+          addedTransactions.push(
+            ...(syncData.added || [])
+          );
+
+          modifiedTransactions.push(
+            ...(syncData.modified || [])
+          );
+
+          removedTransactions.push(
+            ...(syncData.removed || [])
+          );
+
+          finalCursor =
+            syncData.next_cursor || '';
+
+          hasMore =
+            Boolean(syncData.has_more);
+
+          if (hasMore) {
+            /*
+             * A next cursor is required to retrieve the
+             * following page.
+             */
+
+            if (!finalCursor) {
+              throw new Error(
+                'Plaid returned has_more=true without a next_cursor.'
+              );
+            }
+
+            requestCursor =
+              finalCursor;
+          }
+        }
+
+        syncCompleted = true;
+      } catch (syncError: any) {
+        const errorCode =
+          getPlaidErrorCode(syncError);
+
+        if (
+          errorCode ===
+            'TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION' &&
+          syncAttempt < maxSyncAttempts
+        ) {
+          console.warn(
+            '[plaid/exchange] Transactions changed during initial pagination. Restarting from the beginning.',
+            {
+              plaidItemId,
+              attempt: syncAttempt,
+            }
+          );
+
+          continue;
+        }
+
+        console.error(
+          '[plaid/exchange] Initial transaction sync failed:',
+          syncError?.response?.data ||
+            syncError
+        );
+
+        /*
+         * The bank connection itself is valid even if Plaid
+         * transaction history is not ready yet.
+         *
+         * Keep cursor null so a future initialization attempt
+         * can start from the beginning.
+         */
+
+        return NextResponse.json({
+          success: true,
+          plaid_item_id:
+            plaidItemDatabaseId,
+          client_id: clientId,
+          accounts:
+            accountIdMap.size,
+          plaid_transactions: 0,
+          count: 0,
+          cursor_initialized: false,
+          message:
+            'Bank connected successfully. Transaction synchronization will be initialized when transaction data is available.',
         });
+      }
+    }
 
-      plaidTransactions =
-        transactionsResponse.data.transactions ||
-        [];
-    } catch (transactionError: any) {
-      console.error(
-        '[plaid/exchange] Transaction request failed:',
-        transactionError?.response?.data ||
-          transactionError
-      );
-
+    if (!syncCompleted) {
       return NextResponse.json({
         success: true,
         plaid_item_id:
@@ -437,18 +566,20 @@ export async function POST(req: Request) {
         client_id: clientId,
         accounts:
           accountIdMap.size,
+        plaid_transactions: 0,
         count: 0,
+        cursor_initialized: false,
         message:
-          'Bank connected successfully. Transactions are not available yet.',
+          'Bank connected successfully. Transaction synchronization will be initialized when transaction data is available.',
       });
     }
 
     // ---------------------------------------------------------
-    // 11. BUILD TRANSACTION RECORDS
+    // 11. BUILD ADDED TRANSACTION RECORDS
     // ---------------------------------------------------------
 
-    const transactionRecords =
-      plaidTransactions
+    const addedRecords =
+      addedTransactions
         .map((tx) => {
           const localAccountId =
             accountIdMap.get(
@@ -457,7 +588,7 @@ export async function POST(req: Request) {
 
           if (!localAccountId) {
             console.warn(
-              '[plaid/exchange] Skipping transaction with unknown account:',
+              '[plaid/exchange] Skipping added transaction with unknown account:',
               {
                 transactionId:
                   tx.transaction_id,
@@ -509,33 +640,40 @@ export async function POST(req: Request) {
         );
 
     // ---------------------------------------------------------
-    // 12. SAVE TRANSACTIONS
+    // 12. SAVE ADDED TRANSACTIONS
     // ---------------------------------------------------------
 
-    if (transactionRecords.length > 0) {
+    /*
+     * ignoreDuplicates protects any LedgerAI-owned fields if
+     * Plaid unexpectedly returns a transaction ID that is
+     * already stored.
+     */
+
+    if (addedRecords.length > 0) {
       const {
-        error: transactionError,
+        error: addedError,
       } = await db
         .from('transactions')
         .upsert(
-          transactionRecords,
+          addedRecords,
           {
             onConflict:
               'plaid_transaction_id',
+            ignoreDuplicates: true,
           }
         );
 
-      if (transactionError) {
+      if (addedError) {
         console.error(
-          '[plaid/exchange] Transaction save failed:',
-          transactionError
+          '[plaid/exchange] Added transaction save failed:',
+          addedError
         );
 
         return NextResponse.json(
           {
             success: false,
             error:
-              transactionError.message,
+              addedError.message,
           },
           { status: 500 }
         );
@@ -543,23 +681,206 @@ export async function POST(req: Request) {
     }
 
     // ---------------------------------------------------------
-    // 13. UPDATE LAST SYNC TIME
+    // 13. APPLY MODIFIED TRANSACTIONS
     // ---------------------------------------------------------
 
-    await db
+    /*
+     * Only Plaid-owned fields are updated.
+     *
+     * We intentionally preserve:
+     * - ai_category_id
+     * - ai_confidence
+     * - category
+     * - status
+     * - client_name
+     * - user_id
+     */
+
+    for (const tx of modifiedTransactions) {
+      const localAccountId =
+        accountIdMap.get(
+          tx.account_id
+        );
+
+      if (!localAccountId) {
+        console.warn(
+          '[plaid/exchange] Skipping modified transaction with unknown account:',
+          {
+            transactionId:
+              tx.transaction_id,
+            plaidAccountId:
+              tx.account_id,
+          }
+        );
+
+        continue;
+      }
+
+      const {
+        error: modifiedError,
+      } = await db
+        .from('transactions')
+        .update({
+          account_id:
+            localAccountId,
+
+          posted_date:
+            tx.date,
+
+          amount:
+            tx.amount,
+
+          merchant_name:
+            tx.merchant_name ||
+            tx.name ||
+            'Unknown Merchant',
+
+          raw_plaid_category:
+            Array.isArray(tx.category)
+              ? tx.category.join(', ')
+              : null,
+
+          updated_at:
+            new Date().toISOString(),
+        })
+        .eq(
+          'client_id',
+          clientId
+        )
+        .eq(
+          'plaid_transaction_id',
+          tx.transaction_id
+        );
+
+      if (modifiedError) {
+        console.error(
+          '[plaid/exchange] Modified transaction update failed:',
+          {
+            transactionId:
+              tx.transaction_id,
+            error:
+              modifiedError,
+          }
+        );
+
+        return NextResponse.json(
+          {
+            success: false,
+            error:
+              modifiedError.message,
+          },
+          { status: 500 }
+        );
+      }
+    }
+
+    // ---------------------------------------------------------
+    // 14. APPLY REMOVED TRANSACTIONS
+    // ---------------------------------------------------------
+
+    /*
+     * The current LedgerAI transaction schema has no
+     * soft-delete state for Plaid removals.
+     *
+     * Therefore removed Plaid transactions are physically
+     * deleted, matching the permanent /api/plaid/sync route.
+     */
+
+    for (const removed of removedTransactions) {
+      if (!removed?.transaction_id) {
+        continue;
+      }
+
+      const {
+        error: removedError,
+      } = await db
+        .from('transactions')
+        .delete()
+        .eq(
+          'client_id',
+          clientId
+        )
+        .eq(
+          'plaid_transaction_id',
+          removed.transaction_id
+        );
+
+      if (removedError) {
+        console.error(
+          '[plaid/exchange] Removed transaction delete failed:',
+          {
+            transactionId:
+              removed.transaction_id,
+            error:
+              removedError,
+          }
+        );
+
+        return NextResponse.json(
+          {
+            success: false,
+            error:
+              removedError.message,
+          },
+          { status: 500 }
+        );
+      }
+    }
+
+    // ---------------------------------------------------------
+    // 15. PERSIST FINAL CURSOR + LAST SYNC TIME
+    // ---------------------------------------------------------
+
+    /*
+     * Plaid documents that next_cursor may be an empty string
+     * when transaction data is not yet available.
+     *
+     * Our database cursor column is nullable, so an empty
+     * Plaid cursor remains null. This allows initialization to
+     * be retried later from the beginning.
+     */
+
+    const cursorToStore =
+      finalCursor || null;
+
+    const syncTimestamp =
+      new Date().toISOString();
+
+    const {
+      error: cursorUpdateError,
+    } = await db
       .from('plaid_items')
       .update({
-        status: 'active',
+        cursor:
+          cursorToStore,
+        status:
+          'active',
         last_synced_at:
-          new Date().toISOString(),
+          syncTimestamp,
       })
       .eq(
         'id',
         plaidItemDatabaseId
       );
 
+    if (cursorUpdateError) {
+      console.error(
+        '[plaid/exchange] Failed to persist initial sync cursor:',
+        cursorUpdateError
+      );
+
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            cursorUpdateError.message,
+        },
+        { status: 500 }
+      );
+    }
+
     // ---------------------------------------------------------
-    // 14. SUCCESS
+    // 16. SUCCESS
     // ---------------------------------------------------------
 
     console.log(
@@ -578,11 +899,23 @@ export async function POST(req: Request) {
         accounts:
           accountIdMap.size,
 
-        plaidTransactions:
-          plaidTransactions.length,
+        added:
+          addedTransactions.length,
+
+        modified:
+          modifiedTransactions.length,
+
+        removed:
+          removedTransactions.length,
 
         savedTransactions:
-          transactionRecords.length,
+          addedRecords.length,
+
+        cursorInitialized:
+          Boolean(cursorToStore),
+
+        syncAttempts:
+          syncAttempt,
       }
     );
 
@@ -599,13 +932,27 @@ export async function POST(req: Request) {
         accountIdMap.size,
 
       plaid_transactions:
-        plaidTransactions.length,
+        addedTransactions.length,
+
+      added:
+        addedTransactions.length,
+
+      modified:
+        modifiedTransactions.length,
+
+      removed:
+        removedTransactions.length,
 
       count:
-        transactionRecords.length,
+        addedRecords.length,
+
+      cursor_initialized:
+        Boolean(cursorToStore),
 
       message:
-        'Bank connected and transactions synchronized successfully.',
+        cursorToStore
+          ? 'Bank connected and transactions synchronized successfully.'
+          : 'Bank connected successfully. Transaction history is still being prepared by Plaid.',
     });
   } catch (error: any) {
     console.error(
