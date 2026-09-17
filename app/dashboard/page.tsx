@@ -293,11 +293,23 @@ export default function DashboardPage() {
           return;
         }
 
+        const requestedClientId = new URLSearchParams(
+          window.location.search,
+        ).get('clientId');
+
+        const requestedClient = requestedClientId
+          ? loadedClients.find(
+              (client) => client.id === requestedClientId,
+            )
+          : null;
+
         const acmeClient = loadedClients.find(
-          (client) => client.name.toLowerCase().trim() === 'acme corp',
+          (client) =>
+            client.name.toLowerCase().trim() === 'acme corp',
         );
 
-        const initialClient = acmeClient || loadedClients[0];
+        const initialClient =
+          requestedClient || acmeClient || loadedClients[0];
 
         setSelectedClientId(initialClient.id);
       } catch (error: any) {
