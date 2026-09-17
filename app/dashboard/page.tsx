@@ -198,6 +198,7 @@ export default function DashboardPage() {
 
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
+  const [timeframe, setTimeframe] = useState('all');
 
   const [searchTerm, setSearchTerm] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('All Categories');
@@ -585,10 +586,51 @@ export default function DashboardPage() {
     setAccountFilter('All Accounts');
     setStartDate('');
     setEndDate('');
+    setTimeframe('all');
     setFinanceQuestion('');
     setAskAnswer('');
     setSuccessMessage('');
     setErrorMessage('');
+  }
+
+  function handleTimeframeChange(
+    event: ChangeEvent<HTMLSelectElement>,
+  ) {
+    const nextTimeframe = event.target.value;
+    setTimeframe(nextTimeframe);
+
+    if (nextTimeframe === 'all') {
+      setStartDate('');
+      setEndDate('');
+      return;
+    }
+
+    const today = new Date();
+    const toDateInputValue = (date: Date) => {
+      const year = date.getFullYear();
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const day = String(date.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    };
+
+    if (nextTimeframe === 'this-month') {
+      const firstDay = new Date(today.getFullYear(), today.getMonth(), 1);
+      setStartDate(toDateInputValue(firstDay));
+      setEndDate(toDateInputValue(today));
+      return;
+    }
+
+    if (nextTimeframe === 'last-30-days') {
+      const firstDay = new Date(today);
+      firstDay.setDate(today.getDate() - 29);
+      setStartDate(toDateInputValue(firstDay));
+      setEndDate(toDateInputValue(today));
+      return;
+    }
+
+    if (nextTimeframe === 'custom') {
+      return;
+    }
   }
 
   function clearFilters() {
@@ -597,6 +639,7 @@ export default function DashboardPage() {
     setAccountFilter('All Accounts');
     setStartDate('');
     setEndDate('');
+    setTimeframe('all');
   }
 
   async function refreshTransactions() {
@@ -1127,33 +1170,164 @@ function handleAskQuestion() {
   return (
     <main className="min-h-screen bg-slate-950 px-4 py-6 text-white sm:px-6 lg:px-8">
       <div className="mx-auto max-w-7xl space-y-6">
-        <header className="flex flex-col gap-4 rounded-2xl border border-slate-800 bg-slate-900 p-5 shadow-xl sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <p className="text-sm font-medium text-cyan-400">
-              LedgerAI
-            </p>
+        <header className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900 shadow-xl">
+          <div className="flex flex-col gap-6 border-b border-slate-800 px-5 py-5 sm:px-6 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex items-center gap-4">
+              <div className="relative flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl border border-cyan-400/50 bg-slate-950 shadow-[0_0_28px_rgba(34,211,238,0.16)]">
+                <svg
+                  viewBox="0 0 64 64"
+                  aria-hidden="true"
+                  className="h-10 w-10"
+                >
+                  <defs>
+                    <linearGradient id="ledgerai-mark" x1="8" y1="8" x2="56" y2="56">
+                      <stop offset="0%" stopColor="#67e8f9" />
+                      <stop offset="55%" stopColor="#38bdf8" />
+                      <stop offset="100%" stopColor="#8b5cf6" />
+                    </linearGradient>
+                  </defs>
+                  <path
+                    d="M32 6 54 19v26L32 58 10 45V19L32 6Z"
+                    fill="none"
+                    stroke="url(#ledgerai-mark)"
+                    strokeWidth="5"
+                    strokeLinejoin="round"
+                  />
+                  <path
+                    d="M32 17 44 24v16L32 47 20 40V24l12-7Z"
+                    fill="none"
+                    stroke="url(#ledgerai-mark)"
+                    strokeWidth="5"
+                    strokeLinejoin="round"
+                  />
+                  <path
+                    d="m32 26 6 3.5v7L32 40l-6-3.5v-7L32 26Z"
+                    fill="url(#ledgerai-mark)"
+                  />
+                </svg>
+              </div>
 
-            <h1 className="mt-1 text-2xl font-bold tracking-tight sm:text-3xl">
-              Financial Dashboard
-            </h1>
+              <div>
+                <div className="flex flex-wrap items-center gap-2.5">
+                  <h1 className="text-2xl font-bold tracking-tight text-white sm:text-3xl">
+                    Ledger<span className="text-cyan-400">AI</span>
+                  </h1>
+                  <span className="rounded-md border border-cyan-500/40 bg-cyan-500/10 px-2 py-1 text-[10px] font-bold uppercase tracking-[0.18em] text-cyan-300">
+                    Enterprise
+                  </span>
+                </div>
+                <p className="mt-1 text-sm text-slate-400">
+                  AI-assisted bookkeeping &amp; financial intelligence
+                </p>
+              </div>
+            </div>
 
-            <p className="mt-1 text-sm text-slate-400">
-              Review, categorize, and analyze client transactions.
-            </p>
+            <div className="flex flex-col items-start gap-2 lg:items-end">
+              {userEmail && (
+                <p className="text-xs text-slate-500">{userEmail}</p>
+              )}
+              <button
+                type="button"
+                onClick={handleSignOut}
+                className="rounded-lg border border-slate-700 px-3.5 py-2 text-sm font-medium text-slate-300 transition hover:border-red-500/60 hover:bg-red-500/10 hover:text-red-300"
+              >
+                Sign out
+              </button>
+            </div>
           </div>
 
-          <div className="flex flex-col items-start gap-2 sm:items-end">
-            {userEmail && (
-              <p className="text-xs text-slate-400">{userEmail}</p>
-            )}
+          <div className="grid gap-4 px-5 py-5 sm:px-6 xl:grid-cols-[minmax(260px,1.2fr)_minmax(190px,0.7fr)_auto] xl:items-end">
+            <div>
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <label
+                  htmlFor="client"
+                  className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500"
+                >
+                  Active Client
+                </label>
+                <button
+                  type="button"
+                  onClick={() => {
+                    window.location.href = '/clients/new';
+                  }}
+                  className="text-xs font-semibold text-cyan-400 transition hover:text-cyan-300"
+                >
+                  + Add Client
+                </button>
+              </div>
 
-            <button
-              type="button"
-              onClick={handleSignOut}
-              className="rounded-lg border border-slate-700 px-4 py-2 text-sm font-medium text-slate-200 transition hover:border-red-500 hover:bg-red-500/10 hover:text-red-300"
-            >
-              Sign out
-            </button>
+              <select
+                id="client"
+                value={selectedClientId}
+                onChange={handleClientChange}
+                className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm font-semibold text-white outline-none transition focus:border-cyan-400"
+              >
+                {clients.length === 0 && (
+                  <option value="">No clients available</option>
+                )}
+                {clients.map((client) => (
+                  <option key={client.id} value={client.id}>
+                    {client.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label
+                htmlFor="timeframe"
+                className="mb-2 block text-xs font-semibold uppercase tracking-[0.14em] text-slate-500"
+              >
+                Timeframe
+              </label>
+              <select
+                id="timeframe"
+                value={timeframe}
+                onChange={handleTimeframeChange}
+                className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm font-semibold text-white outline-none transition focus:border-cyan-400"
+              >
+                <option value="all">All Time</option>
+                <option value="this-month">This Month</option>
+                <option value="last-30-days">Last 30 Days</option>
+                <option value="custom">Custom Range</option>
+              </select>
+            </div>
+
+            <div className="flex flex-wrap gap-2 xl:justify-end">
+              <PlaidLinkButton
+                selectedClientId={selectedClientId}
+                onBankConnected={handleBankConnected}
+              />
+
+              <button
+                type="button"
+                onClick={refreshTransactions}
+                disabled={transactionsLoading || !selectedClientId}
+                className="rounded-xl border border-slate-700 px-4 py-3 text-sm font-semibold text-slate-200 transition hover:border-cyan-400 hover:text-cyan-300 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {transactionsLoading ? 'Refreshing...' : 'Refresh'}
+              </button>
+
+              <button
+                type="button"
+                onClick={exportTransactionsToCsv}
+                disabled={filteredTransactions.length === 0}
+                className="rounded-xl border border-slate-700 px-4 py-3 text-sm font-semibold text-slate-200 transition hover:border-emerald-400 hover:text-emerald-300 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Export CSV
+              </button>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-800/80 bg-slate-950/30 px-5 py-3 text-xs text-slate-500 sm:px-6">
+            <span>
+              {selectedClient
+                ? `Viewing ${selectedClient.name}`
+                : 'Select a client workspace'}
+            </span>
+            <span>
+              {memberships.length} connected firm{memberships.length === 1 ? '' : 's'}
+            </span>
           </div>
         </header>
 
@@ -1168,76 +1342,6 @@ function handleAskQuestion() {
             {successMessage}
           </div>
         )}
-
-        <section className="grid gap-4 lg:grid-cols-[1fr_auto]">
-          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
-            <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
-              <div className="flex-1">
-                <label
-                  htmlFor="client"
-                  className="mb-2 block text-sm font-medium text-slate-300"
-                >
-                  Active Client
-                </label>
-
-                <select
-                  id="client"
-                  value={selectedClientId}
-                  onChange={handleClientChange}
-                  className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white outline-none transition focus:border-cyan-400 md:max-w-md"
-                >
-                  {clients.length === 0 && (
-                    <option value="">No clients available</option>
-                  )}
-
-                  {clients.map((client) => (
-                    <option key={client.id} value={client.id}>
-                      {client.name}
-                    </option>
-                  ))}
-                </select>
-
-                {selectedClient && (
-                  <p className="mt-2 text-xs text-slate-500">
-                    Viewing transactions for {selectedClient.name}
-                  </p>
-                )}
-              </div>
-
-              <div className="flex flex-wrap gap-2">
-                <PlaidLinkButton
-                  selectedClientId={selectedClientId}
-                  onBankConnected={handleBankConnected}
-                />
-
-                <button
-                  type="button"
-                  onClick={refreshTransactions}
-                  disabled={
-                    transactionsLoading || !selectedClientId
-                  }
-                  className="rounded-lg border border-slate-700 px-4 py-2.5 text-sm font-medium text-slate-200 transition hover:border-cyan-400 hover:text-cyan-300 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {transactionsLoading ? 'Refreshing...' : 'Refresh'}
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
-            <p className="text-xs uppercase tracking-wide text-slate-500">
-              Connected Firms
-            </p>
-
-            <p className="mt-2 text-2xl font-bold text-white">
-              {memberships.length}
-            </p>
-
-            <p className="mt-1 text-xs text-slate-400">
-              Firm membership{memberships.length === 1 ? '' : 's'}
-            </p>
-          </div>
-        </section>
 
         {selectedClient &&
           !transactionsLoading &&
@@ -1488,9 +1592,10 @@ function handleAskQuestion() {
                   id="start-date"
                   type="date"
                   value={startDate}
-                  onChange={(event) =>
-                    setStartDate(event.target.value)
-                  }
+                  onChange={(event) => {
+                    setStartDate(event.target.value);
+                    setTimeframe('custom');
+                  }}
                   className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white outline-none transition focus:border-cyan-400"
                 />
               </div>
@@ -1507,9 +1612,10 @@ function handleAskQuestion() {
                   id="end-date"
                   type="date"
                   value={endDate}
-                  onChange={(event) =>
-                    setEndDate(event.target.value)
-                  }
+                  onChange={(event) => {
+                    setEndDate(event.target.value);
+                    setTimeframe('custom');
+                  }}
                   className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white outline-none transition focus:border-cyan-400"
                 />
               </div>
