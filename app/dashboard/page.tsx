@@ -1220,6 +1220,68 @@ function handleAskQuestion() {
           </div>
         </section>
 
+        {selectedClient &&
+          !transactionsLoading &&
+          transactions.length === 0 && (
+            <section className="rounded-2xl border border-cyan-500/20 bg-slate-900 p-6 shadow-xl sm:p-8">
+              <div className="mx-auto max-w-2xl text-center">
+                <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-cyan-500/10 text-xl">
+                  🏦
+                </div>
+
+                <p className="mt-5 text-sm font-semibold text-cyan-400">
+                  Client workspace ready
+                </p>
+
+                <h2 className="mt-2 text-2xl font-bold tracking-tight text-white">
+                  Connect {selectedClient.name}&apos;s first bank account
+                </h2>
+
+                <p className="mx-auto mt-3 max-w-xl text-sm leading-6 text-slate-400">
+                  This client does not have any transactions yet. Connect a bank
+                  account to securely import transaction history and begin
+                  categorizing and reviewing the books.
+                </p>
+
+                <div className="mt-6 flex justify-center">
+                  <PlaidLinkButton
+                    selectedClientId={selectedClientId}
+                    onBankConnected={handleBankConnected}
+                  />
+                </div>
+
+                <div className="mt-7 grid gap-3 text-left sm:grid-cols-3">
+                  <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      Step 1
+                    </p>
+                    <p className="mt-2 text-sm font-semibold text-slate-200">
+                      Connect bank
+                    </p>
+                  </div>
+
+                  <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      Step 2
+                    </p>
+                    <p className="mt-2 text-sm font-semibold text-slate-200">
+                      Import transactions
+                    </p>
+                  </div>
+
+                  <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      Step 3
+                    </p>
+                    <p className="mt-2 text-sm font-semibold text-slate-200">
+                      Review &amp; categorize
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </section>
+          )}
+
         <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
           <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
             <p className="text-sm text-slate-400">Total Spending</p>
