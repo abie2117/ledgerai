@@ -197,7 +197,55 @@ export async function POST(req: Request) {
     }
 
     // ---------------------------------------------------------
-    // 6. CREATE PLAID LINK TOKEN
+    // 6. VERIFY PLAID WEBHOOK CONFIGURATION
+    // ---------------------------------------------------------
+
+    const webhookUrl =
+      process.env.PLAID_WEBHOOK_URL?.trim();
+
+    if (!webhookUrl) {
+      console.error(
+        '[plaid/create-link-token] PLAID_WEBHOOK_URL is not configured.'
+      );
+
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            'Plaid webhook configuration is missing.',
+        },
+        { status: 500 }
+      );
+    }
+
+    try {
+      const parsedWebhookUrl =
+        new URL(webhookUrl);
+
+      if (
+        parsedWebhookUrl.protocol !== 'https:'
+      ) {
+        throw new Error(
+          'Webhook URL must use HTTPS.'
+        );
+      }
+    } catch {
+      console.error(
+        '[plaid/create-link-token] PLAID_WEBHOOK_URL is invalid.'
+      );
+
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            'Plaid webhook configuration is invalid.',
+        },
+        { status: 500 }
+      );
+    }
+
+    // ---------------------------------------------------------
+    // 7. CREATE PLAID LINK TOKEN
     // ---------------------------------------------------------
 
     /*
@@ -236,6 +284,8 @@ export async function POST(req: Request) {
         ] as any,
 
         language: 'en',
+
+        webhook: webhookUrl,
       });
 
     console.log(
@@ -246,11 +296,12 @@ export async function POST(req: Request) {
         businessName:
           selectedClient.business_name,
         plaidClientUserId,
+        webhookConfigured: true,
       }
     );
 
     // ---------------------------------------------------------
-    // 7. RETURN LINK TOKEN
+    // 8. RETURN LINK TOKEN
     // ---------------------------------------------------------
 
     return NextResponse.json(
