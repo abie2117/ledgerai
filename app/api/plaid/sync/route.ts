@@ -1,29 +1,15 @@
+// app/api/plaid/sync/route.ts
+
 import { NextResponse } from 'next/server';
-import {
-  Configuration,
-  PlaidApi,
-  PlaidEnvironments,
-} from 'plaid';
 import { createRouteHandlerClient } from '@/lib/supabase-server';
 import { createClient } from '@supabase/supabase-js';
+import {
+  getPlaidSyncErrorMessage,
+  PlaidItemSyncResult,
+  syncPlaidItem,
+} from '@/lib/plaid-sync';
 
 export const dynamic = 'force-dynamic';
-
-const plaidEnv =
-  (process.env.PLAID_ENV as keyof typeof PlaidEnvironments) ||
-  'sandbox';
-
-const configuration = new Configuration({
-  basePath: PlaidEnvironments[plaidEnv],
-  baseOptions: {
-    headers: {
-      'PLAID-CLIENT-ID': process.env.PLAID_CLIENT_ID!,
-      'PLAID-SECRET': process.env.PLAID_SECRET!,
-    },
-  },
-});
-
-const plaidClient = new PlaidApi(configuration);
 
 function createServiceRoleClient() {
   return createClient(
@@ -35,66 +21,6 @@ function createServiceRoleClient() {
         autoRefreshToken: false,
       },
     }
-  );
-}
-
-function decodeStoredAccessToken(storedToken: unknown) {
-  let encodedToken: string;
-
-  if (typeof storedToken === 'string') {
-    encodedToken = storedToken;
-  } else if (
-    storedToken &&
-    typeof storedToken === 'object' &&
-    'data' in storedToken &&
-    Array.isArray(
-      (storedToken as { data?: unknown }).data
-    )
-  ) {
-    encodedToken = Buffer.from(
-      (storedToken as { data: number[] }).data
-    ).toString('utf8');
-  } else {
-    throw new Error(
-      'Unsupported access-token storage format.'
-    );
-  }
-
-  if (encodedToken.startsWith('\\x')) {
-    encodedToken = Buffer.from(
-      encodedToken.slice(2),
-      'hex'
-    ).toString('utf8');
-  }
-
-  const accessToken = Buffer.from(
-    encodedToken,
-    'base64'
-  ).toString('utf8');
-
-  if (!accessToken) {
-    throw new Error(
-      'Stored Plaid access token could not be decoded.'
-    );
-  }
-
-  return accessToken;
-}
-
-function getPlaidErrorCode(error: any) {
-  return (
-    error?.response?.data?.error_code ||
-    error?.error_code ||
-    null
-  );
-}
-
-function getPlaidErrorMessage(error: any) {
-  return (
-    error?.response?.data?.error_message ||
-    error?.response?.data?.error_code ||
-    error?.message ||
-    'Unknown Plaid synchronization error.'
   );
 }
 
@@ -248,11 +174,11 @@ export async function POST(req: Request) {
     // ---------------------------------------------------------
     // 5. LOAD ACTIVE PLAID ITEMS
     //
-    // Permanent sync supports both:
+    // Supports:
     // - initialized Items with a stored cursor
-    // - newly connected Items whose first sync returned no cursor yet
+    // - newly connected Items with a null cursor
     //
-    // Legacy fake test rows are excluded explicitly.
+    // Legacy fake test rows remain explicitly excluded.
     // ---------------------------------------------------------
 
     const {
@@ -301,471 +227,26 @@ export async function POST(req: Request) {
     }
 
     // ---------------------------------------------------------
-    // 6. PROCESS EACH PLAID ITEM
+    // 6. SYNCHRONIZE EACH PLAID ITEM
+    //
+    // The financial synchronization engine now lives in
+    // lib/plaid-sync.ts so manual Refresh and future Plaid
+    // webhooks can share exactly the same implementation.
     // ---------------------------------------------------------
 
-    const results: Array<{
-      plaid_item_database_id: string;
-      plaid_item_id: string;
-      success: boolean;
-      added: number;
-      modified: number;
-      removed: number;
-      skipped: number;
-      error?: string;
-    }> = [];
+    const results: PlaidItemSyncResult[] = [];
 
     for (const item of plaidItems) {
-      try {
-        const accessToken =
-          decodeStoredAccessToken(
-            item.access_token_encrypted
-          );
+      const result = await syncPlaidItem({
+        db,
+        item,
+      });
 
-        // -----------------------------------------------------
-        // 7. LOAD LOCAL ACCOUNT MAP FOR THIS ITEM
-        // -----------------------------------------------------
-
-        const {
-          data: localAccounts,
-          error: accountsError,
-        } = await db
-          .from('accounts')
-          .select('id, plaid_account_id')
-          .eq('plaid_item_id', item.id);
-
-        if (accountsError) {
-          throw new Error(
-            accountsError.message ||
-              'Failed to load LedgerAI accounts.'
-          );
-        }
-
-        const accountIdMap = new Map<string, string>();
-
-        for (const account of localAccounts || []) {
-          if (
-            account.plaid_account_id &&
-            account.id
-          ) {
-            accountIdMap.set(
-              account.plaid_account_id,
-              account.id
-            );
-          }
-        }
-
-        if (accountIdMap.size === 0) {
-          throw new Error(
-            'No LedgerAI accounts exist for this Plaid Item.'
-          );
-        }
-
-        // -----------------------------------------------------
-        // 8. RETRIEVE ALL SYNC PAGES
-        //
-        // Nothing is written to Supabase until every page has
-        // been successfully retrieved.
-        //
-        // If Plaid reports a mutation during pagination, throw
-        // away the accumulated pages and restart from the
-        // original stored cursor.
-        // -----------------------------------------------------
-
-        const originalCursor =
-          typeof item.cursor === 'string' && item.cursor.length > 0
-            ? item.cursor
-            : null;
-
-        let addedTransactions: any[] = [];
-        let modifiedTransactions: any[] = [];
-        let removedTransactions: any[] = [];
-        let finalCursor = originalCursor || '';
-
-        const maxPaginationRestarts = 3;
-        let paginationRestartCount = 0;
-
-        while (true) {
-          let pageCursor: string | null = originalCursor;
-          let hasMore = true;
-
-          addedTransactions = [];
-          modifiedTransactions = [];
-          removedTransactions = [];
-          finalCursor = originalCursor || '';
-
-          try {
-            while (hasMore) {
-              const syncRequest: any = {
-                access_token: accessToken,
-                count: 500,
-              };
-
-              // A brand-new Item must omit cursor on its first
-              // /transactions/sync request. Initialized Items
-              // continue from their stored cursor.
-              if (pageCursor) {
-                syncRequest.cursor = pageCursor;
-              }
-
-              const syncResponse =
-                await plaidClient.transactionsSync(syncRequest);
-
-              const data = syncResponse.data;
-
-              addedTransactions.push(
-                ...(data.added || [])
-              );
-
-              modifiedTransactions.push(
-                ...(data.modified || [])
-              );
-
-              removedTransactions.push(
-                ...(data.removed || [])
-              );
-
-              finalCursor = data.next_cursor;
-              pageCursor = data.next_cursor;
-              hasMore = data.has_more;
-            }
-
-            break;
-          } catch (paginationError: any) {
-            const errorCode =
-              getPlaidErrorCode(
-                paginationError
-              );
-
-            if (
-              errorCode ===
-                'TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION' &&
-              paginationRestartCount <
-                maxPaginationRestarts
-            ) {
-              paginationRestartCount += 1;
-
-              console.warn(
-                '[plaid/sync] Restarting pagination from original cursor:',
-                {
-                  plaidItemId:
-                    item.plaid_item_id,
-                  attempt:
-                    paginationRestartCount,
-                }
-              );
-
-              continue;
-            }
-
-            throw paginationError;
-          }
-        }
-
-        if (typeof finalCursor !== 'string') {
-          throw new Error(
-            'Plaid did not return a valid sync cursor.'
-          );
-        }
-
-        // -----------------------------------------------------
-        // 9. BUILD ADDED TRANSACTIONS
-        //
-        // New records receive LedgerAI's normal default review
-        // state. We deliberately do not populate or overwrite
-        // AI/category fields here.
-        // -----------------------------------------------------
-
-        const addedRecords: any[] = [];
-        let skippedTransactions = 0;
-
-        for (const tx of addedTransactions) {
-          const localAccountId =
-            accountIdMap.get(
-              tx.account_id
-            );
-
-          if (!localAccountId) {
-            console.warn(
-              '[plaid/sync] Skipping added transaction with unknown account:',
-              {
-                transactionId:
-                  tx.transaction_id,
-                plaidAccountId:
-                  tx.account_id,
-              }
-            );
-
-            skippedTransactions += 1;
-            continue;
-          }
-
-          addedRecords.push({
-            account_id: localAccountId,
-            client_id: clientId,
-            plaid_transaction_id:
-              tx.transaction_id,
-            posted_date: tx.date,
-            amount: tx.amount,
-            merchant_name:
-              tx.merchant_name ||
-              tx.name ||
-              'Unknown Merchant',
-            raw_plaid_category:
-              Array.isArray(tx.category)
-                ? tx.category.join(', ')
-                : null,
-            status: 'pending_review',
-          });
-        }
-
-        // -----------------------------------------------------
-        // 10. APPLY ADDED TRANSACTIONS SAFELY
-        //
-        // ignoreDuplicates prevents an "added" event from
-        // overwriting LedgerAI-owned categorization/review
-        // fields if that Plaid transaction already exists.
-        // -----------------------------------------------------
-
-        if (addedRecords.length > 0) {
-          const {
-            error: addedError,
-          } = await db
-            .from('transactions')
-            .upsert(
-              addedRecords,
-              {
-                onConflict:
-                  'plaid_transaction_id',
-                ignoreDuplicates: true,
-              }
-            );
-
-          if (addedError) {
-            throw new Error(
-              addedError.message ||
-                'Failed to save added transactions.'
-            );
-          }
-        }
-
-        // -----------------------------------------------------
-        // 11. APPLY MODIFIED TRANSACTIONS
-        //
-        // Update ONLY Plaid-owned fields. We intentionally do
-        // not touch:
-        // ai_category_id
-        // ai_confidence
-        // status
-        // category
-        // client_name
-        // user_id
-        // -----------------------------------------------------
-
-        for (const tx of modifiedTransactions) {
-          const localAccountId =
-            accountIdMap.get(
-              tx.account_id
-            );
-
-          if (!localAccountId) {
-            console.warn(
-              '[plaid/sync] Skipping modified transaction with unknown account:',
-              {
-                transactionId:
-                  tx.transaction_id,
-                plaidAccountId:
-                  tx.account_id,
-              }
-            );
-
-            skippedTransactions += 1;
-            continue;
-          }
-
-          const {
-            error: modifiedError,
-          } = await db
-            .from('transactions')
-            .update({
-              account_id:
-                localAccountId,
-              posted_date:
-                tx.date,
-              amount:
-                tx.amount,
-              merchant_name:
-                tx.merchant_name ||
-                tx.name ||
-                'Unknown Merchant',
-              raw_plaid_category:
-                Array.isArray(tx.category)
-                  ? tx.category.join(', ')
-                  : null,
-              updated_at:
-                new Date().toISOString(),
-            })
-            .eq(
-              'plaid_transaction_id',
-              tx.transaction_id
-            )
-            .eq(
-              'client_id',
-              clientId
-            );
-
-          if (modifiedError) {
-            throw new Error(
-              modifiedError.message ||
-                `Failed to update transaction ${tx.transaction_id}.`
-            );
-          }
-        }
-
-        // -----------------------------------------------------
-        // 12. APPLY REMOVED TRANSACTIONS
-        //
-        // Current LedgerAI schema has no soft-delete field and
-        // status cannot be "removed", so Plaid removals are
-        // physically deleted.
-        // -----------------------------------------------------
-
-        const removedIds = Array.from(
-          new Set(
-            removedTransactions
-              .map(
-                (removed) =>
-                  removed.transaction_id
-              )
-              .filter(
-                (transactionId):
-                  transactionId is string =>
-                    typeof transactionId ===
-                      'string' &&
-                    transactionId.length > 0
-              )
-          )
-        );
-
-        if (removedIds.length > 0) {
-          const {
-            error: removedError,
-          } = await db
-            .from('transactions')
-            .delete()
-            .eq(
-              'client_id',
-              clientId
-            )
-            .in(
-              'plaid_transaction_id',
-              removedIds
-            );
-
-          if (removedError) {
-            throw new Error(
-              removedError.message ||
-                'Failed to remove deleted Plaid transactions.'
-            );
-          }
-        }
-
-        // -----------------------------------------------------
-        // 13. COMMIT FINAL CURSOR
-        //
-        // Cursor is advanced only after every database mutation
-        // above succeeds.
-        //
-        // Matching the old cursor also protects against two
-        // concurrent sync requests silently overwriting each
-        // other's cursor.
-        // -----------------------------------------------------
-
-        let cursorUpdateQuery = db
-          .from('plaid_items')
-          .update({
-            cursor: finalCursor || null,
-            last_synced_at:
-              new Date().toISOString(),
-          })
-          .eq('id', item.id)
-          .eq('client_id', clientId);
-
-        cursorUpdateQuery = originalCursor
-          ? cursorUpdateQuery.eq('cursor', originalCursor)
-          : cursorUpdateQuery.is('cursor', null);
-
-        const {
-          data: updatedItem,
-          error: cursorUpdateError,
-        } = await cursorUpdateQuery
-          .select('id, cursor')
-          .maybeSingle();
-
-        if (cursorUpdateError) {
-          throw new Error(
-            cursorUpdateError.message ||
-              'Failed to save the final Plaid sync cursor.'
-          );
-        }
-
-        if (!updatedItem) {
-          throw new Error(
-            'The Plaid Item cursor changed during synchronization. The final cursor was not overwritten.'
-          );
-        }
-
-        results.push({
-          plaid_item_database_id:
-            item.id,
-          plaid_item_id:
-            item.plaid_item_id,
-          success: true,
-          added:
-            addedTransactions.length,
-          modified:
-            modifiedTransactions.length,
-          removed:
-            removedTransactions.length,
-          skipped:
-            skippedTransactions,
-        });
-      } catch (itemError: any) {
-        const errorMessage =
-          getPlaidErrorMessage(
-            itemError
-          );
-
-        console.error(
-          '[plaid/sync] Item synchronization failed:',
-          {
-            plaidItemDatabaseId:
-              item.id,
-            plaidItemId:
-              item.plaid_item_id,
-            error:
-              itemError?.response?.data ||
-              itemError,
-          }
-        );
-
-        results.push({
-          plaid_item_database_id:
-            item.id,
-          plaid_item_id:
-            item.plaid_item_id,
-          success: false,
-          added: 0,
-          modified: 0,
-          removed: 0,
-          skipped: 0,
-          error: errorMessage,
-        });
-      }
+      results.push(result);
     }
 
     // ---------------------------------------------------------
-    // 14. RETURN AUDITABLE RESULT
+    // 7. BUILD AUDITABLE RESULT
     // ---------------------------------------------------------
 
     const successfulItems =
@@ -780,12 +261,9 @@ export async function POST(req: Request) {
     const totals = results.reduce(
       (summary, result) => {
         summary.added += result.added;
-        summary.modified +=
-          result.modified;
-        summary.removed +=
-          result.removed;
-        summary.skipped +=
-          result.skipped;
+        summary.modified += result.modified;
+        summary.removed += result.removed;
+        summary.skipped += result.skipped;
 
         return summary;
       },
@@ -808,6 +286,10 @@ export async function POST(req: Request) {
         totals,
       }
     );
+
+    // ---------------------------------------------------------
+    // 8. RETURN SAME PUBLIC RESPONSE CONTRACT
+    // ---------------------------------------------------------
 
     return NextResponse.json(
       {
@@ -846,7 +328,7 @@ export async function POST(req: Request) {
       {
         success: false,
         error:
-          getPlaidErrorMessage(
+          getPlaidSyncErrorMessage(
             error
           ),
       },
