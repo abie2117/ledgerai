@@ -3,7 +3,7 @@ import { createRouteHandlerClient } from "../../../../lib/supabase-server";
 import { recordCorrection } from "../../../../lib/categorization";
 
 export async function POST(req: NextRequest) {
-  const supabase = createRouteHandlerClient();
+  const supabase = await createRouteHandlerClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   const { transactionId, clientId, fromCategoryId, toCategoryId } = await req.json();
