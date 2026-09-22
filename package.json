@@ -12,7 +12,7 @@
     "@anthropic-ai/sdk": "0.27.3",
     "@supabase/ssr": "^0.12.4",
     "@supabase/supabase-js": "^2.45.4",
-    "jose": "^5.9.6",
+    "jose": "^5.10.0",
     "next": "^14.1.0",
     "plaid": "26.0.0",
     "react": "18.3.1",
