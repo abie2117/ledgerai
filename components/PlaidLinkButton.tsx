@@ -6,11 +6,17 @@ import { usePlaidLink } from 'react-plaid-link';
 interface PlaidLinkButtonProps {
   selectedClientId?: string;
   onBankConnected?: () => void;
+  reconnectItemId?: string;
+  onReconnected?: () => void | Promise<void>;
+  reconnectLabel?: string;
 }
 
 export default function PlaidLinkButton({
   selectedClientId,
   onBankConnected,
+  reconnectItemId,
+  onReconnected,
+  reconnectLabel,
 }: PlaidLinkButtonProps) {
   const [token, setToken] = useState<string | null>(null);
   const [loadingToken, setLoadingToken] = useState(false);
@@ -36,20 +42,26 @@ export default function PlaidLinkButton({
         setLoadingToken(true);
         setErrorMessage(null);
 
-        console.log(
-          '🔐 Requesting Plaid Link token for client:',
-          selectedClientId
-        );
+        const isReconnect = Boolean(reconnectItemId);
+        const endpoint = isReconnect
+          ? '/api/plaid/reconnect-link-token'
+          : '/api/plaid/create-link-token';
 
-        const res = await fetch('/api/plaid/create-link-token', {
+        const res = await fetch(endpoint, {
           method: 'POST',
           credentials: 'include',
           headers: {
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({
-            client_id: selectedClientId,
-          }),
+          body: JSON.stringify(
+            isReconnect
+              ? {
+                  plaid_item_database_id: reconnectItemId,
+                }
+              : {
+                  client_id: selectedClientId,
+                },
+          ),
         });
 
         const data = await res.json();
@@ -91,8 +103,7 @@ export default function PlaidLinkButton({
           setToken(data.link_token);
 
           console.log(
-            '✅ Plaid Link token created for client:',
-            selectedClientId
+            '✅ Plaid Link token created.'
           );
         }
       } catch (error) {
@@ -118,7 +129,7 @@ export default function PlaidLinkButton({
     return () => {
       mounted = false;
     };
-  }, [selectedClientId]);
+  }, [selectedClientId, reconnectItemId]);
 
   const onSuccess = useCallback(
     async (publicToken: string) => {
@@ -126,8 +137,13 @@ export default function PlaidLinkButton({
         setIsExchanging(true);
         setErrorMessage(null);
 
-        console.log('🏦 Plaid bank selected successfully');
-        console.log('🔄 Exchanging Plaid public token...');
+        const isReconnect = Boolean(reconnectItemId);
+
+        console.log(
+          isReconnect
+            ? '🏦 Plaid bank reauthentication completed'
+            : '🏦 Plaid bank selected successfully'
+        );
 
         if (!selectedClientId) {
           console.error(
@@ -138,6 +154,34 @@ export default function PlaidLinkButton({
             'Please select a LedgerAI client before connecting a bank account.'
           );
 
+          return;
+        }
+
+        if (isReconnect) {
+          const completeResponse = await fetch(
+            '/api/plaid/reconnect/complete',
+            {
+              method: 'POST',
+              credentials: 'include',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                plaid_item_database_id: reconnectItemId,
+              }),
+            },
+          );
+
+          const completeResult = await completeResponse.json();
+
+          if (!completeResponse.ok || !completeResult.success) {
+            throw new Error(
+              completeResult?.error ||
+                'Unable to complete bank reconnection.',
+            );
+          }
+
+          await onReconnected?.();
           return;
         }
 
@@ -197,7 +241,12 @@ export default function PlaidLinkButton({
         setIsExchanging(false);
       }
     },
-    [selectedClientId, onBankConnected]
+    [
+      selectedClientId,
+      reconnectItemId,
+      onBankConnected,
+      onReconnected,
+    ]
   );
 
   const { open, ready } = usePlaidLink({
@@ -208,12 +257,12 @@ export default function PlaidLinkButton({
   const isReady =
     ready &&
     !!token &&
-    !!selectedClientId &&
+    (!!selectedClientId || !!reconnectItemId) &&
     !loadingToken &&
     !isExchanging;
 
   function handleOpen() {
-    if (!selectedClientId) {
+    if (!selectedClientId && !reconnectItemId) {
       setErrorMessage(
         'Please select a LedgerAI client before connecting a bank account.'
       );
@@ -266,7 +315,9 @@ export default function PlaidLinkButton({
           : loadingToken
           ? 'Initializing Plaid...'
           : isReady
-          ? 'Connect bank account'
+          ? reconnectItemId
+            ? reconnectLabel || 'Fix connection'
+            : 'Connect bank account'
           : 'Plaid Unavailable'}
       </button>
 

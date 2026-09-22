@@ -191,12 +191,13 @@ export async function POST(req: Request) {
         client_id,
         plaid_item_id,
         access_token_encrypted,
+        institution_name,
         status,
         cursor,
         last_synced_at
       `)
       .eq('client_id', clientId)
-      .eq('status', 'active')
+      .in('status', ['active', 'error'])
       .not('plaid_item_id', 'like', 'item_test_%');
 
     if (plaidItemsError) {
@@ -234,9 +235,25 @@ export async function POST(req: Request) {
     // webhooks can share exactly the same implementation.
     // ---------------------------------------------------------
 
-    const results: PlaidItemSyncResult[] = [];
+    const results: PlaidItemSyncResult[] = plaidItems
+      .filter((item) => item.status === 'error')
+      .map((item) => ({
+        plaid_item_database_id: item.id,
+        plaid_item_id: item.plaid_item_id,
+        institution_name: item.institution_name || null,
+        success: false,
+        added: 0,
+        modified: 0,
+        removed: 0,
+        skipped: 0,
+        error_code: 'ITEM_LOGIN_REQUIRED',
+        requires_reauthentication: true,
+        error: 'Plaid Item requires reauthentication.',
+      }));
 
-    for (const item of plaidItems) {
+    for (const item of plaidItems.filter(
+      (candidate) => candidate.status === 'active',
+    )) {
       const result = await syncPlaidItem({
         db,
         item,
@@ -275,6 +292,38 @@ export async function POST(req: Request) {
       }
     );
 
+    const reauthenticationRequired = results
+      .filter(
+        (result) => result.requires_reauthentication
+      )
+      .map((result) => ({
+        plaid_item_database_id:
+          result.plaid_item_database_id,
+        plaid_item_id:
+          result.plaid_item_id,
+        institution_name:
+          result.institution_name || null,
+      }));
+
+    const itemFailures = results
+      .filter(
+        (result) =>
+          !result.success &&
+          !result.requires_reauthentication
+      )
+      .map((result) => ({
+        plaid_item_database_id:
+          result.plaid_item_database_id,
+        plaid_item_id:
+          result.plaid_item_id,
+        institution_name:
+          result.institution_name || null,
+        error_code:
+          result.error_code || null,
+        error:
+          result.error || 'Plaid Item synchronization failed.',
+      }));
+
     console.log(
       '[plaid/sync] COMPLETE',
       {
@@ -302,6 +351,10 @@ export async function POST(req: Request) {
           successfulItems,
         failed_items:
           failedItems,
+        reauthentication_required:
+          reauthenticationRequired,
+        item_failures:
+          itemFailures,
         totals,
         results,
         message:

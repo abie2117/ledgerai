@@ -27,6 +27,7 @@ export type PlaidItemForSync = {
   client_id: string;
   plaid_item_id: string;
   access_token_encrypted: unknown;
+  institution_name?: string | null;
   status?: string | null;
   cursor?: string | null;
   last_synced_at?: string | null;
@@ -40,10 +41,13 @@ export type PlaidItemSyncResult = {
   modified: number;
   removed: number;
   skipped: number;
+  institution_name?: string | null;
+  error_code?: string | null;
+  requires_reauthentication?: boolean;
   error?: string;
 };
 
-function decodeStoredAccessToken(storedToken: unknown) {
+export function decodeStoredAccessToken(storedToken: unknown) {
   let encodedToken: string;
 
   if (typeof storedToken === 'string') {
@@ -515,6 +519,8 @@ export async function syncPlaidItem({
         item.id,
       plaid_item_id:
         item.plaid_item_id,
+      institution_name:
+        item.institution_name || null,
       success: true,
       added:
         addedTransactions.length,
@@ -526,10 +532,26 @@ export async function syncPlaidItem({
         skippedTransactions,
     };
   } catch (itemError: any) {
+    const errorCode = getPlaidErrorCode(itemError);
     const errorMessage =
       getPlaidSyncErrorMessage(
         itemError
       );
+
+    if (errorCode === 'ITEM_LOGIN_REQUIRED') {
+      const { error: statusError } = await db
+        .from('plaid_items')
+        .update({ status: 'error' })
+        .eq('id', item.id)
+        .eq('client_id', clientId);
+
+      if (statusError) {
+        console.error(
+          '[plaid-sync] Failed to mark Plaid Item as requiring reauthentication:',
+          statusError
+        );
+      }
+    }
 
     console.error(
       '[plaid-sync] Item synchronization failed:',
@@ -555,6 +577,12 @@ export async function syncPlaidItem({
       modified: 0,
       removed: 0,
       skipped: 0,
+      institution_name:
+        item.institution_name || null,
+      error_code:
+        errorCode,
+      requires_reauthentication:
+        errorCode === 'ITEM_LOGIN_REQUIRED',
       error: errorMessage,
     };
   }

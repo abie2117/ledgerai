@@ -67,6 +67,11 @@ interface SupabaseClientRecord {
   business_name: string;
 }
 
+interface ReauthenticationRequiredItem {
+  plaid_item_database_id: string;
+  plaid_item_id: string;
+  institution_name?: string | null;
+}
 
 const SUGGESTED_QUESTIONS = [
   'How much did I spend on Food & Dining last month?',
@@ -167,6 +172,9 @@ export default function DashboardPage() {
   const [transactionsLoading, setTransactionsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
+  const [reauthenticationRequired, setReauthenticationRequired] = useState<
+    ReauthenticationRequiredItem[]
+  >([]);
 
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
@@ -553,6 +561,7 @@ export default function DashboardPage() {
     event: ChangeEvent<HTMLSelectElement>,
   ) {
     setSelectedClientId(event.target.value);
+    setReauthenticationRequired([]);
     setSearchTerm('');
     setCategoryFilter('All Categories');
     setAccountFilter('All Accounts');
@@ -623,6 +632,7 @@ export default function DashboardPage() {
       setTransactionsLoading(true);
       setErrorMessage('');
       setSuccessMessage('');
+      setReauthenticationRequired([]);
 
       const syncResponse = await fetch('/api/plaid/sync', {
         method: 'POST',
@@ -637,11 +647,23 @@ export default function DashboardPage() {
 
       const syncResult = await syncResponse.json().catch(() => ({}));
 
-      if (!syncResponse.ok || syncResult?.success === false) {
+      if (!syncResponse.ok && syncResponse.status !== 207) {
         throw new Error(
           syncResult?.error || 'Unable to synchronize transactions with Plaid.',
         );
       }
+
+      const requiredItems = Array.isArray(
+        syncResult?.reauthentication_required,
+      )
+        ? (syncResult.reauthentication_required as ReauthenticationRequiredItem[])
+        : [];
+
+      const itemFailures = Array.isArray(syncResult?.item_failures)
+        ? syncResult.item_failures
+        : [];
+
+      setReauthenticationRequired(requiredItems);
 
       const { data, error } = await supabase
         .from('transactions')
@@ -677,7 +699,26 @@ export default function DashboardPage() {
       );
 
       setTransactions(formattedTransactions as Transaction[]);
-      setSuccessMessage('Bank transactions synchronized and refreshed successfully.');
+
+      if (itemFailures.length > 0) {
+        setErrorMessage(
+          `${itemFailures.length} bank connection${
+            itemFailures.length === 1 ? '' : 's'
+          } could not synchronize. Existing transaction data was preserved.`,
+        );
+      }
+
+      if (requiredItems.length > 0) {
+        setSuccessMessage(
+          `${syncResult.successful_items || 0} bank connection${
+            syncResult.successful_items === 1 ? '' : 's'
+          } synchronized. ${requiredItems.length} require${
+            requiredItems.length === 1 ? 's' : ''
+          } reauthentication.`,
+        );
+      } else if (itemFailures.length === 0) {
+        setSuccessMessage('Bank transactions synchronized and refreshed successfully.');
+      }
     } catch (error: any) {
       console.error('Error refreshing transactions:', error);
 
@@ -692,6 +733,11 @@ export default function DashboardPage() {
   async function handleBankConnected() {
     await refreshTransactions();
     setSuccessMessage('Bank connected and transactions refreshed successfully.');
+  }
+
+  async function handleBankReconnected() {
+    await refreshTransactions();
+    setSuccessMessage('Bank connection repaired and transactions refreshed successfully.');
   }
 
   async function handleCategoryChange(
@@ -1307,6 +1353,30 @@ function handleAskQuestion() {
           <div className="rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-300">
             {errorMessage}
           </div>
+        )}
+
+        {reauthenticationRequired.length > 0 && (
+          <section className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-4 text-sm text-amber-100">
+            <div className="font-semibold">
+              Bank connection{reauthenticationRequired.length === 1 ? '' : 's'} require reauthentication
+            </div>
+            <p className="mt-1 text-amber-200/80">
+              Existing transactions are still available. Reconnect each affected bank to resume synchronization.
+            </p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {reauthenticationRequired.map((item) => (
+                <PlaidLinkButton
+                  key={item.plaid_item_database_id}
+                  selectedClientId={selectedClientId}
+                  reconnectItemId={item.plaid_item_database_id}
+                  reconnectLabel={`Fix ${
+                    item.institution_name || 'bank connection'
+                  }`}
+                  onReconnected={handleBankReconnected}
+                />
+              ))}
+            </div>
+          </section>
         )}
 
         {successMessage && (
