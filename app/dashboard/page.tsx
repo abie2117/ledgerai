@@ -126,38 +126,10 @@ function getTransactionCategory(transaction: Transaction) {
   return 'Uncategorized';
 }
 
-const OPERATING_EXPENSE_CATEGORIES = new Set([
-  'advertising & marketing',
-  'bank fees',
-  'cost of goods sold',
-  'contractors',
-  'education & training',
-  'food & dining',
-  'insurance',
-  'legal & professional',
-  'meals & entertainment',
-  'office supplies',
-  'other business expenses',
-  'payroll',
-  'rent & lease',
-  'repairs & maintenance',
-  'software & subscriptions',
-  'taxes & licenses',
-  'transportation',
-  'travel',
-  'utilities',
-]);
-
-function isOperatingExpenseTransaction(transaction: Transaction) {
+function isSpendingTransaction(transaction: Transaction) {
   const amount = Number(transaction.amount || 0);
 
-  if (amount <= 0) {
-    return false;
-  }
-
-  const category = getTransactionCategory(transaction).toLowerCase().trim();
-
-  return OPERATING_EXPENSE_CATEGORIES.has(category);
+  return Number.isFinite(amount) && amount > 0;
 }
 
 function escapeCsvValue(
@@ -510,7 +482,7 @@ export default function DashboardPage() {
   ]);
 
   const spendingTransactions = useMemo(() => {
-    return filteredTransactions.filter(isOperatingExpenseTransaction);
+    return filteredTransactions.filter(isSpendingTransaction);
   }, [filteredTransactions]);
 
   const totalSpending = useMemo(() => {
