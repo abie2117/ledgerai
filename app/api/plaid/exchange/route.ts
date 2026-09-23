@@ -273,63 +273,40 @@ export async function POST(req: Request) {
     // 8. SAVE PLAID ITEM
     // ---------------------------------------------------------
 
-    /*
-     * This preserves the existing storage format.
-     *
-     * NOTE:
-     * Base64 is encoding, not encryption.
-     * Access-token encryption should be upgraded separately.
-     *
-     * New Items begin with cursor = null.
-     * A usable cursor is persisted only after a complete
-     * /transactions/sync pagination cycle succeeds.
-     */
-
-    const encryptedAccessToken =
-      Buffer.from(accessToken).toString('base64');
-
     const {
       data: plaidItem,
       error: plaidItemError,
-    } = await db
-      .from('plaid_items')
-      .upsert(
-        {
-          client_id: clientId,
-          plaid_item_id: plaidItemId,
-          access_token_encrypted:
-            encryptedAccessToken,
-          status: 'active',
-          cursor: null,
-          last_synced_at: null,
-          token_key_version: 1,
-        },
-        {
-          onConflict: 'plaid_item_id',
-        }
-      )
-      .select('id')
-      .single();
+    } = await authClient.rpc(
+      'insert_plaid_item_encrypted',
+      {
+        p_client_id: clientId,
+        p_plaid_item_id: plaidItemId,
+        p_access_token: accessToken,
+        p_institution_name: null,
+      }
+    );
 
-    if (plaidItemError || !plaidItem) {
+    if (
+      plaidItemError ||
+      typeof plaidItem !== 'string' ||
+      !plaidItem
+    ) {
       console.error(
         '[plaid/exchange] Failed to save Plaid item:',
-        plaidItemError
+        plaidItemError?.message ||
+          'RPC returned no local Plaid item ID.'
       );
 
       return NextResponse.json(
         {
           success: false,
-          error:
-            plaidItemError?.message ||
-            'Failed to save Plaid connection.',
+          error: 'Failed to save Plaid connection.',
         },
         { status: 500 }
       );
     }
 
-    const plaidItemDatabaseId =
-      plaidItem.id;
+    const plaidItemDatabaseId = plaidItem;
 
     // ---------------------------------------------------------
     // 9. SAVE PLAID ACCOUNTS
