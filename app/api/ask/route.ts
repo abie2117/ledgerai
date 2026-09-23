@@ -1,26 +1,51 @@
 import { NextResponse } from 'next/server';
 import Anthropic from '@anthropic-ai/sdk';
 import { createServerSupabaseClient } from '@/lib/supabase-server';
+import {
+  getCurrentMonthRange,
+  getFoodDiningSpending,
+  getPreviousMonthRange,
+  getQualifyingSpendingTransactions,
+  getTopMerchantSpending,
+  getTransactionsOverAmount,
+  sumTransactionAmounts,
+  type FinancialTransaction,
+} from '@/lib/financial-queries';
 
-function isTotalSpendingThisMonthQuestion(question: string) {
+function getQuestionIntent(question: string) {
   const normalizedQuestion = question.toLowerCase().trim();
 
-  return (
+  if (
+    normalizedQuestion.includes('food') &&
+    normalizedQuestion.includes('dining') &&
+    normalizedQuestion.includes('last month')
+  ) {
+    return 'food-dining-last-month';
+  }
+
+  if (
+    normalizedQuestion.includes('over $50') ||
+    normalizedQuestion.includes('over 50')
+  ) {
+    return 'transactions-over-50';
+  }
+
+  if (
+    normalizedQuestion.includes('top 5') &&
+    normalizedQuestion.includes('merchant')
+  ) {
+    return 'top-five-merchants';
+  }
+
+  if (
     normalizedQuestion.includes('total') &&
     normalizedQuestion.includes('spend') &&
     normalizedQuestion.includes('this month')
-  );
-}
+  ) {
+    return 'total-spend-this-month';
+  }
 
-function getCurrentMonthRange() {
-  const now = new Date();
-  const start = new Date(now.getFullYear(), now.getMonth(), 1);
-  const end = new Date(now.getFullYear(), now.getMonth() + 1, 1);
-
-  return {
-    start: start.toISOString().slice(0, 10),
-    end: end.toISOString().slice(0, 10),
-  };
+  return null;
 }
 
 export async function POST(request: Request) {
@@ -53,15 +78,13 @@ export async function POST(request: Request) {
     }
 
     const { data: client, error: clientError } = await supabase
-      .from('clients')
-      .select('id')
-      .eq('id', selectedClientId)
-      .maybeSingle();
+      .from('firm_users')
+      .select('firm_id')
+      .eq('user_id', user.id);
 
     if (clientError) {
-      console.error('[ask] Client authorization query failed:', {
+      console.error('[ask] Firm authorization query failed:', {
         userId: user.id,
-        clientId: selectedClientId,
         message: clientError.message,
         code: clientError.code,
       });
@@ -72,7 +95,43 @@ export async function POST(request: Request) {
       );
     }
 
-    if (!client) {
+    const firmIds = (client || []).map((membership) => membership.firm_id);
+
+    if (firmIds.length === 0) {
+      console.warn('[ask] Client access denied:', {
+        userId: user.id,
+        clientId: selectedClientId,
+      });
+
+      return NextResponse.json(
+        { error: 'You do not have access to the selected client.' },
+        { status: 403 },
+      );
+    }
+
+    const { data: authorizedClient, error: authorizedClientError } =
+      await supabase
+        .from('clients')
+        .select('id')
+        .eq('id', selectedClientId)
+        .in('firm_id', firmIds)
+        .maybeSingle();
+
+    if (authorizedClientError) {
+      console.error('[ask] Client authorization query failed:', {
+        userId: user.id,
+        clientId: selectedClientId,
+        message: authorizedClientError.message,
+        code: authorizedClientError.code,
+      });
+
+      return NextResponse.json(
+        { error: 'Unable to verify the selected client.' },
+        { status: 500 },
+      );
+    }
+
+    if (!authorizedClient) {
       console.warn('[ask] Client access denied:', {
         userId: user.id,
         clientId: selectedClientId,
@@ -86,7 +145,16 @@ export async function POST(request: Request) {
 
     const { data: transactions, error } = await supabase
       .from('transactions')
-      .select('posted_date, amount, merchant_name')
+      .select(`
+        posted_date,
+        date,
+        amount,
+        merchant_name,
+        category,
+        canonical_category:categories!transactions_ai_category_id_fkey (
+          name
+        )
+      `)
       .eq('client_id', selectedClientId)
       .order('posted_date', { ascending: false });
 
@@ -106,19 +174,71 @@ export async function POST(request: Request) {
       );
     }
 
-    if (isTotalSpendingThisMonthQuestion(question)) {
-      const { start, end } = getCurrentMonthRange();
-      const total = (transactions || [])
-        .filter(
-          (transaction) =>
-            transaction.posted_date >= start &&
-            transaction.posted_date < end &&
-            Number(transaction.amount) > 0,
-        )
-        .reduce(
-          (sum, transaction) => sum + Number(transaction.amount || 0),
-          0,
-        );
+    const intent = getQuestionIntent(question);
+    const financialTransactions = (transactions || []) as FinancialTransaction[];
+
+    if (intent === 'food-dining-last-month') {
+      const total = sumTransactionAmounts(
+        getFoodDiningSpending(
+          financialTransactions,
+          getPreviousMonthRange(),
+        ),
+      );
+
+      return NextResponse.json({
+        answer: `You spent ${new Intl.NumberFormat('en-US', {
+          style: 'currency',
+          currency: 'USD',
+        }).format(total)} on Food & Dining last month.`,
+      });
+    }
+
+    if (intent === 'transactions-over-50') {
+      const matchingTransactions = getTransactionsOverAmount(
+        financialTransactions,
+        50,
+      );
+
+      return NextResponse.json({
+        answer: matchingTransactions.length === 0
+          ? 'There are no transactions over $50.'
+          : matchingTransactions
+              .map(
+                (transaction) =>
+                  `${transaction.posted_date || transaction.date || 'Unknown date'} — ${transaction.merchant_name || transaction.name || 'Unknown merchant'} — ${new Intl.NumberFormat('en-US', {
+                    style: 'currency',
+                    currency: 'USD',
+                  }).format(Number(transaction.amount || 0))}`,
+              )
+              .join('\n'),
+      });
+    }
+
+    if (intent === 'top-five-merchants') {
+      const topMerchants = getTopMerchantSpending(financialTransactions);
+
+      return NextResponse.json({
+        answer: topMerchants.length === 0
+          ? 'There are no qualifying spending transactions.'
+          : `Your top 5 merchants by total spend are:\n\n${topMerchants
+              .map(
+                (merchant, index) =>
+                  `${index + 1}. ${merchant.merchant} — ${new Intl.NumberFormat('en-US', {
+                    style: 'currency',
+                    currency: 'USD',
+                  }).format(merchant.total)}`,
+              )
+              .join('\n')}`,
+      });
+    }
+
+    if (intent === 'total-spend-this-month') {
+      const total = sumTransactionAmounts(
+        getQualifyingSpendingTransactions(
+          financialTransactions,
+          getCurrentMonthRange(),
+        ),
+      );
 
       return NextResponse.json({
         answer: `You have spent ${new Intl.NumberFormat('en-US', {

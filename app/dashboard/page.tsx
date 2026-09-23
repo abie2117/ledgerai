@@ -9,6 +9,19 @@ import {
 import { supabase } from '@/lib/supabase-browser';
 import { QueryBar } from '@/components/QueryBar';
 import PlaidLinkButton from '@/components/PlaidLinkButton';
+import {
+  getCurrentMonthRange,
+  getFoodDiningSpending,
+  getMerchantName,
+  getPreviousMonthRange,
+  getQualifyingSpendingTransactions,
+  getTopMerchantSpending,
+  getTransactionCategory,
+  getTransactionDate,
+  getTransactionsOverAmount,
+  isQualifyingSpending,
+  sumTransactionAmounts,
+} from '@/lib/financial-queries';
 
 interface Transaction {
   id: string;
@@ -101,40 +114,6 @@ function formatDate(date: string) {
     day: 'numeric',
     year: 'numeric',
   });
-}
-
-function getTransactionDate(transaction: Transaction) {
-  return transaction.posted_date || transaction.date;
-}
-
-function getMerchantName(transaction: Transaction) {
-  return (
-    transaction.merchant_name ||
-    transaction.name ||
-    'Unknown merchant'
-  );
-}
-
-function getTransactionCategory(transaction: Transaction) {
-  if (transaction.canonical_category?.name) {
-    return transaction.canonical_category.name;
-  }
-
-  if (transaction.category) {
-    return transaction.category;
-  }
-
-  if (transaction.personal_finance_category?.primary) {
-    return transaction.personal_finance_category.primary;
-  }
-
-  return 'Uncategorized';
-}
-
-function isSpendingTransaction(transaction: Transaction) {
-  const amount = Number(transaction.amount || 0);
-
-  return Number.isFinite(amount) && amount > 0;
 }
 
 function escapeCsvValue(
@@ -490,14 +469,11 @@ export default function DashboardPage() {
   ]);
 
   const spendingTransactions = useMemo(() => {
-    return filteredTransactions.filter(isSpendingTransaction);
+    return filteredTransactions.filter(isQualifyingSpending);
   }, [filteredTransactions]);
 
   const totalSpending = useMemo(() => {
-    return spendingTransactions.reduce(
-      (total, transaction) => total + Number(transaction.amount || 0),
-      0,
-    );
+    return sumTransactionAmounts(spendingTransactions);
   }, [spendingTransactions]);
 
   const transactionCount = filteredTransactions.length;
@@ -512,28 +488,7 @@ export default function DashboardPage() {
   }, [totalSpending, spendingTransactionCount]);
 
   const merchantSummary = useMemo<GroupedMerchant[]>(() => {
-    const merchantMap = new Map<string, GroupedMerchant>();
-
-    spendingTransactions.forEach((transaction) => {
-      const merchant = getMerchantName(transaction);
-      const current = merchantMap.get(merchant);
-      const amount = Number(transaction.amount || 0);
-
-      if (current) {
-        current.total += amount;
-        current.count += 1;
-      } else {
-        merchantMap.set(merchant, {
-          merchant,
-          total: amount,
-          count: 1,
-        });
-      }
-    });
-
-    return Array.from(merchantMap.values()).sort(
-      (a, b) => b.total - a.total,
-    );
+    return getTopMerchantSpending(spendingTransactions, Number.MAX_SAFE_INTEGER);
   }, [spendingTransactions]);
 
   const categorySummary = useMemo(() => {
@@ -908,41 +863,17 @@ export default function DashboardPage() {
       return;
     }
 
-    const now = new Date();
-    const currentMonth = now.getMonth();
-    const currentYear = now.getFullYear();
-
     if (
       normalizedQuestion.includes('food') &&
       normalizedQuestion.includes('dining') &&
       normalizedQuestion.includes('last month')
     ) {
-      const lastMonthDate = new Date(
-        currentYear,
-        currentMonth - 1,
-        1,
+      const total = sumTransactionAmounts(
+        getFoodDiningSpending(
+          transactions,
+          getPreviousMonthRange(),
+        ),
       );
-
-      const lastMonth = lastMonthDate.getMonth();
-      const lastMonthYear = lastMonthDate.getFullYear();
-
-      const total = transactions
-        .filter((transaction) => {
-          const date = new Date(`${getTransactionDate(transaction)}T00:00:00`);
-          const category = getTransactionCategory(transaction)
-            .toLowerCase();
-
-          return (
-            date.getMonth() === lastMonth &&
-            date.getFullYear() === lastMonthYear &&
-            (category.includes('food') ||
-              category.includes('dining'))
-          );
-        })
-        .reduce(
-          (sum, transaction) => sum + Number(transaction.amount || 0),
-          0,
-        );
 
       setAskAnswer(
         `You spent ${formatCurrency(
@@ -956,8 +887,9 @@ export default function DashboardPage() {
       normalizedQuestion.includes('over $50') ||
       normalizedQuestion.includes('over 50')
     ) {
-      const matchingTransactions = transactions.filter(
-        (transaction) => Number(transaction.amount || 0) > 50,
+      const matchingTransactions = getTransactionsOverAmount(
+        transactions,
+        50,
       );
 
       if (matchingTransactions.length === 0) {
@@ -997,24 +929,12 @@ export default function DashboardPage() {
       normalizedQuestion.includes('top 5') &&
       normalizedQuestion.includes('merchant')
     ) {
-      const merchantTotals = new Map<string, number>();
-
-      transactions.forEach((transaction) => {
-        const merchant = getMerchantName(transaction);
-        const currentTotal = merchantTotals.get(merchant) || 0;
-
-        merchantTotals.set(
-          merchant,
-          currentTotal + Number(transaction.amount || 0),
-        );
-      });
-
-      const topMerchants = Array.from(merchantTotals.entries())
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 5)
+      const topMerchants = getTopMerchantSpending(transactions)
         .map(
-          ([merchant, total], index) =>
-            `${index + 1}. ${merchant} — ${formatCurrency(total)}`,
+          (merchant, index) =>
+            `${index + 1}. ${merchant.merchant} — ${formatCurrency(
+              merchant.total,
+            )}`,
         )
         .join('\n');
 
@@ -1028,19 +948,12 @@ export default function DashboardPage() {
       normalizedQuestion.includes('total') &&
       normalizedQuestion.includes('this month')
     ) {
-      const total = transactions
-        .filter((transaction) => {
-          const date = new Date(`${getTransactionDate(transaction)}T00:00:00`);
-
-          return (
-            date.getMonth() === currentMonth &&
-            date.getFullYear() === currentYear
-          );
-        })
-        .reduce(
-          (sum, transaction) => sum + Number(transaction.amount || 0),
-          0,
-        );
+      const total = sumTransactionAmounts(
+        getQualifyingSpendingTransactions(
+          transactions,
+          getCurrentMonthRange(),
+        ),
+      );
 
       setAskAnswer(
         `You have spent ${formatCurrency(
