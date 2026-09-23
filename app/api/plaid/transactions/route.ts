@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { createServerComponentClient } from '../../../../lib/supabase-server';
+import { createServerSupabaseClient } from '../../../../lib/supabase-server';
 
 export const dynamic = 'force-dynamic';
 
@@ -19,7 +19,71 @@ export async function POST(req: Request) {
       );
     }
 
-    const supabase = await createServerComponentClient();
+    const supabase = await createServerSupabaseClient();
+
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json(
+        {
+          transactions: [],
+          error: 'Not authenticated.',
+        },
+        { status: 401 }
+      );
+    }
+
+    const {
+      data: memberships,
+      error: membershipError,
+    } = await supabase
+      .from('firm_users')
+      .select('firm_id')
+      .eq('user_id', user.id);
+
+    if (membershipError) {
+      return NextResponse.json(
+        {
+          transactions: [],
+          error: 'Unable to verify client access.',
+        },
+        { status: 500 }
+      );
+    }
+
+    const firmIds = (memberships || [])
+      .map((membership) => membership.firm_id)
+      .filter(Boolean);
+
+    const { data: client, error: clientError } = await supabase
+      .from('clients')
+      .select('id, firm_id')
+      .eq('id', clientId)
+      .in('firm_id', firmIds)
+      .maybeSingle();
+
+    if (clientError) {
+      return NextResponse.json(
+        {
+          transactions: [],
+          error: 'Unable to verify client access.',
+        },
+        { status: 500 }
+      );
+    }
+
+    if (!client) {
+      return NextResponse.json(
+        {
+          transactions: [],
+          error: 'Client is not authorized.',
+        },
+        { status: 403 }
+      );
+    }
 
     const {
       data: transactions,
