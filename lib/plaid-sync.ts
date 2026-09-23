@@ -5,6 +5,7 @@ import {
   PlaidApi,
   PlaidEnvironments,
 } from 'plaid';
+import { readPlaidAccessToken } from './plaid-token-storage';
 
 const plaidEnv =
   (process.env.PLAID_ENV as keyof typeof PlaidEnvironments) ||
@@ -27,6 +28,7 @@ export type PlaidItemForSync = {
   client_id: string;
   plaid_item_id: string;
   access_token_encrypted: unknown;
+  token_key_version: number;
   institution_name?: string | null;
   status?: string | null;
   cursor?: string | null;
@@ -46,49 +48,6 @@ export type PlaidItemSyncResult = {
   requires_reauthentication?: boolean;
   error?: string;
 };
-
-export function decodeStoredAccessToken(storedToken: unknown) {
-  let encodedToken: string;
-
-  if (typeof storedToken === 'string') {
-    encodedToken = storedToken;
-  } else if (
-    storedToken &&
-    typeof storedToken === 'object' &&
-    'data' in storedToken &&
-    Array.isArray(
-      (storedToken as { data?: unknown }).data
-    )
-  ) {
-    encodedToken = Buffer.from(
-      (storedToken as { data: number[] }).data
-    ).toString('utf8');
-  } else {
-    throw new Error(
-      'Unsupported access-token storage format.'
-    );
-  }
-
-  if (encodedToken.startsWith('\\x')) {
-    encodedToken = Buffer.from(
-      encodedToken.slice(2),
-      'hex'
-    ).toString('utf8');
-  }
-
-  const accessToken = Buffer.from(
-    encodedToken,
-    'base64'
-  ).toString('utf8');
-
-  if (!accessToken) {
-    throw new Error(
-      'Stored Plaid access token could not be decoded.'
-    );
-  }
-
-  return accessToken;
-}
 
 function getPlaidErrorCode(error: any) {
   return (
@@ -117,10 +76,7 @@ export async function syncPlaidItem({
   const clientId = item.client_id;
 
   try {
-    const accessToken =
-      decodeStoredAccessToken(
-        item.access_token_encrypted
-      );
+    const accessToken = await readPlaidAccessToken(item);
 
     // ---------------------------------------------------------
     // 1. LOAD LOCAL ACCOUNT MAP

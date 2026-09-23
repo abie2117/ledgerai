@@ -311,6 +311,7 @@ export async function POST(req: Request) {
         client_id,
         plaid_item_id,
         access_token_encrypted,
+        token_key_version,
         status,
         cursor,
         last_synced_at

@@ -6,7 +6,7 @@ import {
 } from 'plaid';
 import { createRouteHandlerClient } from '@/lib/supabase-server';
 import { createClient } from '@supabase/supabase-js';
-import { decodeStoredAccessToken } from '@/lib/plaid-sync';
+import { readPlaidAccessToken } from '@/lib/plaid-token-storage';
 
 export const dynamic = 'force-dynamic';
 
@@ -97,7 +97,9 @@ export async function POST(req: Request) {
       .select(`
         id,
         client_id,
+        plaid_item_id,
         access_token_encrypted,
+        token_key_version,
         clients!inner (firm_id, status)
       `)
       .eq('id', plaidItemDatabaseId)
@@ -130,7 +132,7 @@ export async function POST(req: Request) {
       );
     }
 
-    const accessToken = decodeStoredAccessToken(item.access_token_encrypted);
+    const accessToken = await readPlaidAccessToken(item);
     const response = await plaidClient.linkTokenCreate({
       user: {
         client_user_id: `ledgerai-client-${item.client_id}`,
