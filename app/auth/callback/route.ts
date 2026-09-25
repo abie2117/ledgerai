@@ -12,7 +12,7 @@ export async function GET(request: NextRequest) {
   );
 
   if (!code) {
-    console.error('❌ Supabase callback: missing code');
+    console.error('Supabase callback missing code');
 
     return NextResponse.redirect(
       new URL('/login?error=missing_code', request.url)
@@ -55,14 +55,11 @@ export async function GET(request: NextRequest) {
     await supabase.auth.exchangeCodeForSession(code);
 
   if (error) {
-    console.error(
-      '❌ Supabase auth callback error:',
-      error
-    );
+    console.error('Supabase auth callback exchange failed');
 
     return NextResponse.redirect(
       new URL(
-        `/login?error=${encodeURIComponent(error.message)}`,
+        '/login?error=auth_callback_failed',
         request.url
       )
     );

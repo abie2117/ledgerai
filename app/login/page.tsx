@@ -5,10 +5,6 @@ import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase-browser';
 import { getSafeInternalRedirect } from '@/lib/auth-redirect';
 
-const SITE_URL =
-  process.env.NEXT_PUBLIC_SITE_URL ||
-  'https://ledgerai-tawny.vercel.app';
-
 export default function LoginPage() {
   const router = useRouter();
   const [isSignUp, setIsSignUp] = useState(false);
@@ -36,7 +32,7 @@ export default function LoginPage() {
 
     try {
       if (isRecovery) {
-        const redirectUrl = `${SITE_URL}/auth/callback?next=/reset-password`;
+        const redirectUrl = `${window.location.origin}/auth/callback?next=/reset-password`;
 
         const { error } =
           await supabase.auth.resetPasswordForEmail(
@@ -61,7 +57,7 @@ export default function LoginPage() {
        * SIGN UP
        */
       if (isSignUp) {
-        const redirectUrl = `${SITE_URL}/auth/callback`;
+        const redirectUrl = `${window.location.origin}/auth/callback`;
 
         const { data, error } = await supabase.auth.signUp({
           email: email.trim(),
