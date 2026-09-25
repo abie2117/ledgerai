@@ -1,18 +1,30 @@
 'use client';
 
 import { useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase-browser';
+import { getSafeInternalRedirect } from '@/lib/auth-redirect';
 
 const SITE_URL =
   process.env.NEXT_PUBLIC_SITE_URL ||
   'https://ledgerai-tawny.vercel.app';
 
 export default function LoginPage() {
+  const router = useRouter();
   const [isSignUp, setIsSignUp] = useState(false);
+  const [isRecovery, setIsRecovery] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const [successMsg, setSuccessMsg] = useState<string | null>(() =>
+    typeof window !== 'undefined' &&
+    new URLSearchParams(window.location.search).get(
+      'passwordReset',
+    ) === 'success'
+      ? 'Your password has been updated. You can now log in.'
+      : null,
+  );
   const [loading, setLoading] = useState(false);
 
   async function handleSubmit(e: React.FormEvent) {
@@ -23,15 +35,33 @@ export default function LoginPage() {
     setSuccessMsg(null);
 
     try {
+      if (isRecovery) {
+        const redirectUrl = `${SITE_URL}/auth/callback?next=/reset-password`;
+
+        const { error } =
+          await supabase.auth.resetPasswordForEmail(
+            email.trim(),
+            { redirectTo: redirectUrl },
+          );
+
+        if (error) {
+          setErrorMsg(
+            'We could not send the reset email. Please try again.',
+          );
+          return;
+        }
+
+        setSuccessMsg(
+          'If an account matches that email, you will receive a password reset link shortly.',
+        );
+        return;
+      }
+
       /*
        * SIGN UP
        */
       if (isSignUp) {
-        console.log('📝 Starting signup...');
-
         const redirectUrl = `${SITE_URL}/auth/callback`;
-
-        console.log('📧 Email confirmation redirect:', redirectUrl);
 
         const { data, error } = await supabase.auth.signUp({
           email: email.trim(),
@@ -41,15 +71,7 @@ export default function LoginPage() {
           },
         });
 
-        console.log('🔥 SIGNUP RESULT:', {
-          data,
-          error,
-          user: data?.user,
-          session: data?.session,
-        });
-
         if (error) {
-          console.error('❌ SIGNUP ERROR:', error);
           setErrorMsg(error.message);
           return;
         }
@@ -59,12 +81,7 @@ export default function LoginPage() {
          * send the user directly to the dashboard.
          */
         if (data.session) {
-          console.log(
-            '✅ Signup created an active session:',
-            data.session.user.id
-          );
-
-          window.location.assign('/dashboard');
+          router.push('/dashboard');
           return;
         }
 
@@ -72,10 +89,6 @@ export default function LoginPage() {
          * Normal behavior when email confirmation is enabled:
          * user exists, but session is null until email is confirmed.
          */
-        console.log(
-          '📧 Signup successful. Waiting for email confirmation.'
-        );
-
         setSuccessMsg(
           'Account created successfully! Check your email and click the confirmation link to activate your account.'
         );
@@ -87,34 +100,18 @@ export default function LoginPage() {
       /*
        * LOGIN
        */
-      console.log('🔐 Starting login...');
-
       const { data, error } =
         await supabase.auth.signInWithPassword({
           email: email.trim(),
           password,
         });
 
-      console.log('🔥 LOGIN RESULT:', {
-        data,
-        error,
-        session: data?.session,
-        user: data?.user,
-      });
-
       if (error) {
-        console.error('❌ LOGIN ERROR:', error);
-
         setErrorMsg(error.message);
         return;
       }
 
       if (!data.session) {
-        console.error(
-          '❌ LOGIN SUCCEEDED BUT NO SESSION:',
-          data
-        );
-
         setErrorMsg(
           'Login succeeded, but Supabase did not create a session.'
         );
@@ -122,22 +119,12 @@ export default function LoginPage() {
         return;
       }
 
-      console.log(
-        '✅ LOGIN SESSION CREATED:',
-        data.session.user.id
-      );
+      const redirectedFrom = new URLSearchParams(
+        window.location.search,
+      ).get('redirectedFrom');
 
-      console.log(
-        '🚀 Redirecting to dashboard...'
-      );
-
-      window.location.assign('/dashboard');
-    } catch (error) {
-      console.error(
-        '💥 Authentication error:',
-        error
-      );
-
+      router.push(getSafeInternalRedirect(redirectedFrom));
+    } catch {
       setErrorMsg(
         'Something went wrong while authenticating. Please try again.'
       );
@@ -263,7 +250,9 @@ export default function LoginPage() {
               marginBottom: 0,
             }}
           >
-            {isSignUp
+            {isRecovery
+              ? 'Request a password reset'
+              : isSignUp
               ? 'Create your account'
               : 'Log in to your workspace'}
           </p>
@@ -354,7 +343,9 @@ export default function LoginPage() {
             />
           </div>
 
-          <div>
+          {!isRecovery && (
+            <div>
+              <div>
             <label
               style={{
                 display: 'block',
@@ -369,33 +360,119 @@ export default function LoginPage() {
               Password
             </label>
 
-            <input
-              type="password"
-              required
-              value={password}
-              onChange={(e) =>
-                setPassword(e.target.value)
-              }
-              placeholder="••••••••"
-              autoComplete={
-                isSignUp
-                  ? 'new-password'
-                  : 'current-password'
-              }
-              style={{
-                width: '100%',
-                padding: '11px 14px',
-                borderRadius: 8,
-                border:
-                  '1px solid rgba(255,255,255,0.1)',
-                backgroundColor: '#1e293b',
-                color: '#fff',
-                fontSize: 14,
-                outline: 'none',
-                boxSizing: 'border-box',
-              }}
-            />
-          </div>
+              <div
+                style={{
+                  position: 'relative',
+                }}
+              >
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  required
+                  value={password}
+                  onChange={(e) =>
+                    setPassword(e.target.value)
+                  }
+                  placeholder="••••••••"
+                  autoComplete={
+                    isSignUp
+                      ? 'new-password'
+                      : 'current-password'
+                  }
+                  style={{
+                    width: '100%',
+                    padding: '11px 44px 11px 14px',
+                    borderRadius: 8,
+                    border:
+                      '1px solid rgba(255,255,255,0.1)',
+                    backgroundColor: '#1e293b',
+                    color: '#fff',
+                    fontSize: 14,
+                    outline: 'none',
+                    boxSizing: 'border-box',
+                  }}
+                />
+
+                <button
+                  type="button"
+                  onClick={() =>
+                    setShowPassword((visible) => !visible)
+                  }
+                  aria-label={
+                    showPassword
+                      ? 'Hide password'
+                      : 'Show password'
+                  }
+                  style={{
+                    position: 'absolute',
+                    top: '50%',
+                    right: 10,
+                    transform: 'translateY(-50%)',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    width: 28,
+                    height: 28,
+                    padding: 0,
+                    border: 'none',
+                    background: 'transparent',
+                    color: '#94a3b8',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <svg
+                    width="18"
+                    height="18"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden="true"
+                  >
+                    {showPassword ? (
+                      <>
+                        <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z" />
+                        <circle cx="12" cy="12" r="3" />
+                      </>
+                    ) : (
+                      <>
+                        <path d="m3 3 18 18" />
+                        <path d="M10.6 5.1A10.8 10.8 0 0 1 12 5c6.5 0 10 7 10 7a18.3 18.3 0 0 1-3.1 3.9" />
+                        <path d="M6.7 6.7C3.7 8.6 2 12 2 12s3.5 7 10 7a9.8 9.8 0 0 0 3.3-.6" />
+                        <path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" />
+                      </>
+                    )}
+                  </svg>
+                </button>
+              </div>
+
+              {!isSignUp && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsRecovery(true);
+                    setErrorMsg(null);
+                    setSuccessMsg(null);
+                    setPassword('');
+                    setShowPassword(false);
+                  }}
+                  style={{
+                    marginTop: 8,
+                    padding: 0,
+                    border: 'none',
+                    background: 'none',
+                    color: '#38bdf8',
+                    fontSize: 12,
+                    cursor: 'pointer',
+                  }}
+                >
+                  Forgot password?
+                </button>
+              )}
+              </div>
+            </div>
+          )}
 
           <button
             type="submit"
@@ -424,6 +501,8 @@ export default function LoginPage() {
           >
             {loading
               ? 'Processing...'
+              : isRecovery
+                ? 'Send reset link'
               : isSignUp
                 ? 'Create Account'
                 : 'Log In'}
@@ -438,16 +517,23 @@ export default function LoginPage() {
             color: '#94a3b8',
           }}
         >
-          {isSignUp
+          {isRecovery
+            ? 'Remember your password?'
+            : isSignUp
             ? 'Already have an account?'
             : "Don't have an account?"}{' '}
 
           <button
             type="button"
             onClick={() => {
-              setIsSignUp(!isSignUp);
+              setIsRecovery(false);
+              setIsSignUp(
+                isRecovery ? false : !isSignUp,
+              );
               setErrorMsg(null);
               setSuccessMsg(null);
+              setPassword('');
+              setShowPassword(false);
             }}
             style={{
               background: 'none',
@@ -459,7 +545,9 @@ export default function LoginPage() {
               padding: 0,
             }}
           >
-            {isSignUp
+            {isRecovery
+              ? 'Log in'
+              : isSignUp
               ? 'Log in'
               : 'Sign up'}
           </button>

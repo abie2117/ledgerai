@@ -1,12 +1,15 @@
 import { createServerClient } from '@supabase/ssr';
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
+import { getSafeInternalRedirect } from '@/lib/auth-redirect';
 
 export async function GET(request: NextRequest) {
   const requestUrl = new URL(request.url);
 
   const code = requestUrl.searchParams.get('code');
-  const next = requestUrl.searchParams.get('next') || '/dashboard';
+  const next = getSafeInternalRedirect(
+    requestUrl.searchParams.get('next'),
+  );
 
   if (!code) {
     console.error('❌ Supabase callback: missing code');
@@ -48,10 +51,8 @@ export async function GET(request: NextRequest) {
     }
   );
 
-  const {
-    data,
-    error,
-  } = await supabase.auth.exchangeCodeForSession(code);
+  const { error } =
+    await supabase.auth.exchangeCodeForSession(code);
 
   if (error) {
     console.error(
@@ -66,11 +67,6 @@ export async function GET(request: NextRequest) {
       )
     );
   }
-
-  console.log(
-    '✅ Supabase session created:',
-    data.session?.user?.id
-  );
 
   return response;
 }
