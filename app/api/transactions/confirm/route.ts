@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createRouteHandlerClient } from "../../../../lib/supabase-server";
 
 export async function POST(req: NextRequest) {
-  const supabase = createRouteHandlerClient();
+  const supabase = await createRouteHandlerClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   const { transactionId, clientId } = await req.json();

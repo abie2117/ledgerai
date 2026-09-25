@@ -1,97 +1,337 @@
 'use client';
+
 import { useState, useEffect, useCallback } from 'react';
 import { usePlaidLink } from 'react-plaid-link';
-import { createBrowserSupabaseClient } from '../lib/supabase-browser';
 
 interface PlaidLinkButtonProps {
   selectedClientId?: string;
   onBankConnected?: () => void;
+  reconnectItemId?: string;
+  onReconnected?: () => void | Promise<void>;
+  reconnectLabel?: string;
 }
 
 export default function PlaidLinkButton({
   selectedClientId,
   onBankConnected,
+  reconnectItemId,
+  onReconnected,
+  reconnectLabel,
 }: PlaidLinkButtonProps) {
   const [token, setToken] = useState<string | null>(null);
-  const [loadingToken, setLoadingToken] = useState(true);
+  const [loadingToken, setLoadingToken] = useState(false);
   const [isExchanging, setIsExchanging] = useState(false);
-  const [activeUserId, setActiveUserId] = useState<string | null>(null);
-
-  const supabase = createBrowserSupabaseClient();
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   useEffect(() => {
-    async function getUser() {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session?.user?.id) {
-        setActiveUserId(session.user.id);
-      } else {
-        const { data: { user } } = await supabase.auth.getUser();
-        if (user?.id) setActiveUserId(user.id);
-      }
+    let mounted = true;
+
+    if (!selectedClientId) {
+      setToken(null);
+      setLoadingToken(false);
+      setErrorMessage(null);
+
+      return () => {
+        mounted = false;
+      };
     }
-    getUser();
-  }, []);
 
-  useEffect(() => {
     async function fetchLinkToken() {
       try {
+        setToken(null);
         setLoadingToken(true);
-        const res = await fetch('/api/plaid/create-link-token', { method: 'POST' });
+        setErrorMessage(null);
+
+        const isReconnect = Boolean(reconnectItemId);
+        const endpoint = isReconnect
+          ? '/api/plaid/reconnect-link-token'
+          : '/api/plaid/create-link-token';
+
+        const res = await fetch(endpoint, {
+          method: 'POST',
+          credentials: 'include',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(
+            isReconnect
+              ? {
+                  plaid_item_database_id: reconnectItemId,
+                }
+              : {
+                  client_id: selectedClientId,
+                },
+          ),
+        });
+
         const data = await res.json();
-        if (data.link_token) setToken(data.link_token);
-      } catch (err) {
-        console.error('Failed to fetch Plaid link token:', err);
+
+        console.log('📦 Plaid Link token response:', data);
+
+        if (!res.ok) {
+          console.error(
+            '❌ Plaid link token request failed:',
+            data
+          );
+
+          if (mounted) {
+            setErrorMessage(
+              data?.error ||
+                'Unable to initialize bank connection.'
+            );
+          }
+
+          return;
+        }
+
+        if (!data.link_token) {
+          console.error(
+            '❌ Plaid response did not contain a link_token:',
+            data
+          );
+
+          if (mounted) {
+            setErrorMessage(
+              'Plaid did not return a valid Link token.'
+            );
+          }
+
+          return;
+        }
+
+        if (mounted) {
+          setToken(data.link_token);
+
+          console.log(
+            '✅ Plaid Link token created.'
+          );
+        }
+      } catch (error) {
+        console.error(
+          '❌ Failed to fetch Plaid link token:',
+          error
+        );
+
+        if (mounted) {
+          setErrorMessage(
+            'Unable to connect to Plaid. Please try again.'
+          );
+        }
       } finally {
-        setLoadingToken(false);
+        if (mounted) {
+          setLoadingToken(false);
+        }
       }
     }
+
     fetchLinkToken();
-  }, []);
+
+    return () => {
+      mounted = false;
+    };
+  }, [selectedClientId, reconnectItemId]);
 
   const onSuccess = useCallback(
-    async (public_token: string) => {
+    async (publicToken: string) => {
       try {
         setIsExchanging(true);
-        const targetClientId =
-          selectedClientId ||
-          '22222222-2222-2222-2222-222222222222';
+        setErrorMessage(null);
+
+        const isReconnect = Boolean(reconnectItemId);
+
+        console.log(
+          isReconnect
+            ? '🏦 Plaid bank reauthentication completed'
+            : '🏦 Plaid bank selected successfully'
+        );
+
+        if (!selectedClientId) {
+          console.error(
+            '❌ No LedgerAI client ID was provided.'
+          );
+
+          setErrorMessage(
+            'Please select a LedgerAI client before connecting a bank account.'
+          );
+
+          return;
+        }
+
+        if (isReconnect) {
+          const completeResponse = await fetch(
+            '/api/plaid/reconnect/complete',
+            {
+              method: 'POST',
+              credentials: 'include',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                plaid_item_database_id: reconnectItemId,
+              }),
+            },
+          );
+
+          const completeResult = await completeResponse.json();
+
+          if (!completeResponse.ok || !completeResult.success) {
+            throw new Error(
+              completeResult?.error ||
+                'Unable to complete bank reconnection.',
+            );
+          }
+
+          await onReconnected?.();
+          return;
+        }
+
+        console.log(
+          '🏢 Connecting bank to LedgerAI client:',
+          selectedClientId
+        );
 
         const res = await fetch('/api/plaid/exchange', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
           credentials: 'include',
-          body: JSON.stringify({ public_token, client_id: targetClientId }),
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            public_token: publicToken,
+            client_id: selectedClientId,
+          }),
         });
 
-        if (res.ok && onBankConnected) onBankConnected();
-      } catch (err) {
-        console.error('Error exchanging public token:', err);
+        const data = await res.json();
+
+        console.log('📦 Plaid exchange response:', data);
+
+        if (!res.ok) {
+          console.error(
+            '❌ Plaid token exchange failed:',
+            data
+          );
+
+          setErrorMessage(
+            data?.error ||
+              'Unable to connect your bank account.'
+          );
+
+          return;
+        }
+
+        console.log(
+          '✅ Plaid bank connection successful:',
+          data
+        );
+
+        if (onBankConnected) {
+          onBankConnected();
+        }
+      } catch (error) {
+        console.error(
+          '❌ Error exchanging Plaid public token:',
+          error
+        );
+
+        setErrorMessage(
+          'Something went wrong while connecting your bank.'
+        );
       } finally {
         setIsExchanging(false);
       }
     },
-    [selectedClientId, onBankConnected]
+    [
+      selectedClientId,
+      reconnectItemId,
+      onBankConnected,
+      onReconnected,
+    ]
   );
 
-  const { open, ready } = usePlaidLink({ token, onSuccess });
+  const { open, ready } = usePlaidLink({
+    token,
+    onSuccess,
+  });
+
+  const isReady =
+    ready &&
+    !!token &&
+    (!!selectedClientId || !!reconnectItemId) &&
+    !loadingToken &&
+    !isExchanging;
+
+  function handleOpen() {
+    if (!selectedClientId && !reconnectItemId) {
+      setErrorMessage(
+        'Please select a LedgerAI client before connecting a bank account.'
+      );
+      return;
+    }
+
+    if (!token) {
+      console.error(
+        '❌ Cannot open Plaid because there is no Link token.'
+      );
+
+      setErrorMessage(
+        'Plaid is not ready yet. Please try again.'
+      );
+
+      return;
+    }
+
+    if (!ready) {
+      console.error(
+        '❌ Plaid Link is not ready yet.'
+      );
+
+      setErrorMessage(
+        'Plaid is still loading. Please try again in a moment.'
+      );
+
+      return;
+    }
+
+    console.log('🚀 Opening Plaid Link...');
+
+    open();
+  }
 
   return (
-    <button
-      onClick={() => open()}
-      disabled={!ready || loadingToken || isExchanging}
-      className={`px-4 py-2 rounded text-white font-semibold ${
-        ready && !loadingToken && !isExchanging
-          ? 'bg-blue-600 hover:bg-blue-700 cursor-pointer'
-          : 'bg-gray-400 cursor-not-allowed'
-      }`}
-    >
-      {isExchanging
-        ? 'Syncing bank data...'
-        : loadingToken
-        ? 'Initializing Plaid...'
-        : ready
-        ? 'Connect bank account'
-        : 'Plaid Unavailable'}
-    </button>
+    <div>
+      <button
+        type="button"
+        onClick={handleOpen}
+        disabled={!isReady}
+        className={
+          isReady
+            ? 'px-4 py-2 rounded text-white font-semibold bg-blue-600 hover:bg-blue-700 cursor-pointer'
+            : 'px-4 py-2 rounded text-white font-semibold bg-gray-400 cursor-not-allowed'
+        }
+      >
+        {isExchanging
+          ? 'Syncing bank data...'
+          : loadingToken
+          ? 'Initializing Plaid...'
+          : isReady
+          ? reconnectItemId
+            ? reconnectLabel || 'Fix connection'
+            : 'Connect bank account'
+          : 'Plaid Unavailable'}
+      </button>
+
+      {errorMessage && (
+        <div
+          style={{
+            marginTop: 8,
+            color: '#f87171',
+            fontSize: 13,
+          }}
+        >
+          {errorMessage}
+        </div>
+      )}
+    </div>
   );
 }

@@ -1,702 +1,1896 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
-import { useRouter } from 'next/navigation';
-import { createBrowserSupabaseClient } from '@/lib/supabase-browser';
+import {
+  useEffect,
+  useMemo,
+  useState,
+  type ChangeEvent,
+} from 'react';
+import { supabase } from '@/lib/supabase-browser';
 import { QueryBar } from '@/components/QueryBar';
+import PlaidLinkButton from '@/components/PlaidLinkButton';
+import {
+  getCurrentMonthRange,
+  getFoodDiningSpending,
+  getMerchantName,
+  getPreviousMonthRange,
+  getQualifyingSpendingTransactions,
+  getTopMerchantSpending,
+  getTransactionCategory,
+  getTransactionDate,
+  getTransactionsOverAmount,
+  isQualifyingSpending,
+  sumTransactionAmounts,
+} from '@/lib/financial-queries';
 
 interface Transaction {
   id: string;
-  name?: string;
-  merchant_name?: string;
-  amount: number;
+  user_id?: string | null;
+  client_id?: string | null;
   date: string;
-  category: string;
-  account_id: string;
+  posted_date?: string | null;
+  merchant_name?: string | null;
+  name?: string | null;
+  amount: number;
+  category?: string | null;
+  ai_category_id?: string | null;
+  canonical_category?: {
+    id: string;
+    name: string;
+  } | null;
+  account_name?: string | null;
+  account_mask?: string | null;
+  pending?: boolean | null;
+  payment_channel?: string | null;
+  iso_currency_code?: string | null;
+  personal_finance_category?: {
+    primary?: string | null;
+    detailed?: string | null;
+  } | null;
 }
 
-type DateFilterType = 'this_month' | 'last_30_days' | 'all_time' | 'custom';
+interface Client {
+  id: string;
+  name: string;
+  firm_id?: string | null;
+}
+
+interface Category {
+  id: string;
+  name: string;
+  client_id?: string | null;
+  coa_code?: string | null;
+}
+
+interface FirmMembership {
+  firm_id: string;
+  user_id: string;
+  role?: string | null;
+}
+
+interface GroupedMerchant {
+  merchant: string;
+  total: number;
+  count: number;
+}
+
+interface SupabaseClientRecord {
+  id: string;
+  firm_id: string;
+  business_name: string;
+}
+
+interface ReauthenticationRequiredItem {
+  plaid_item_database_id: string;
+  plaid_item_id: string;
+  institution_name?: string | null;
+}
+
+const SUGGESTED_QUESTIONS = [
+  'How much did I spend on Food & Dining last month?',
+  'Show me all transactions over $50',
+  'What are my top 5 merchants by total spend?',
+  'How much did I spend in total this month?',
+];
+
+function formatCurrency(amount: number) {
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+  }).format(amount);
+}
+
+function formatDate(date: string) {
+  if (!date) return '—';
+
+  const parsedDate = new Date(`${date}T00:00:00`);
+
+  if (Number.isNaN(parsedDate.getTime())) {
+    return date;
+  }
+
+  return parsedDate.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  });
+}
+
+function escapeCsvValue(
+  value: string | number | boolean | null | undefined,
+) {
+  const stringValue = String(value ?? '');
+
+  return `"${stringValue.replace(/"/g, '""')}"`;
+}
+
+function normalizeClients(
+  data: SupabaseClientRecord[] | null,
+): Client[] {
+  return (data ?? [])
+    .map((client) => ({
+      id: client.id,
+      name: client.business_name,
+      firm_id: client.firm_id,
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
 
 export default function DashboardPage() {
+  const [userId, setUserId] = useState<string | null>(null);
+  const [userEmail, setUserEmail] = useState<string | null>(null);
+
+  const [clients, setClients] = useState<Client[]>([]);
+  const [memberships, setMemberships] = useState<FirmMembership[]>([]);
+
+  const [selectedClientId, setSelectedClientId] = useState<string>('');
   const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
+
   const [loading, setLoading] = useState(true);
-  const [userId, setUserId] = useState<string>('6961bb92-6276-4fbc-adb5-97dab7cfe245');
+  const [transactionsLoading, setTransactionsLoading] = useState(false);
+  const [errorMessage, setErrorMessage] = useState('');
+  const [successMessage, setSuccessMessage] = useState('');
+  const [reauthenticationRequired, setReauthenticationRequired] = useState<
+    ReauthenticationRequiredItem[]
+  >([]);
 
-  // Date Range State
-  const [dateFilter, setDateFilter] = useState<DateFilterType>('all_time');
-  const [customStartDate, setCustomStartDate] = useState<string>('');
-  const [customEndDate, setCustomEndDate] = useState<string>('');
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
+  const [timeframe, setTimeframe] = useState('all');
 
-  const router = useRouter();
-  const supabase = createBrowserSupabaseClient();
+  const [searchTerm, setSearchTerm] = useState('');
+  const [categoryFilter, setCategoryFilter] = useState('All Categories');
+  const [accountFilter, setAccountFilter] = useState('All Accounts');
+
+  const [editingCategoryId, setEditingCategoryId] = useState<string | null>(
+    null,
+  );
+  const [savingCategoryId, setSavingCategoryId] = useState<string | null>(
+    null,
+  );
+
+  const [financeQuestion, setFinanceQuestion] = useState('');
+  const [askAnswer, setAskAnswer] = useState('');
+  const [isAsking, setIsAsking] = useState(false);
 
   useEffect(() => {
-    async function checkAuthAndFetchData() {
-      setLoading(true);
+    async function loadDashboard() {
+      try {
+        setLoading(true);
+        setErrorMessage('');
 
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
+        const {
+          data: { user },
+          error: userError,
+        } = await supabase.auth.getUser();
 
-      const activeUserId = user?.id || '6961bb92-6276-4fbc-adb5-97dab7cfe245';
-      setUserId(activeUserId);
+        if (userError) {
+          throw userError;
+        }
 
-      const { data, error } = await supabase
-        .from('transactions')
-        .select('*')
-        .eq('user_id', activeUserId)
-        .order('date', { ascending: false });
+        if (!user) {
+          window.location.href = '/login';
+          return;
+        }
 
-      if (!error && data) {
-        setTransactions(data);
+        setUserId(user.id);
+        setUserEmail(user.email ?? null);
+
+        const { data: membershipData, error: membershipError } =
+          await supabase
+            .from('firm_users')
+            .select('firm_id, user_id, role')
+            .eq('user_id', user.id);
+
+        if (membershipError) {
+          throw membershipError;
+        }
+
+        const loadedMemberships = (membershipData ||
+          []) as FirmMembership[];
+
+        setMemberships(loadedMemberships);
+
+        const firmIds = loadedMemberships
+          .map((membership) => membership.firm_id)
+          .filter(Boolean);
+
+        let loadedClients: Client[] = [];
+
+        if (firmIds.length > 0) {
+          const { data: clientData, error: clientError } = await supabase
+            .from('clients')
+            .select('id, firm_id, business_name')
+            .in('firm_id', firmIds);
+
+          if (clientError) {
+            throw clientError;
+          }
+
+          loadedClients = normalizeClients(
+            (clientData || []) as SupabaseClientRecord[],
+          );
+        } else {
+          const { data: clientData, error: clientError } = await supabase
+            .from('clients')
+            .select('id, firm_id, business_name');
+
+          if (clientError) {
+            throw clientError;
+          }
+
+          loadedClients = normalizeClients(
+            (clientData || []) as SupabaseClientRecord[],
+          );
+        }
+
+        setClients(loadedClients);
+
+        if (loadedClients.length === 0) {
+          setSelectedClientId('');
+          setTransactions([]);
+          return;
+        }
+
+        const requestedClientId = new URLSearchParams(
+          window.location.search,
+        ).get('clientId');
+
+        const requestedClient = requestedClientId
+          ? loadedClients.find(
+              (client) => client.id === requestedClientId,
+            )
+          : null;
+
+        const acmeClient = loadedClients.find(
+          (client) =>
+            client.name.toLowerCase().trim() === 'acme corp',
+        );
+
+        const initialClient =
+          requestedClient || acmeClient || loadedClients[0];
+
+        setSelectedClientId(initialClient.id);
+      } catch (error: any) {
+        console.error('Error loading dashboard:', error);
+
+        setErrorMessage(
+          error?.message || 'Unable to load dashboard data.',
+        );
+      } finally {
+        setLoading(false);
       }
-      setLoading(false);
     }
 
-    checkAuthAndFetchData();
-  }, [supabase]);
+    loadDashboard();
+  }, []);
 
-  async function handleCategoryChange(
-    txId: string,
-    merchantName: string,
-    newCategory: string
-  ) {
-    setTransactions((prev) =>
-      prev.map((tx) => (tx.id === txId ? { ...tx, category: newCategory } : tx))
+  useEffect(() => {
+    async function loadAvailableCategories() {
+      if (!selectedClientId) {
+        setCategories([]);
+        return;
+      }
+
+      try {
+        const { data, error } = await supabase
+          .from('categories')
+          .select('id, name, client_id, coa_code')
+          .or(`client_id.eq.${selectedClientId},client_id.is.null`)
+          .order('name', { ascending: true });
+
+        if (error) throw error;
+
+        const byName = new Map<string, Category>();
+
+        for (const category of (data || []) as Category[]) {
+          const key = category.name.toLowerCase().trim();
+          const existing = byName.get(key);
+
+          if (!existing || category.client_id === selectedClientId) {
+            byName.set(key, category);
+          }
+        }
+
+        setCategories(
+          Array.from(byName.values()).sort((a, b) =>
+            a.name.localeCompare(b.name),
+          ),
+        );
+      } catch (error: any) {
+        console.error('Error loading categories:', error);
+        setCategories([]);
+        setErrorMessage(
+          error?.message || 'Unable to load categories for this client.',
+        );
+      }
+    }
+
+    loadAvailableCategories();
+  }, [selectedClientId]);
+
+  useEffect(() => {
+    async function loadSelectedClientTransactions() {
+      if (!selectedClientId) {
+        setTransactions([]);
+        return;
+      }
+
+      try {
+        setTransactionsLoading(true);
+        setErrorMessage('');
+
+        const { data, error } = await supabase
+          .from('transactions')
+          .select(`
+            *,
+            accounts (
+              id,
+              name,
+              mask,
+              type,
+              subtype
+            ),
+            canonical_category:categories!transactions_ai_category_id_fkey (
+              id,
+              name
+            )
+          `)
+          .eq('client_id', selectedClientId)
+          .order('posted_date', {
+            ascending: false,
+          });
+
+        if (error) {
+          throw error;
+        }
+
+        const formattedTransactions = (data || []).map(
+          (transaction: any) => ({
+            ...transaction,
+            account_name: transaction.accounts?.name || null,
+            account_mask: transaction.accounts?.mask || null,
+          }),
+        );
+
+        setTransactions(formattedTransactions as Transaction[]);
+      } catch (error: any) {
+        console.error(
+          'Error loading selected client transactions:',
+          error,
+        );
+
+        setTransactions([]);
+
+        setErrorMessage(
+          error?.message ||
+            'Unable to load transactions for this client.',
+        );
+      } finally {
+        setTransactionsLoading(false);
+      }
+    }
+
+    loadSelectedClientTransactions();
+  }, [selectedClientId]);
+
+  const selectedClient = useMemo(() => {
+    return (
+      clients.find((client) => client.id === selectedClientId) || null
     );
+  }, [clients, selectedClientId]);
 
-    const { error: txError } = await supabase
-      .from('transactions')
-      .update({ category: newCategory })
-      .eq('id', txId);
+  const accountOptions = useMemo(() => {
+    const accounts = transactions
+      .map((transaction) => transaction.account_name || 'Unknown account')
+      .filter(Boolean);
 
-    if (txError) {
-      console.error('Transaction category update failed:', txError);
+    return ['All Accounts', ...Array.from(new Set(accounts)).sort()];
+  }, [transactions]);
+
+  const categoryOptions = useMemo(() => {
+    const categoryNames = [
+      ...categories.map((category) => category.name),
+      ...transactions.map((transaction) =>
+        getTransactionCategory(transaction),
+      ),
+    ];
+
+    return [
+      'All Categories',
+      ...Array.from(new Set(categoryNames)).sort(),
+    ];
+  }, [categories, transactions]);
+
+  const filteredTransactions = useMemo(() => {
+    return transactions.filter((transaction) => {
+      const merchant = getMerchantName(transaction).toLowerCase();
+      const category = getTransactionCategory(transaction);
+      const account = transaction.account_name || 'Unknown account';
+
+      const normalizedSearchTerm = searchTerm.toLowerCase().trim();
+
+      const matchesSearch =
+        !normalizedSearchTerm ||
+        merchant.includes(normalizedSearchTerm) ||
+        category.toLowerCase().includes(normalizedSearchTerm) ||
+        account.toLowerCase().includes(normalizedSearchTerm);
+
+      const matchesCategory =
+        categoryFilter === 'All Categories' ||
+        category === categoryFilter;
+
+      const matchesAccount =
+        accountFilter === 'All Accounts' ||
+        account === accountFilter;
+
+      const matchesStartDate =
+        !startDate || getTransactionDate(transaction) >= startDate;
+
+      const matchesEndDate =
+        !endDate || getTransactionDate(transaction) <= endDate;
+
+      return (
+        matchesSearch &&
+        matchesCategory &&
+        matchesAccount &&
+        matchesStartDate &&
+        matchesEndDate
+      );
+    });
+  }, [
+    transactions,
+    searchTerm,
+    categoryFilter,
+    accountFilter,
+    startDate,
+    endDate,
+  ]);
+
+  const spendingTransactions = useMemo(() => {
+    return filteredTransactions.filter(isQualifyingSpending);
+  }, [filteredTransactions]);
+
+  const totalSpending = useMemo(() => {
+    return sumTransactionAmounts(spendingTransactions);
+  }, [spendingTransactions]);
+
+  const transactionCount = filteredTransactions.length;
+  const spendingTransactionCount = spendingTransactions.length;
+
+  const averageTransaction = useMemo(() => {
+    if (spendingTransactionCount === 0) {
+      return 0;
     }
 
-    if (userId && merchantName) {
-      const { error: ruleError } = await supabase
-        .from('category_rules')
-        .upsert({
-          user_id: userId,
-          merchant_pattern: merchantName.toLowerCase().trim(),
-          category: newCategory,
-        });
+    return totalSpending / spendingTransactionCount;
+  }, [totalSpending, spendingTransactionCount]);
 
-      if (ruleError) {
-        console.error('Category rule upsert failed:', ruleError);
-      }
+  const merchantSummary = useMemo<GroupedMerchant[]>(() => {
+    return getTopMerchantSpending(spendingTransactions, Number.MAX_SAFE_INTEGER);
+  }, [spendingTransactions]);
+
+  const categorySummary = useMemo(() => {
+    const categoryMap = new Map<string, number>();
+
+    spendingTransactions.forEach((transaction) => {
+      const category = getTransactionCategory(transaction);
+      const amount = Number(transaction.amount || 0);
+
+      categoryMap.set(
+        category,
+        (categoryMap.get(category) || 0) + amount,
+      );
+    });
+
+    return Array.from(categoryMap.entries())
+      .map(([category, total]) => ({
+        category,
+        total,
+      }))
+      .sort((a, b) => b.total - a.total);
+  }, [spendingTransactions]);
+
+  function handleClientChange(
+    event: ChangeEvent<HTMLSelectElement>,
+  ) {
+    setSelectedClientId(event.target.value);
+    setReauthenticationRequired([]);
+    setSearchTerm('');
+    setCategoryFilter('All Categories');
+    setAccountFilter('All Accounts');
+    setStartDate('');
+    setEndDate('');
+    setTimeframe('all');
+    setFinanceQuestion('');
+    setAskAnswer('');
+    setSuccessMessage('');
+    setErrorMessage('');
+  }
+
+  function handleTimeframeChange(
+    event: ChangeEvent<HTMLSelectElement>,
+  ) {
+    const nextTimeframe = event.target.value;
+    setTimeframe(nextTimeframe);
+
+    if (nextTimeframe === 'all') {
+      setStartDate('');
+      setEndDate('');
+      return;
+    }
+
+    const today = new Date();
+    const toDateInputValue = (date: Date) => {
+      const year = date.getFullYear();
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const day = String(date.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    };
+
+    if (nextTimeframe === 'this-month') {
+      const firstDay = new Date(today.getFullYear(), today.getMonth(), 1);
+      setStartDate(toDateInputValue(firstDay));
+      setEndDate(toDateInputValue(today));
+      return;
+    }
+
+    if (nextTimeframe === 'last-30-days') {
+      const firstDay = new Date(today);
+      firstDay.setDate(today.getDate() - 29);
+      setStartDate(toDateInputValue(firstDay));
+      setEndDate(toDateInputValue(today));
+      return;
+    }
+
+    if (nextTimeframe === 'custom') {
+      return;
     }
   }
 
-  const filteredTransactions = useMemo(() => {
-    if (dateFilter === 'all_time') return transactions;
+  function clearFilters() {
+    setSearchTerm('');
+    setCategoryFilter('All Categories');
+    setAccountFilter('All Accounts');
+    setStartDate('');
+    setEndDate('');
+    setTimeframe('all');
+  }
 
-    const now = new Date();
+  async function refreshTransactions() {
+    if (!selectedClientId) {
+      return;
+    }
 
-    return transactions.filter((tx) => {
-      const txDate = new Date(tx.date);
+    try {
+      setTransactionsLoading(true);
+      setErrorMessage('');
+      setSuccessMessage('');
+      setReauthenticationRequired([]);
 
-      if (dateFilter === 'this_month') {
-        return (
-          txDate.getMonth() === now.getMonth() &&
-          txDate.getFullYear() === now.getFullYear()
+      const syncResponse = await fetch('/api/plaid/sync', {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          client_id: selectedClientId,
+        }),
+      });
+
+      const syncResult = await syncResponse.json().catch(() => ({}));
+
+      if (!syncResponse.ok && syncResponse.status !== 207) {
+        throw new Error(
+          syncResult?.error || 'Unable to synchronize transactions with Plaid.',
         );
       }
 
-      if (dateFilter === 'last_30_days') {
-        const thirtyDaysAgo = new Date();
-        thirtyDaysAgo.setDate(now.getDate() - 30);
-        return txDate >= thirtyDaysAgo && txDate <= now;
+      const requiredItems = Array.isArray(
+        syncResult?.reauthentication_required,
+      )
+        ? (syncResult.reauthentication_required as ReauthenticationRequiredItem[])
+        : [];
+
+      const itemFailures = Array.isArray(syncResult?.item_failures)
+        ? syncResult.item_failures
+        : [];
+
+      setReauthenticationRequired(requiredItems);
+
+      const { data, error } = await supabase
+        .from('transactions')
+        .select(`
+          *,
+          accounts (
+            id,
+            name,
+            mask,
+            type,
+            subtype
+          ),
+          canonical_category:categories!transactions_ai_category_id_fkey (
+            id,
+            name
+          )
+        `)
+        .eq('client_id', selectedClientId)
+        .order('posted_date', {
+          ascending: false,
+        });
+
+      if (error) {
+        throw error;
       }
 
-      if (dateFilter === 'custom') {
-        if (!customStartDate && !customEndDate) return true;
-        const start = customStartDate
-          ? new Date(customStartDate)
-          : new Date('1970-01-01');
-        const end = customEndDate
-          ? new Date(customEndDate)
-          : new Date('2099-12-31');
-        return txDate >= start && txDate <= end;
+      const formattedTransactions = (data || []).map(
+        (transaction: any) => ({
+          ...transaction,
+          account_name: transaction.accounts?.name || null,
+          account_mask: transaction.accounts?.mask || null,
+        }),
+      );
+
+      setTransactions(formattedTransactions as Transaction[]);
+
+      if (itemFailures.length > 0) {
+        setErrorMessage(
+          `${itemFailures.length} bank connection${
+            itemFailures.length === 1 ? '' : 's'
+          } could not synchronize. Existing transaction data was preserved.`,
+        );
       }
 
-      return true;
+      if (requiredItems.length > 0) {
+        setSuccessMessage(
+          `${syncResult.successful_items || 0} bank connection${
+            syncResult.successful_items === 1 ? '' : 's'
+          } synchronized. ${requiredItems.length} require${
+            requiredItems.length === 1 ? 's' : ''
+          } reauthentication.`,
+        );
+      } else if (itemFailures.length === 0) {
+        setSuccessMessage('Bank transactions synchronized and refreshed successfully.');
+      }
+    } catch (error: any) {
+      console.error('Error refreshing transactions:', error);
+
+      setErrorMessage(
+        error?.message || 'Unable to refresh transactions.',
+      );
+    } finally {
+      setTransactionsLoading(false);
+    }
+  }
+
+  async function handleBankConnected() {
+    await refreshTransactions();
+    setSuccessMessage('Bank connected and transactions refreshed successfully.');
+  }
+
+  async function handleBankReconnected() {
+    await refreshTransactions();
+    setSuccessMessage('Bank connection repaired and transactions refreshed successfully.');
+  }
+
+  async function handleCategoryChange(
+    transactionId: string,
+    categoryId: string,
+  ) {
+    if (!selectedClientId || !categoryId) return;
+
+    try {
+      setSavingCategoryId(transactionId);
+      setErrorMessage('');
+      setSuccessMessage('');
+
+      const response = await fetch('/api/category-correction', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          transactionId,
+          clientId: selectedClientId,
+          categoryId,
+        }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          result.error || 'Unable to update transaction category.',
+        );
+      }
+
+      setTransactions((currentTransactions) =>
+        currentTransactions.map((transaction) =>
+          transaction.id === transactionId
+            ? {
+                ...transaction,
+                ai_category_id: result.category.id,
+                category: result.category.name,
+                canonical_category: {
+                  id: result.category.id,
+                  name: result.category.name,
+                },
+              }
+            : transaction,
+        ),
+      );
+
+      setEditingCategoryId(null);
+      setSuccessMessage(
+        result.unchanged
+          ? 'Category is already up to date.'
+          : 'Category updated and learning saved successfully.',
+      );
+    } catch (error: any) {
+      console.error('Error updating transaction category:', error);
+      setErrorMessage(
+        error?.message || 'Unable to update transaction category.',
+      );
+    } finally {
+      setSavingCategoryId(null);
+    }
+  }
+
+  async function handleLocalCategorize() {
+    if (!selectedClientId) {
+      setErrorMessage('Please select a client first.');
+      return;
+    }
+
+    try {
+      setTransactionsLoading(true);
+      setErrorMessage('');
+      setSuccessMessage('');
+
+      const response = await fetch('/api/categorize-local', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          clientId: selectedClientId,
+        }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          result.error || 'Unable to categorize transactions.',
+        );
+      }
+
+      const { data, error } = await supabase
+        .from('transactions')
+        .select(`
+          *,
+          accounts (
+            id,
+            name,
+            mask,
+            type,
+            subtype
+          ),
+          canonical_category:categories!transactions_ai_category_id_fkey (
+            id,
+            name
+          )
+        `)
+        .eq('client_id', selectedClientId)
+        .order('posted_date', {
+          ascending: false,
+        });
+
+      if (error) {
+        throw error;
+      }
+
+      const formattedTransactions = (data || []).map(
+        (transaction: any) => ({
+          ...transaction,
+          account_name: transaction.accounts?.name || null,
+          account_mask: transaction.accounts?.mask || null,
+        }),
+      );
+
+      setTransactions(formattedTransactions as Transaction[]);
+
+      if (result.categorized > 0) {
+        setSuccessMessage(
+          `${result.categorized} transaction${
+            result.categorized === 1 ? '' : 's'
+          } categorized successfully.${
+            result.skipped > 0
+              ? ` ${result.skipped} left for review.`
+              : ''
+          }`,
+        );
+      } else {
+        setSuccessMessage(
+          result.skipped > 0
+            ? `No additional transactions matched the available local rules. ${result.skipped} left for review.`
+            : 'There are no transactions waiting for local categorization.',
+        );
+      }
+    } catch (error: any) {
+      console.error('Error categorizing transactions:', error);
+
+      setErrorMessage(
+        error?.message || 'Unable to categorize transactions.',
+      );
+    } finally {
+      setTransactionsLoading(false);
+    }
+  }
+
+  function answerFinanceQuestion(question: string) {
+    const normalizedQuestion = question.toLowerCase().trim();
+
+    if (!normalizedQuestion) {
+      setAskAnswer('Please enter a question about your finances.');
+      return;
+    }
+
+    if (transactions.length === 0) {
+      setAskAnswer(
+        'There are no transactions available for this client yet.',
+      );
+      return;
+    }
+
+    if (
+      normalizedQuestion.includes('food') &&
+      normalizedQuestion.includes('dining') &&
+      normalizedQuestion.includes('last month')
+    ) {
+      const total = sumTransactionAmounts(
+        getFoodDiningSpending(
+          transactions,
+          getPreviousMonthRange(),
+        ),
+      );
+
+      setAskAnswer(
+        `You spent ${formatCurrency(
+          total,
+        )} on Food & Dining last month.`,
+      );
+      return;
+    }
+
+    if (
+      normalizedQuestion.includes('over $50') ||
+      normalizedQuestion.includes('over 50')
+    ) {
+      const matchingTransactions = getTransactionsOverAmount(
+        transactions,
+        50,
+      );
+
+      if (matchingTransactions.length === 0) {
+        setAskAnswer('There are no transactions over $50.');
+        return;
+      }
+
+      const transactionText = matchingTransactions
+        .slice(0, 10)
+        .map(
+          (transaction) =>
+            `${formatDate(getTransactionDate(transaction))} — ${getMerchantName(
+              transaction,
+            )} — ${formatCurrency(
+              Number(transaction.amount || 0),
+            )}`,
+        )
+        .join('\n');
+
+      const remainingCount = matchingTransactions.length - 10;
+
+      setAskAnswer(
+        `I found ${
+          matchingTransactions.length
+        } transaction${
+          matchingTransactions.length === 1 ? '' : 's'
+        } over $50:\n\n${transactionText}${
+          remainingCount > 0
+            ? `\n\n...and ${remainingCount} more.`
+            : ''
+        }`,
+      );
+      return;
+    }
+
+    if (
+      normalizedQuestion.includes('top 5') &&
+      normalizedQuestion.includes('merchant')
+    ) {
+      const topMerchants = getTopMerchantSpending(transactions)
+        .map(
+          (merchant, index) =>
+            `${index + 1}. ${merchant.merchant} — ${formatCurrency(
+              merchant.total,
+            )}`,
+        )
+        .join('\n');
+
+      setAskAnswer(
+        `Your top 5 merchants by total spend are:\n\n${topMerchants}`,
+      );
+      return;
+    }
+
+    if (
+      normalizedQuestion.includes('total') &&
+      normalizedQuestion.includes('this month')
+    ) {
+      const total = sumTransactionAmounts(
+        getQualifyingSpendingTransactions(
+          transactions,
+          getCurrentMonthRange(),
+        ),
+      );
+
+      setAskAnswer(
+        `You have spent ${formatCurrency(
+          total,
+        )} in total this month.`,
+      );
+      return;
+    }
+
+    setAskAnswer(
+      'I can currently answer questions about Food & Dining spending, transactions over $50, top merchants, and total spending this month.',
+    );
+  }
+
+ async function askQuestion(question: string) {
+  const trimmedQuestion = question.trim();
+
+  if (!trimmedQuestion) {
+    setAskAnswer('Please enter a question about your finances.');
+    return;
+  }
+
+  if (!selectedClientId) {
+    setAskAnswer('Please select a client first.');
+    return;
+  }
+
+  setIsAsking(true);
+  setAskAnswer('');
+
+  try {
+    const response = await fetch('/api/ask', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        question: trimmedQuestion,
+        selectedClientId,
+      }),
     });
-  }, [transactions, dateFilter, customStartDate, customEndDate]);
 
-  function exportToCSV() {
-    if (filteredTransactions.length === 0) return;
+    const result = await response.json();
 
-    const headers = ['#', 'Date', 'Merchant', 'Category', 'Amount'];
-    const rows = filteredTransactions.map((tx, idx) => [
-      idx + 1,
-      tx.date,
-      `"${(tx.merchant_name || tx.name || 'Unknown Merchant').replace(/"/g, '""')}"`,
-      `"${(tx.category || 'Uncategorized').replace(/"/g, '""')}"`,
-      tx.amount < 0
-        ? `+${Math.abs(tx.amount).toFixed(2)}`
-        : `-${tx.amount.toFixed(2)}`,
+    if (!response.ok) {
+      setAskAnswer(
+        result.error || 'Unable to answer your question right now.',
+      );
+      return;
+    }
+
+    setAskAnswer(result.answer || 'No answer was returned.');
+  } catch (error) {
+    console.error('Ask question error:', error);
+
+    setAskAnswer(
+      'Unable to connect to the finance assistant. Please try again.',
+    );
+  } finally {
+    setIsAsking(false);
+  }
+}
+
+function handleAskQuestion() {
+  void askQuestion(financeQuestion);
+}
+
+ function handleSuggestedQuestion(question: string) {
+  setFinanceQuestion(question);
+  void askQuestion(question);
+}
+
+  function exportTransactionsToCsv() {
+    if (filteredTransactions.length === 0) {
+      setErrorMessage('There are no transactions to export.');
+      return;
+    }
+
+    const headers = [
+      'Date',
+      'Merchant',
+      'Amount',
+      'Category',
+      'Account',
+      'Account Mask',
+      'Pending',
+      'Payment Channel',
+      'Currency',
+    ];
+
+    const rows = filteredTransactions.map((transaction) => [
+      getTransactionDate(transaction),
+      getMerchantName(transaction),
+      Number(transaction.amount || 0).toFixed(2),
+      getTransactionCategory(transaction),
+      transaction.account_name || '',
+      transaction.account_mask || '',
+      transaction.pending ? 'Yes' : 'No',
+      transaction.payment_channel || '',
+      transaction.iso_currency_code || 'USD',
     ]);
 
-    const csvContent = [headers.join(','), ...rows.map((r) => r.join(','))].join(
-      '\n'
-    );
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const csvContent = [
+      headers.map(escapeCsvValue).join(','),
+      ...rows.map((row) => row.map(escapeCsvValue).join(',')),
+    ].join('\n');
+
+    const blob = new Blob([csvContent], {
+      type: 'text/csv;charset=utf-8;',
+    });
+
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
-    link.setAttribute('href', url);
+
+    link.href = url;
     link.setAttribute(
       'download',
-      `LedgerAI_Report_${dateFilter}_${new Date().toISOString().split('T')[0]}.csv`
+      `${selectedClient?.name || 'transactions'}-transactions.csv`,
     );
+
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+
+    URL.revokeObjectURL(url);
   }
 
-  const analytics = useMemo(() => {
-    const totalSpend = filteredTransactions
-      .filter((t) => t.amount > 0)
-      .reduce((sum, t) => sum + t.amount, 0);
-
-    const totalIncome = filteredTransactions
-      .filter((t) => t.amount < 0)
-      .reduce((sum, t) => sum + Math.abs(t.amount), 0);
-
-    const netCashFlow = totalIncome - totalSpend;
-
-    const categoryTotals: Record<string, number> = {};
-    filteredTransactions.forEach((t) => {
-      const categoryName = t.category?.trim();
-      if (t.amount > 0 && categoryName && categoryName !== 'Uncategorized') {
-        categoryTotals[categoryName] =
-          (categoryTotals[categoryName] || 0) + t.amount;
-      }
-    });
-
-    const sortedCategories = Object.entries(categoryTotals).sort(
-      (a, b) => b[1] - a[1]
-    );
-    const topCategory =
-      sortedCategories.length > 0 ? sortedCategories[0][0] : 'None';
-
-    return { totalSpend, netCashFlow, topCategory };
-  }, [filteredTransactions]);
+  async function handleSignOut() {
+    await supabase.auth.signOut();
+    window.location.href = '/login';
+  }
 
   if (loading) {
     return (
-      <div
-        style={{
-          display: 'flex',
-          justifyContent: 'center',
-          alignItems: 'center',
-          minHeight: '100vh',
-          backgroundColor: '#070b14',
-          color: '#38bdf8',
-          fontSize: 15,
-          fontWeight: 500,
-          fontFamily:
-            'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-        }}
-      >
-        Initializing LedgerAI Quantum Core...
-      </div>
+      <main className="min-h-screen bg-slate-950 px-6 py-10 text-white">
+        <div className="mx-auto max-w-7xl">
+          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-8">
+            <p className="text-slate-300">Loading dashboard...</p>
+          </div>
+        </div>
+      </main>
     );
   }
 
   return (
-    <div
-      style={{
-        backgroundColor: '#070b14',
-        minHeight: '100vh',
-        padding: '40px 24px',
-        fontFamily:
-          'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-        color: '#f8fafc',
-      }}
-    >
-      <div style={{ maxWidth: 1160, margin: '0 auto' }}>
-        
-        {/* Header Bar with Sophisticated Glowing Unique Logo */}
-        <div
-          style={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            marginBottom: 36,
-            paddingBottom: 24,
-            borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-            {/* Unique Custom Quantum-Ledger Logo with Glowing Neon Border */}
-            <div
-              style={{
-                width: 50,
-                height: 50,
-                borderRadius: 14,
-                background: 'linear-gradient(135deg, #0b1329 0%, #030712 100%)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                boxShadow: '0 0 22px rgba(56, 189, 248, 0.4), inset 0 0 10px rgba(129, 140, 248, 0.2)',
-                border: '1.5px solid rgba(56, 189, 248, 0.6)',
-                position: 'relative',
-              }}
-            >
-              <svg
-                width="28"
-                height="28"
-                viewBox="0 0 32 32"
-                fill="none"
-                xmlns="http://www.w3.org/2000/svg"
-              >
-                <defs>
-                  <linearGradient id="neon-glow" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">
-                    <stop stopColor="#38bdf8" />
-                    <stop offset="0.5" stopColor="#818cf8" />
-                    <stop offset="1" stopColor="#c084fc" />
-                  </linearGradient>
-                  <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
-                    <feGaussianBlur stdDeviation="1.5" result="blur" />
-                    <feComposite in="SourceGraphic" in2="blur" operator="over" />
-                  </filter>
-                </defs>
-                {/* Abstract Quantum Ledger Nodes */}
-                <path
-                  d="M16 3L28 9.5V22.5L16 29L4 22.5V9.5L16 3Z"
-                  stroke="url(#neon-glow)"
-                  strokeWidth="2"
-                  strokeLinejoin="round"
-                  filter="url(#glow)"
-                />
-                <path
-                  d="M16 9L22 12.5V19.5L16 23L10 19.5V12.5L16 9Z"
-                  stroke="#38bdf8"
-                  strokeWidth="1.5"
-                  strokeOpacity="0.7"
-                  strokeLinejoin="round"
-                />
-                <circle cx="16" cy="16" r="3" fill="#818cf8" />
-              </svg>
+    <main className="min-h-screen bg-slate-950 px-4 py-6 text-white sm:px-6 lg:px-8">
+      <div className="mx-auto max-w-7xl space-y-6">
+        <header className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900 shadow-xl">
+          <div className="flex flex-col gap-6 border-b border-slate-800 px-5 py-5 sm:px-6 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex items-center gap-4">
+              <div className="relative flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl border border-cyan-400/50 bg-slate-950 shadow-[0_0_28px_rgba(34,211,238,0.16)]">
+                <svg
+                  viewBox="0 0 64 64"
+                  aria-hidden="true"
+                  className="h-10 w-10"
+                >
+                  <defs>
+                    <linearGradient id="ledgerai-mark" x1="8" y1="8" x2="56" y2="56">
+                      <stop offset="0%" stopColor="#67e8f9" />
+                      <stop offset="55%" stopColor="#38bdf8" />
+                      <stop offset="100%" stopColor="#8b5cf6" />
+                    </linearGradient>
+                  </defs>
+                  <path
+                    d="M32 6 54 19v26L32 58 10 45V19L32 6Z"
+                    fill="none"
+                    stroke="url(#ledgerai-mark)"
+                    strokeWidth="5"
+                    strokeLinejoin="round"
+                  />
+                  <path
+                    d="M32 17 44 24v16L32 47 20 40V24l12-7Z"
+                    fill="none"
+                    stroke="url(#ledgerai-mark)"
+                    strokeWidth="5"
+                    strokeLinejoin="round"
+                  />
+                  <path
+                    d="m32 26 6 3.5v7L32 40l-6-3.5v-7L32 26Z"
+                    fill="url(#ledgerai-mark)"
+                  />
+                </svg>
+              </div>
+
+              <div>
+                <div className="flex flex-wrap items-center gap-2.5">
+                  <h1 className="text-2xl font-bold tracking-tight text-white sm:text-3xl">
+                    Ledger<span className="text-cyan-400">AI</span>
+                  </h1>
+                  <span className="rounded-md border border-cyan-500/40 bg-cyan-500/10 px-2 py-1 text-[10px] font-bold uppercase tracking-[0.18em] text-cyan-300">
+                    Enterprise
+                  </span>
+                </div>
+                <p className="mt-1 text-sm text-slate-400">
+                  AI-assisted bookkeeping &amp; financial intelligence
+                </p>
+              </div>
             </div>
+
+            <div className="flex flex-col items-start gap-2 lg:items-end">
+              {userEmail && (
+                <p className="text-xs text-slate-500">{userEmail}</p>
+              )}
+              <button
+                type="button"
+                onClick={handleSignOut}
+                className="rounded-lg border border-slate-700 px-3.5 py-2 text-sm font-medium text-slate-300 transition hover:border-red-500/60 hover:bg-red-500/10 hover:text-red-300"
+              >
+                Sign out
+              </button>
+            </div>
+          </div>
+
+          <div className="grid gap-4 px-5 py-5 sm:px-6 xl:grid-cols-[minmax(260px,1.2fr)_minmax(190px,0.7fr)_auto] xl:items-end">
             <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <h1
-                  style={{
-                    fontSize: 26,
-                    fontWeight: 800,
-                    letterSpacing: '-0.03em',
-                    color: '#ffffff',
-                    margin: 0,
-                  }}
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <label
+                  htmlFor="client"
+                  className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500"
                 >
-                  Ledger<span style={{ color: '#38bdf8' }}>AI</span>
-                </h1>
-                <span
-                  style={{
-                    fontSize: 10,
-                    fontWeight: 700,
-                    backgroundColor: 'rgba(56, 189, 248, 0.12)',
-                    color: '#38bdf8',
-                    border: '1px solid rgba(56, 189, 248, 0.3)',
-                    padding: '2px 8px',
-                    borderRadius: 6,
-                    letterSpacing: '0.08em',
+                  Active Client
+                </label>
+                <button
+                  type="button"
+                  onClick={() => {
+                    window.location.href = '/clients/new';
                   }}
+                  className="text-xs font-semibold text-cyan-400 transition hover:text-cyan-300"
                 >
-                  ENTERPRISE
-                </span>
+                  + Add Client
+                </button>
               </div>
-              <p
-                style={{
-                  fontSize: 13,
-                  color: '#94a3b8',
-                  margin: '4px 0 0 0',
-                  fontWeight: 400,
-                }}
+
+              <select
+                id="client"
+                value={selectedClientId}
+                onChange={handleClientChange}
+                className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm font-semibold text-white outline-none transition focus:border-cyan-400"
               >
-                Autonomous financial tracking & intelligent multi-account liquidity
-              </p>
+                {clients.length === 0 && (
+                  <option value="">No clients available</option>
+                )}
+                {clients.map((client) => (
+                  <option key={client.id} value={client.id}>
+                    {client.name}
+                  </option>
+                ))}
+              </select>
             </div>
-          </div>
 
-          <button
-            onClick={exportToCSV}
-            disabled={filteredTransactions.length === 0}
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 8,
-              padding: '11px 20px',
-              backgroundColor: filteredTransactions.length === 0 ? '#1e293b' : '#0284c7',
-              color: '#ffffff',
-              borderRadius: 10,
-              border: '1px solid rgba(255, 255, 255, 0.1)',
-              fontWeight: 600,
-              cursor: filteredTransactions.length === 0 ? 'not-allowed' : 'pointer',
-              fontSize: 14,
-              boxShadow: '0 4px 14px rgba(2, 132, 199, 0.3)',
-              transition: 'all 0.2s ease',
-            }}
-          >
-            <span>Export CSV Report</span>
-            <span
-              style={{
-                backgroundColor: 'rgba(255, 255, 255, 0.2)',
-                padding: '2px 6px',
-                borderRadius: 4,
-                fontSize: 12,
-              }}
-            >
-              {filteredTransactions.length}
-            </span>
-          </button>
-        </div>
-
-        {/* Filter Controls Bar */}
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            marginBottom: 24,
-            backgroundColor: '#0f172a',
-            padding: '14px 22px',
-            borderRadius: 12,
-            border: '1px solid rgba(255, 255, 255, 0.08)',
-            boxShadow: '0 4px 20px rgba(0, 0, 0, 0.4)',
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-            <span
-              style={{
-                fontSize: 12,
-                fontWeight: 600,
-                color: '#94a3b8',
-                textTransform: 'uppercase',
-                letterSpacing: '0.08em',
-              }}
-            >
-              Timeframe Filter
-            </span>
-            <select
-              value={dateFilter}
-              onChange={(e) =>
-                setDateFilter(e.target.value as DateFilterType)
-              }
-              style={{
-                padding: '8px 14px',
-                borderRadius: 8,
-                border: '1px solid rgba(255, 255, 255, 0.1)',
-                fontSize: 13,
-                backgroundColor: '#1e293b',
-                color: '#f8fafc',
-                fontWeight: 500,
-                outline: 'none',
-                cursor: 'pointer',
-              }}
-            >
-              <option value="all_time">All Time</option>
-              <option value="this_month">This Month</option>
-              <option value="last_30_days">Last 30 Days</option>
-              <option value="custom">Custom Range</option>
-            </select>
-
-            {dateFilter === 'custom' && (
-              <div
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 8,
-                  marginLeft: 8,
-                }}
+            <div>
+              <label
+                htmlFor="timeframe"
+                className="mb-2 block text-xs font-semibold uppercase tracking-[0.14em] text-slate-500"
               >
-                <input
-                  type="date"
-                  value={customStartDate}
-                  onChange={(e) => setCustomStartDate(e.target.value)}
-                  style={{
-                    padding: '7px 10px',
-                    borderRadius: 6,
-                    border: '1px solid rgba(255, 255, 255, 0.1)',
-                    fontSize: 13,
-                    backgroundColor: '#1e293b',
-                    color: '#fff',
-                  }}
+                Timeframe
+              </label>
+              <select
+                id="timeframe"
+                value={timeframe}
+                onChange={handleTimeframeChange}
+                className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm font-semibold text-white outline-none transition focus:border-cyan-400"
+              >
+                <option value="all">All Time</option>
+                <option value="this-month">This Month</option>
+                <option value="last-30-days">Last 30 Days</option>
+                <option value="custom">Custom Range</option>
+              </select>
+            </div>
+
+            <div className="flex flex-wrap gap-2 xl:justify-end">
+              <PlaidLinkButton
+                selectedClientId={selectedClientId}
+                onBankConnected={handleBankConnected}
+              />
+
+              <button
+                type="button"
+                onClick={refreshTransactions}
+                disabled={transactionsLoading || !selectedClientId}
+                className="rounded-xl border border-slate-700 px-4 py-3 text-sm font-semibold text-slate-200 transition hover:border-cyan-400 hover:text-cyan-300 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {transactionsLoading ? 'Refreshing...' : 'Refresh'}
+              </button>
+
+              <button
+                type="button"
+                onClick={exportTransactionsToCsv}
+                disabled={filteredTransactions.length === 0}
+                className="rounded-xl border border-slate-700 px-4 py-3 text-sm font-semibold text-slate-200 transition hover:border-emerald-400 hover:text-emerald-300 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Export CSV
+              </button>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-800/80 bg-slate-950/30 px-5 py-3 text-xs text-slate-500 sm:px-6">
+            <span>
+              {selectedClient
+                ? `Viewing ${selectedClient.name}`
+                : 'Select a client workspace'}
+            </span>
+            <span>
+              {memberships.length} connected firm{memberships.length === 1 ? '' : 's'}
+            </span>
+          </div>
+        </header>
+
+        {errorMessage && (
+          <div className="rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+            {errorMessage}
+          </div>
+        )}
+
+        {reauthenticationRequired.length > 0 && (
+          <section className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-4 text-sm text-amber-100">
+            <div className="font-semibold">
+              Bank connection{reauthenticationRequired.length === 1 ? '' : 's'} require reauthentication
+            </div>
+            <p className="mt-1 text-amber-200/80">
+              Existing transactions are still available. Reconnect each affected bank to resume synchronization.
+            </p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {reauthenticationRequired.map((item) => (
+                <PlaidLinkButton
+                  key={item.plaid_item_database_id}
+                  selectedClientId={selectedClientId}
+                  reconnectItemId={item.plaid_item_database_id}
+                  reconnectLabel={`Fix ${
+                    item.institution_name || 'bank connection'
+                  }`}
+                  onReconnected={handleBankReconnected}
                 />
-                <span style={{ fontSize: 13, color: '#64748b' }}>to</span>
-                <input
-                  type="date"
-                  value={customEndDate}
-                  onChange={(e) => setCustomEndDate(e.target.value)}
-                  style={{
-                    padding: '7px 10px',
-                    borderRadius: 6,
-                    border: '1px solid rgba(255, 255, 255, 0.1)',
-                    fontSize: 13,
-                    backgroundColor: '#1e293b',
-                    color: '#fff',
-                  }}
-                />
-              </div>
-            )}
+              ))}
+            </div>
+          </section>
+        )}
+
+        {successMessage && (
+          <div className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-300">
+            {successMessage}
           </div>
+        )}
 
-          <div style={{ fontSize: 13, color: '#94a3b8', fontWeight: 500 }}>
-            Active View: <strong style={{ color: '#38bdf8' }}>{filteredTransactions.length} records</strong>
-          </div>
-        </div>
+        {selectedClient &&
+          !transactionsLoading &&
+          transactions.length === 0 && (
+            <section className="rounded-2xl border border-cyan-500/20 bg-slate-900 p-6 shadow-xl sm:p-8">
+              <div className="mx-auto max-w-2xl text-center">
+                <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-cyan-500/10 text-xl">
+                  🏦
+                </div>
 
-        {/* Analytics Cards with Rich Color Highlights */}
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(3, 1fr)',
-            gap: 20,
-            marginBottom: 28,
-          }}
-        >
-          {/* Total Spend Card */}
-          <div
-            style={{
-              padding: '22px 24px',
-              backgroundColor: '#0f172a',
-              borderRadius: 14,
-              border: '1px solid rgba(56, 189, 248, 0.3)',
-              backgroundImage: 'linear-gradient(135deg, rgba(56, 189, 248, 0.08) 0%, rgba(15, 23, 42, 0) 100%)',
-              boxShadow: '0 8px 24px rgba(0, 0, 0, 0.3)',
-            }}
-          >
-            <div
-              style={{
-                fontSize: 12,
-                color: '#38bdf8',
-                fontWeight: 700,
-                letterSpacing: '0.08em',
-                marginBottom: 10,
-              }}
-            >
-              TOTAL SPEND
-            </div>
-            <div
-              style={{
-                fontSize: 30,
-                fontWeight: 800,
-                color: '#ffffff',
-                letterSpacing: '-0.02em',
-              }}
-            >
-              ${analytics.totalSpend.toFixed(2)}
-            </div>
-          </div>
+                <p className="mt-5 text-sm font-semibold text-cyan-400">
+                  Client workspace ready
+                </p>
 
-          {/* Top Spending Category Card */}
-          <div
-            style={{
-              padding: '22px 24px',
-              backgroundColor: '#0f172a',
-              borderRadius: 14,
-              border: '1px solid rgba(129, 140, 248, 0.3)',
-              backgroundImage: 'linear-gradient(135deg, rgba(129, 140, 248, 0.08) 0%, rgba(15, 23, 42, 0) 100%)',
-              boxShadow: '0 8px 24px rgba(0, 0, 0, 0.3)',
-            }}
-          >
-            <div
-              style={{
-                fontSize: 12,
-                color: '#818cf8',
-                fontWeight: 700,
-                letterSpacing: '0.08em',
-                marginBottom: 10,
-              }}
-            >
-              TOP SPENDING CATEGORY
-            </div>
-            <div
-              style={{
-                fontSize: 26,
-                fontWeight: 800,
-                color: '#ffffff',
-                letterSpacing: '-0.01em',
-              }}
-            >
-              {analytics.topCategory}
-            </div>
-          </div>
+                <h2 className="mt-2 text-2xl font-bold tracking-tight text-white">
+                  Connect {selectedClient.name}&apos;s first bank account
+                </h2>
 
-          {/* Net Cash Flow Card */}
-          <div
-            style={{
-              padding: '22px 24px',
-              backgroundColor: '#0f172a',
-              borderRadius: 14,
-              border: `1px solid ${analytics.netCashFlow >= 0 ? 'rgba(74, 222, 128, 0.35)' : 'rgba(248, 113, 113, 0.35)'}`,
-              backgroundImage: analytics.netCashFlow >= 0 
-                ? 'linear-gradient(135deg, rgba(74, 222, 128, 0.08) 0%, rgba(15, 23, 42, 0) 100%)'
-                : 'linear-gradient(135deg, rgba(248, 113, 113, 0.08) 0%, rgba(15, 23, 42, 0) 100%)',
-              boxShadow: '0 8px 24px rgba(0, 0, 0, 0.3)',
-            }}
-          >
-            <div
-              style={{
-                fontSize: 12,
-                color: analytics.netCashFlow >= 0 ? '#4ade80' : '#f87171',
-                fontWeight: 700,
-                letterSpacing: '0.08em',
-                marginBottom: 10,
-              }}
-            >
-              NET CASH FLOW
-            </div>
-            <div
-              style={{
-                fontSize: 30,
-                fontWeight: 800,
-                color: analytics.netCashFlow >= 0 ? '#4ade80' : '#f87171',
-                letterSpacing: '-0.02em',
-              }}
-            >
-              ${analytics.netCashFlow.toFixed(2)}
-            </div>
-          </div>
-        </div>
+                <p className="mx-auto mt-3 max-w-xl text-sm leading-6 text-slate-400">
+                  This client does not have any transactions yet. Connect a bank
+                  account to securely import transaction history and begin
+                  categorizing and reviewing the books.
+                </p>
 
-        {/* Natural Language AI Query Bar */}
-        <div style={{ marginBottom: 28 }}>
-          <QueryBar clientId={userId} />
-        </div>
+                <div className="mt-6 flex justify-center">
+                  <PlaidLinkButton
+                    selectedClientId={selectedClientId}
+                    onBankConnected={handleBankConnected}
+                  />
+                </div>
 
-        {/* Transaction Table Card */}
-        <div
-          style={{
-            backgroundColor: '#0f172a',
-            borderRadius: 14,
-            border: '1px solid rgba(255, 255, 255, 0.08)',
-            boxShadow: '0 12px 32px rgba(0, 0, 0, 0.4)',
-            overflow: 'hidden',
-          }}
-        >
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: '60px 140px 1fr 220px 140px',
-              padding: '16px 24px',
-              backgroundColor: '#111827',
-              borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
-              fontSize: 12,
-              fontWeight: 700,
-              color: '#94a3b8',
-              textTransform: 'uppercase',
-              letterSpacing: '0.08em',
-            }}
-          >
-            <div>#</div>
-            <div>Date</div>
-            <div>Merchant</div>
-            <div>Category</div>
-            <div style={{ textAlign: 'right' }}>Amount</div>
-          </div>
-
-          {filteredTransactions.length === 0 ? (
-            <div
-              style={{
-                padding: '56px 24px',
-                textAlign: 'center',
-                color: '#64748b',
-                fontSize: 14,
-              }}
-            >
-              No matching transactions found for this period.
-            </div>
-          ) : (
-            filteredTransactions.map((tx, index) => {
-              const displayName =
-                tx.merchant_name || tx.name || 'Unknown Merchant';
-              const isIncome = tx.amount < 0;
-
-              return (
-                <div
-                  key={tx.id}
-                  style={{
-                    display: 'grid',
-                    gridTemplateColumns: '60px 140px 1fr 220px 140px',
-                    alignItems: 'center',
-                    padding: '16px 24px',
-                    borderBottom:
-                      index === filteredTransactions.length - 1
-                        ? 'none'
-                        : '1px solid rgba(255, 255, 255, 0.04)',
-                    fontSize: 14,
-                    transition: 'background-color 0.15s ease',
-                  }}
-                >
-                  <div style={{ color: '#64748b', fontSize: 13, fontWeight: 500 }}>
-                    {index + 1}
+                <div className="mt-7 grid gap-3 text-left sm:grid-cols-3">
+                  <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      Step 1
+                    </p>
+                    <p className="mt-2 text-sm font-semibold text-slate-200">
+                      Connect bank
+                    </p>
                   </div>
-                  <div style={{ color: '#94a3b8', fontWeight: 500 }}>
-                    {tx.date}
+
+                  <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      Step 2
+                    </p>
+                    <p className="mt-2 text-sm font-semibold text-slate-200">
+                      Import transactions
+                    </p>
                   </div>
-                  <div style={{ fontWeight: 600, color: '#f8fafc' }}>
-                    {displayName}
-                  </div>
-                  <div>
-                    <select
-                      value={tx.category || 'Uncategorized'}
-                      onChange={(e) =>
-                        handleCategoryChange(
-                          tx.id,
-                          displayName,
-                          e.target.value
-                        )
-                      }
-                      style={{
-                        padding: '7px 12px',
-                        borderRadius: 8,
-                        border: '1px solid rgba(255, 255, 255, 0.1)',
-                        fontSize: 13,
-                        fontWeight: 500,
-                        color: '#f8fafc',
-                        backgroundColor: '#1e293b',
-                        cursor: 'pointer',
-                        outline: 'none',
-                        width: '90%',
-                      }}
-                    >
-                      <option value="Uncategorized">Uncategorized</option>
-                      <option value="Food & Dining">Food & Dining</option>
-                      <option value="Transportation">Transportation</option>
-                      <option value="Software & Tech">Software & Tech</option>
-                      <option value="Transfer / Income">Transfer / Income</option>
-                      <option value="Shopping">Shopping</option>
-                      <option value="Bills & Utilities">Bills & Utilities</option>
-                    </select>
-                  </div>
-                  <div style={{ textAlign: 'right' }}>
-                    <span
-                      style={{
-                        display: 'inline-block',
-                        padding: '5px 12px',
-                        borderRadius: 20,
-                        fontSize: 13,
-                        fontWeight: 700,
-                        backgroundColor: isIncome ? 'rgba(74, 222, 128, 0.1)' : 'rgba(255, 255, 255, 0.05)',
-                        color: isIncome ? '#4ade80' : '#f8fafc',
-                        border: `1px solid ${isIncome ? 'rgba(74, 222, 128, 0.2)' : 'rgba(255, 255, 255, 0.08)'}`,
-                      }}
-                    >
-                      {isIncome
-                        ? `+$${Math.abs(tx.amount).toFixed(2)}`
-                        : `$${tx.amount.toFixed(2)}`}
-                    </span>
+
+                  <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      Step 3
+                    </p>
+                    <p className="mt-2 text-sm font-semibold text-slate-200">
+                      Review &amp; categorize
+                    </p>
                   </div>
                 </div>
-              );
-            })
+              </div>
+            </section>
           )}
-        </div>
+
+        <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
+            <p className="text-sm text-slate-400">Total Spending</p>
+
+            <p className="mt-2 text-2xl font-bold text-white">
+              {formatCurrency(totalSpending)}
+            </p>
+
+            <p className="mt-1 text-xs text-slate-500">
+              Based on current filters
+            </p>
+          </div>
+
+          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
+            <p className="text-sm text-slate-400">Transactions</p>
+
+            <p className="mt-2 text-2xl font-bold text-white">
+              {transactionCount}
+            </p>
+
+            <p className="mt-1 text-xs text-slate-500">
+              Matching current filters
+            </p>
+          </div>
+
+          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
+            <p className="text-sm text-slate-400">
+              Average Spend
+            </p>
+
+            <p className="mt-2 text-2xl font-bold text-white">
+              {formatCurrency(averageTransaction)}
+            </p>
+
+            <p className="mt-1 text-xs text-slate-500">
+              Average operating expense
+            </p>
+          </div>
+
+          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
+            <p className="text-sm text-slate-400">Merchants</p>
+
+            <p className="mt-2 text-2xl font-bold text-white">
+              {merchantSummary.length}
+            </p>
+
+            <p className="mt-1 text-xs text-slate-500">
+              Unique merchants in view
+            </p>
+          </div>
+        </section>
+
+        <section className="rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-xl">
+          <div className="mb-4">
+            <h2 className="text-lg font-semibold text-white">
+              🔍 Ask anything about your finances
+            </h2>
+
+            <p className="mt-1 text-sm text-slate-400">
+              Ask a question about your transaction history and spending.
+            </p>
+          </div>
+
+          <div className="flex flex-col gap-3 sm:flex-row">
+            <input
+              type="text"
+              value={financeQuestion}
+              onChange={(event) =>
+                setFinanceQuestion(event.target.value)
+              }
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  handleAskQuestion();
+                }
+              }}
+              placeholder="Ask a question about your finances..."
+              className="flex-1 rounded-lg border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white outline-none placeholder:text-slate-500 focus:border-cyan-400"
+            />
+
+            <button
+              type="button"
+              onClick={handleAskQuestion}
+              disabled={isAsking || !financeQuestion.trim()}
+              className="rounded-lg bg-cyan-500 px-5 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {isAsking ? 'Asking...' : 'Ask'}
+            </button>
+          </div>
+
+          <div className="mt-4 flex flex-wrap gap-2">
+            {SUGGESTED_QUESTIONS.map((question) => (
+              <button
+                key={question}
+                type="button"
+                onClick={() => handleSuggestedQuestion(question)}
+                className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-left text-xs text-slate-300 transition hover:border-cyan-400 hover:text-cyan-300"
+              >
+                {question}
+              </button>
+            ))}
+          </div>
+
+          {askAnswer && (
+            <div className="mt-5 whitespace-pre-line rounded-lg border border-slate-700 bg-slate-950/80 p-4 text-sm leading-6 text-slate-200">
+              {askAnswer}
+            </div>
+          )}
+        </section>
+
+        <section className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+            <div className="flex-1">
+              <label
+                htmlFor="search"
+                className="mb-2 block text-sm font-medium text-slate-300"
+              >
+                Search Transactions
+              </label>
+
+              <QueryBar
+                value={searchTerm}
+                onChange={setSearchTerm}
+                placeholder="Search merchant, category, or account..."
+              />
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2 xl:flex xl:items-end">
+              <div>
+                <label
+                  htmlFor="category-filter"
+                  className="mb-2 block text-sm font-medium text-slate-300"
+                >
+                  Category
+                </label>
+
+                <select
+                  id="category-filter"
+                  value={categoryFilter}
+                  onChange={(event) =>
+                    setCategoryFilter(event.target.value)
+                  }
+                  className="w-full min-w-[180px] rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white outline-none transition focus:border-cyan-400"
+                >
+                  {categoryOptions.map((category) => (
+                    <option key={category} value={category}>
+                      {category}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label
+                  htmlFor="account-filter"
+                  className="mb-2 block text-sm font-medium text-slate-300"
+                >
+                  Account
+                </label>
+
+                <select
+                  id="account-filter"
+                  value={accountFilter}
+                  onChange={(event) =>
+                    setAccountFilter(event.target.value)
+                  }
+                  className="w-full min-w-[180px] rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white outline-none transition focus:border-cyan-400"
+                >
+                  {accountOptions.map((account) => (
+                    <option key={account} value={account}>
+                      {account}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label
+                  htmlFor="start-date"
+                  className="mb-2 block text-sm font-medium text-slate-300"
+                >
+                  Start Date
+                </label>
+
+                <input
+                  id="start-date"
+                  type="date"
+                  value={startDate}
+                  onChange={(event) => {
+                    setStartDate(event.target.value);
+                    setTimeframe('custom');
+                  }}
+                  className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white outline-none transition focus:border-cyan-400"
+                />
+              </div>
+
+              <div>
+                <label
+                  htmlFor="end-date"
+                  className="mb-2 block text-sm font-medium text-slate-300"
+                >
+                  End Date
+                </label>
+
+                <input
+                  id="end-date"
+                  type="date"
+                  value={endDate}
+                  onChange={(event) => {
+                    setEndDate(event.target.value);
+                    setTimeframe('custom');
+                  }}
+                  className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white outline-none transition focus:border-cyan-400"
+                />
+              </div>
+
+              <button
+                type="button"
+                onClick={clearFilters}
+                className="rounded-lg border border-slate-700 px-4 py-2.5 text-sm font-medium text-slate-300 transition hover:border-slate-500 hover:text-white"
+              >
+                Clear Filters
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <section className="grid gap-6 xl:grid-cols-[1fr_360px]">
+          <div className="rounded-2xl border border-slate-800 bg-slate-900">
+            <div className="flex flex-col gap-3 border-b border-slate-800 p-5 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h2 className="text-lg font-semibold text-white">
+                  Transactions
+                </h2>
+
+                <p className="mt-1 text-sm text-slate-400">
+                  {transactionsLoading
+                    ? 'Loading transactions...'
+                    : `${filteredTransactions.length} transaction${
+                        filteredTransactions.length === 1
+                          ? ''
+                          : 's'
+                      } shown`}
+                </p>
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={handleLocalCategorize}
+                  disabled={
+                    transactionsLoading ||
+                    filteredTransactions.length === 0
+                  }
+                  className="rounded-lg border border-cyan-500/50 px-3 py-2 text-sm font-medium text-cyan-300 transition hover:bg-cyan-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Auto-Categorize
+                </button>
+
+                <button
+                  type="button"
+                  onClick={exportTransactionsToCsv}
+                  disabled={filteredTransactions.length === 0}
+                  className="rounded-lg border border-slate-700 px-3 py-2 text-sm font-medium text-slate-300 transition hover:border-emerald-400 hover:text-emerald-300 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Export CSV
+                </button>
+              </div>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="min-w-full divide-y divide-slate-800">
+                <thead className="bg-slate-950/60">
+                  <tr>
+                    <th className="whitespace-nowrap px-5 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      Date
+                    </th>
+
+                    <th className="whitespace-nowrap px-5 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      Merchant
+                    </th>
+
+                    <th className="whitespace-nowrap px-5 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      Account
+                    </th>
+
+                    <th className="whitespace-nowrap px-5 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      Category
+                    </th>
+
+                    <th className="whitespace-nowrap px-5 py-3 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      Amount
+                    </th>
+                  </tr>
+                </thead>
+
+                <tbody className="divide-y divide-slate-800">
+                  {transactionsLoading ? (
+                    <tr>
+                      <td
+                        colSpan={5}
+                        className="px-5 py-12 text-center text-sm text-slate-400"
+                      >
+                        Loading transactions...
+                      </td>
+                    </tr>
+                  ) : filteredTransactions.length === 0 ? (
+                    <tr>
+                      <td
+                        colSpan={5}
+                        className="px-5 py-12 text-center text-sm text-slate-400"
+                      >
+                        No transactions found for this client and filter
+                        selection.
+                      </td>
+                    </tr>
+                  ) : (
+                    filteredTransactions.map((transaction) => {
+                      const category =
+                        getTransactionCategory(transaction);
+
+                      const isEditing =
+                        editingCategoryId === transaction.id;
+
+                      const isSaving =
+                        savingCategoryId === transaction.id;
+
+                      return (
+                        <tr
+                          key={transaction.id}
+                          className="transition hover:bg-slate-800/40"
+                        >
+                          <td className="whitespace-nowrap px-5 py-4 text-sm text-slate-300">
+                            {formatDate(getTransactionDate(transaction))}
+                          </td>
+
+                          <td className="px-5 py-4">
+                            <div className="min-w-[180px]">
+                              <p className="font-medium text-white">
+                                {getMerchantName(transaction)}
+                              </p>
+
+                              {transaction.pending && (
+                                <span className="mt-1 inline-flex rounded-full bg-amber-500/10 px-2 py-0.5 text-xs text-amber-300">
+                                  Pending
+                                </span>
+                              )}
+                            </div>
+                          </td>
+
+                          <td className="px-5 py-4 text-sm text-slate-400">
+                            <div className="min-w-[140px]">
+                              <p>
+                                {transaction.account_name ||
+                                  'Unknown account'}
+                              </p>
+
+                              {transaction.account_mask && (
+                                <p className="mt-1 text-xs text-slate-500">
+                                  •••• {transaction.account_mask}
+                                </p>
+                              )}
+                            </div>
+                          </td>
+
+                          <td className="px-5 py-4">
+                            {isEditing ? (
+                              <select
+                                value={transaction.ai_category_id || ''}
+                                disabled={isSaving}
+                                onChange={(event) =>
+                                  handleCategoryChange(
+                                    transaction.id,
+                                    event.target.value,
+                                  )
+                                }
+                                onBlur={() =>
+                                  setEditingCategoryId(null)
+                                }
+                                autoFocus
+                                className="rounded-lg border border-cyan-400 bg-slate-950 px-2 py-1.5 text-sm text-white outline-none"
+                              >
+                                {!transaction.ai_category_id && (
+                                  <option value="" disabled>
+                                    Select category
+                                  </option>
+                                )}
+
+                                {categories.map((categoryOption) => (
+                                  <option
+                                    key={categoryOption.id}
+                                    value={categoryOption.id}
+                                  >
+                                    {categoryOption.coa_code
+                                      ? `${categoryOption.coa_code} — ${categoryOption.name}`
+                                      : categoryOption.name}
+                                  </option>
+                                ))}
+                              </select>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setEditingCategoryId(
+                                    transaction.id,
+                                  )
+                                }
+                                className="rounded-full bg-slate-800 px-3 py-1 text-left text-xs text-slate-300 transition hover:bg-cyan-500/10 hover:text-cyan-300"
+                              >
+                                {category}
+                              </button>
+                            )}
+                          </td>
+
+                          <td className="whitespace-nowrap px-5 py-4 text-right text-sm font-semibold text-white">
+                            {formatCurrency(
+                              Number(transaction.amount || 0),
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="space-y-6">
+            <section className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-lg font-semibold text-white">
+                    Merchant Summary
+                  </h2>
+
+                  <p className="mt-1 text-sm text-slate-400">
+                    Spending grouped by merchant
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-5 space-y-4">
+                {merchantSummary.length === 0 ? (
+                  <p className="text-sm text-slate-500">
+                    No merchant data available.
+                  </p>
+                ) : (
+                  merchantSummary.slice(0, 8).map((merchant) => (
+                    <div key={merchant.merchant}>
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="truncate text-sm font-medium text-slate-200">
+                          {merchant.merchant}
+                        </p>
+
+                        <p className="whitespace-nowrap text-sm font-semibold text-white">
+                          {formatCurrency(merchant.total)}
+                        </p>
+                      </div>
+
+                      <div className="mt-1 flex items-center justify-between text-xs text-slate-500">
+                        <span>
+                          {merchant.count} transaction
+                          {merchant.count === 1 ? '' : 's'}
+                        </span>
+
+                        <span>
+                          {totalSpending > 0
+                            ? `${(
+                                (merchant.total / totalSpending) *
+                                100
+                              ).toFixed(1)}%`
+                            : '0%'}
+                        </span>
+                      </div>
+
+                      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-800">
+                        <div
+                          className="h-full rounded-full bg-cyan-400"
+                          style={{
+                            width:
+                              totalSpending > 0
+                                ? `${Math.min(
+                                    (merchant.total / totalSpending) *
+                                      100,
+                                    100,
+                                  )}%`
+                                : '0%',
+                          }}
+                        />
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </section>
+
+            <section className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
+              <h2 className="text-lg font-semibold text-white">
+                Category Summary
+              </h2>
+
+              <p className="mt-1 text-sm text-slate-400">
+                Spending grouped by category
+              </p>
+
+              <div className="mt-5 space-y-3">
+                {categorySummary.length === 0 ? (
+                  <p className="text-sm text-slate-500">
+                    No category data available.
+                  </p>
+                ) : (
+                  categorySummary.map((item) => (
+                    <div
+                      key={item.category}
+                      className="flex items-center justify-between gap-3"
+                    >
+                      <p className="text-sm text-slate-300">
+                        {item.category}
+                      </p>
+
+                      <p className="text-sm font-semibold text-white">
+                        {formatCurrency(item.total)}
+                      </p>
+                    </div>
+                  ))
+                )}
+              </div>
+            </section>
+          </div>
+        </section>
       </div>
-    </div>
+    </main>
   );
 }
