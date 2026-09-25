@@ -111,44 +111,6 @@ async function pullInitialTransactions(itemId: string, accessToken: string, clie
     .eq("plaid_item_id", itemId);
 }
 
-/**
- * Called from the webhook handler on SYNC_UPDATES_AVAILABLE — pulls only
- * the delta since the stored cursor.
- */
-export async function syncTransactionsDelta(itemId: string) {
-  const supabase = supabaseAdmin();
-  const { data: item, error } = await supabase
-    .from("plaid_items")
-    .select("id, client_id, cursor, access_token_encrypted")
-    .eq("plaid_item_id", itemId)
-    .single();
-  if (error || !item) throw error ?? new Error("plaid_item not found");
-
-  const accessToken = await decryptAccessToken(item.access_token_encrypted);
-  let cursor = item.cursor ?? undefined;
-  let hasMore = true;
-
-  while (hasMore) {
-    const resp = await plaidClient.transactionsSync({ access_token: accessToken, cursor });
-    const { added, modified, removed, next_cursor, has_more } = resp.data;
-
-    if (added.length) await upsertTransactions(supabase, added, item.client_id);
-    if (modified.length) await upsertTransactions(supabase, modified, item.client_id);
-    if (removed.length) await markTransactionsRemoved(supabase, removed);
-
-    cursor = next_cursor;
-    hasMore = has_more;
-  }
-
-  await supabase
-    .from("plaid_items")
-    .update({ cursor, last_synced_at: new Date().toISOString() })
-    .eq("plaid_item_id", itemId);
-
-  // Kick off categorization for whatever just landed as pending_review.
-  await import("./categorization").then((m) => m.categorizePendingTransactions(item.client_id));
-}
-
 async function upsertTransactions(supabase: ReturnType<typeof supabaseAdmin>, txns: any[], clientId: string) {
   const rows = txns.map((t) => ({
     plaid_transaction_id: t.transaction_id,
@@ -172,13 +134,4 @@ async function markTransactionsRemoved(supabase: ReturnType<typeof supabaseAdmin
     .delete()
     .in("plaid_transaction_id", ids);
   if (error) throw error;
-}
-
-async function decryptAccessToken(encrypted: string): Promise<string> {
-  const supabase = supabaseAdmin();
-  const { data, error } = await supabase.rpc("decrypt_plaid_access_token", {
-    p_encrypted: encrypted,
-  });
-  if (error) throw error;
-  return data as string;
 }
