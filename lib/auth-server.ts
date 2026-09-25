@@ -15,7 +15,7 @@ export async function getServerUser(_req: NextRequest) {
     return null; // Safe fallback during build prerendering
   }
 
-  const cookieStore = cookies();
+  const cookieStore = await cookies();
   const supabase = createServerClient(url, key, {
     cookies: {
       get(name: string) {
