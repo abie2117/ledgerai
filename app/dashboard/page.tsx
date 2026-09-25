@@ -1104,43 +1104,59 @@ function handleAskQuestion() {
         <header className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900 shadow-xl">
           <div className="flex flex-col gap-6 border-b border-slate-800 px-5 py-5 sm:px-6 lg:flex-row lg:items-center lg:justify-between">
             <div className="flex items-center gap-4">
-              <div className="relative flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl border border-cyan-400/50 bg-slate-950 shadow-[0_0_28px_rgba(34,211,238,0.16)]">
+              <div
+                className="relative flex shrink-0 items-center justify-center"
+                style={{
+                  width: 50,
+                  height: 50,
+                  borderRadius: 14,
+                  background:
+                    'linear-gradient(135deg,#0b1329 0%,#030712 100%)',
+                  boxShadow:
+                    '0 0 22px rgba(56,189,248,0.4), inset 0 0 10px rgba(129,140,248,0.2)',
+                  border: '1.5px solid rgba(56,189,248,0.6)',
+                }}
+              >
                 <svg
-                  viewBox="0 0 64 64"
+                  width="28"
+                  height="28"
+                  viewBox="0 0 32 32"
+                  fill="none"
                   aria-hidden="true"
-                  className="h-10 w-10"
+                  xmlns="http://www.w3.org/2000/svg"
                 >
                   <defs>
-                    <linearGradient id="ledgerai-mark" x1="8" y1="8" x2="56" y2="56">
-                      <stop offset="0%" stopColor="#67e8f9" />
-                      <stop offset="55%" stopColor="#38bdf8" />
-                      <stop offset="100%" stopColor="#8b5cf6" />
+                    <linearGradient
+                      id="ledgerai-mark"
+                      x1="0"
+                      y1="0"
+                      x2="32"
+                      y2="32"
+                      gradientUnits="userSpaceOnUse"
+                    >
+                      <stop stopColor="#38bdf8" />
+                      <stop offset="0.5" stopColor="#818cf8" />
+                      <stop offset="1" stopColor="#c084fc" />
                     </linearGradient>
                   </defs>
                   <path
-                    d="M32 6 54 19v26L32 58 10 45V19L32 6Z"
-                    fill="none"
+                    d="M16 3L28 9.5V22.5L16 29L4 22.5V9.5L16 3Z"
                     stroke="url(#ledgerai-mark)"
-                    strokeWidth="5"
+                    strokeWidth="2"
                     strokeLinejoin="round"
                   />
-                  <path
-                    d="M32 17 44 24v16L32 47 20 40V24l12-7Z"
-                    fill="none"
-                    stroke="url(#ledgerai-mark)"
-                    strokeWidth="5"
-                    strokeLinejoin="round"
-                  />
-                  <path
-                    d="m32 26 6 3.5v7L32 40l-6-3.5v-7L32 26Z"
-                    fill="url(#ledgerai-mark)"
+                  <circle
+                    cx="16"
+                    cy="16"
+                    r="3"
+                    fill="#818cf8"
                   />
                 </svg>
               </div>
 
               <div>
                 <div className="flex flex-wrap items-center gap-2.5">
-                  <h1 className="text-2xl font-bold tracking-tight text-white sm:text-3xl">
+                  <h1 className="text-2xl font-extrabold tracking-[-0.03em] text-white sm:text-3xl">
                     Ledger<span className="text-cyan-400">AI</span>
                   </h1>
                   <span className="rounded-md border border-cyan-500/40 bg-cyan-500/10 px-2 py-1 text-[10px] font-bold uppercase tracking-[0.18em] text-cyan-300">
@@ -1148,7 +1164,7 @@ function handleAskQuestion() {
                   </span>
                 </div>
                 <p className="mt-1 text-sm text-slate-400">
-                  AI-assisted bookkeeping &amp; financial intelligence
+                  Smarter financial insights. Clearer decisions.
                 </p>
               </div>
             </div>
