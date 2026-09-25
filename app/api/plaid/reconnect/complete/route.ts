@@ -69,7 +69,7 @@ export async function POST(req: Request) {
 
     const { data: item, error: itemError } = await db
       .from('plaid_items')
-      .select('id, clients!inner(firm_id)')
+      .select('id, status, clients!inner(firm_id)')
       .eq('id', plaidItemDatabaseId)
       .in('clients.firm_id', firmIds)
       .maybeSingle();
@@ -88,14 +88,34 @@ export async function POST(req: Request) {
       );
     }
 
-    const { error: updateError } = await db
+    if (item.status === 'revoked') {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'The Plaid Item is revoked and cannot be reconnected.',
+        },
+        { status: 400 },
+      );
+    }
+
+    const { data: updatedItem, error: updateError } = await db
       .from('plaid_items')
       .update({ status: 'active' })
-      .eq('id', item.id);
+      .eq('id', item.id)
+      .in('status', ['active', 'error'])
+      .select('id')
+      .maybeSingle();
 
     if (updateError) {
       return NextResponse.json(
         { success: false, error: 'Unable to reactivate the Plaid Item.' },
+        { status: 500 },
+      );
+    }
+
+    if (!updatedItem || updatedItem.id !== item.id) {
+      return NextResponse.json(
+        { success: false, error: 'Unable to complete Plaid reconnection.' },
         { status: 500 },
       );
     }

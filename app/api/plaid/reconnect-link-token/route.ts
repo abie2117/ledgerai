@@ -104,6 +104,7 @@ export async function POST(req: Request) {
       `)
       .eq('id', plaidItemDatabaseId)
       .in('clients.firm_id', firmIds)
+      .in('status', ['active', 'error'])
       .maybeSingle();
 
     if (itemError) {
