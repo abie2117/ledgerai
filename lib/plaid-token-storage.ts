@@ -20,27 +20,6 @@ function createServiceRoleClient() {
   );
 }
 
-function normalizeStoredByteaText(storedToken: unknown) {
-  if (typeof storedToken === 'string') {
-    return storedToken;
-  }
-
-  if (
-    storedToken &&
-    typeof storedToken === 'object' &&
-    'data' in storedToken &&
-    Array.isArray(
-      (storedToken as { data?: unknown }).data,
-    )
-  ) {
-    return Buffer.from(
-      (storedToken as { data: number[] }).data,
-    ).toString('utf8');
-  }
-
-  throw new Error('Unsupported access-token storage format.');
-}
-
 function toByteaRpcInput(storedToken: unknown) {
   if (
     storedToken &&
@@ -56,39 +35,6 @@ function toByteaRpcInput(storedToken: unknown) {
   }
 
   return storedToken;
-}
-
-function readLegacyBase64Token(
-  plaidItemId: string,
-  storedToken: unknown,
-) {
-  if (plaidItemId.startsWith('item_test_')) {
-    throw new Error(
-      'Legacy token storage is not supported for test Plaid Items.',
-    );
-  }
-
-  let encodedToken = normalizeStoredByteaText(storedToken);
-
-  if (encodedToken.startsWith('\\x')) {
-    encodedToken = Buffer.from(
-      encodedToken.slice(2),
-      'hex',
-    ).toString('utf8');
-  }
-
-  const accessToken = Buffer.from(
-    encodedToken,
-    'base64',
-  ).toString('utf8');
-
-  if (!accessToken) {
-    throw new Error(
-      'Stored Plaid access token could not be decoded.',
-    );
-  }
-
-  return accessToken;
 }
 
 async function readEncryptedToken(storedToken: unknown) {
@@ -108,14 +54,9 @@ async function readEncryptedToken(storedToken: unknown) {
 }
 
 export async function readPlaidAccessToken({
-  plaid_item_id: plaidItemId,
   token_key_version: tokenKeyVersion,
   access_token_encrypted: storedToken,
 }: PlaidTokenStorageInput) {
-  if (tokenKeyVersion === 1) {
-    return readLegacyBase64Token(plaidItemId, storedToken);
-  }
-
   if (tokenKeyVersion === 2) {
     return readEncryptedToken(storedToken);
   }
