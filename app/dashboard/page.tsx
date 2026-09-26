@@ -9,6 +9,7 @@ import {
 import { supabase } from '@/lib/supabase-browser';
 import { QueryBar } from '@/components/QueryBar';
 import PlaidLinkButton from '@/components/PlaidLinkButton';
+import ConnectedBanksPanel from '@/components/ConnectedBanksPanel';
 import {
   getCurrentMonthRange,
   getFoodDiningSpending,
@@ -146,6 +147,7 @@ export default function DashboardPage() {
   const [selectedClientId, setSelectedClientId] = useState<string>('');
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
+  const [connectionsRefreshKey, setConnectionsRefreshKey] = useState(0);
 
   const [loading, setLoading] = useState(true);
   const [transactionsLoading, setTransactionsLoading] = useState(false);
@@ -607,6 +609,8 @@ export default function DashboardPage() {
           syncResult?.error || 'Unable to synchronize transactions with Plaid.',
         );
       }
+
+      setConnectionsRefreshKey((currentKey) => currentKey + 1);
 
       const requiredItems = Array.isArray(
         syncResult?.reauthentication_required,
@@ -1277,6 +1281,13 @@ function handleAskQuestion() {
             </span>
           </div>
         </header>
+
+        {selectedClientId && (
+          <ConnectedBanksPanel
+            clientId={selectedClientId}
+            refreshKey={connectionsRefreshKey}
+          />
+        )}
 
         {errorMessage && (
           <div className="rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-300">
