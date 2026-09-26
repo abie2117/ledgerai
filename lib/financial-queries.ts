@@ -67,6 +67,49 @@ function normalizeCategoryQuestionText(value: string) {
     .trim();
 }
 
+const USER_CATEGORY_ALIASES = new Map<string, string>([
+  ['meals and entertainment', 'food and dining'],
+  ['food and dining', 'food and dining'],
+  ['travel', 'travel'],
+]);
+
+const PLAID_CATEGORY_ALIASES = new Map<string, string>([
+  ['food and drink restaurants', 'food and dining'],
+  ['food and drink restaurants coffee shop', 'food and dining'],
+  ['food and drink restaurants fast food', 'food and dining'],
+  ['travel airlines and aviation services', 'travel'],
+  ['travel taxi', 'travel'],
+]);
+
+const CATEGORY_FAMILY_LABELS = new Map<string, string>([
+  ['food and dining', 'Meals & Entertainment'],
+  ['travel', 'Travel'],
+]);
+
+function normalizeUserCategory(category: string) {
+  const normalizedCategory = normalizeCategoryQuestionText(category);
+
+  return USER_CATEGORY_ALIASES.get(normalizedCategory) || normalizedCategory;
+}
+
+function getTransactionCategoryKey(transaction: FinancialTransaction) {
+  const canonicalCategory = transaction.canonical_category?.name?.trim();
+
+  if (canonicalCategory) {
+    return normalizeUserCategory(canonicalCategory);
+  }
+
+  const rawCategory = transaction.raw_plaid_category?.trim();
+
+  if (!rawCategory) {
+    return null;
+  }
+
+  return PLAID_CATEGORY_ALIASES.get(
+    normalizeCategoryQuestionText(rawCategory),
+  ) || null;
+}
+
 export function getCategorySpendIntent(
   question: string,
   transactions: FinancialTransaction[],
@@ -83,15 +126,19 @@ export function getCategorySpendIntent(
   const categories = new Map<string, string>();
 
   for (const transaction of transactions) {
-    const category = getTransactionCategory(transaction);
-    const normalizedCategory = normalizeCategoryQuestionText(category);
+    const categoryKey = getTransactionCategoryKey(transaction);
 
-    if (normalizedCategory && normalizedCategory !== 'uncategorized') {
-      categories.set(normalizedCategory, category);
+    if (categoryKey && !categories.has(categoryKey)) {
+      const canonicalCategory = transaction.canonical_category?.name?.trim();
+      categories.set(
+        categoryKey,
+        canonicalCategory || CATEGORY_FAMILY_LABELS.get(categoryKey) || categoryKey,
+      );
     }
   }
 
-  const category = categories.get(match[1]);
+  const requestedCategoryKey = normalizeUserCategory(match[1]);
+  const category = categories.get(requestedCategoryKey);
 
   if (!category) {
     return null;
@@ -204,11 +251,11 @@ export function getCategorySpending(
   category: string,
   range: DateRange,
 ) {
-  const normalizedCategory = normalizeCategory(category);
+  const normalizedCategory = normalizeUserCategory(category);
 
   return getQualifyingSpendingTransactions(transactions, range).filter(
     (transaction) =>
-      normalizeCategory(getTransactionCategory(transaction)) ===
+      getTransactionCategoryKey(transaction) ===
       normalizedCategory,
   );
 }

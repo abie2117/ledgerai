@@ -87,7 +87,7 @@ interface ReauthenticationRequiredItem {
 }
 
 const SUGGESTED_QUESTIONS = [
-  'How much did I spend on Food & Dining last month?',
+  'How much did I spend on Meals & Entertainment last month?',
   'Show me all transactions over $50',
   'What are my top 5 merchants by total spend?',
   'How much did I spend in total this month?',

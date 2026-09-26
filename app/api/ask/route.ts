@@ -249,90 +249,10 @@ export async function POST(request: Request) {
       });
     }
 
-    const normalizeDiagnosticCategory = (value: string) =>
-      value
-        .normalize('NFKC')
-        .toLowerCase()
-        .replace(/&/g, ' and ')
-        .replace(/[^a-z0-9]+/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim();
-    const diagnosticRows: unknown[] = Array.isArray(transactions)
-      ? transactions
-      : [];
-    const categoryShapeCounts = {
-      object: 0,
-      array: 0,
-      nullOrMissing: 0,
-      other: 0,
-    };
-    const normalizedCanonicalCategoryNames = new Set<string>();
-    const normalizedRawCategoryNames = new Set<string>();
-    let rowsWithRawCategory = 0;
-
-    for (const row of diagnosticRows) {
-      const transaction =
-        row !== null && typeof row === 'object'
-          ? (row as Record<string, unknown>)
-          : {};
-      const canonicalCategory = transaction.canonical_category;
-
-      if (Array.isArray(canonicalCategory)) {
-        categoryShapeCounts.array += 1;
-      } else if (canonicalCategory === null || canonicalCategory === undefined) {
-        categoryShapeCounts.nullOrMissing += 1;
-      } else if (typeof canonicalCategory === 'object') {
-        categoryShapeCounts.object += 1;
-        const name = (canonicalCategory as { name?: unknown }).name;
-
-        if (typeof name === 'string') {
-          const normalizedName = normalizeDiagnosticCategory(name);
-          if (normalizedName) {
-            normalizedCanonicalCategoryNames.add(normalizedName);
-          }
-        }
-      } else {
-        categoryShapeCounts.other += 1;
-      }
-
-      const rawCategory = transaction.raw_plaid_category;
-
-      if (typeof rawCategory === 'string' && rawCategory.trim()) {
-        rowsWithRawCategory += 1;
-        const normalizedName = normalizeDiagnosticCategory(rawCategory);
-        if (normalizedName) {
-          normalizedRawCategoryNames.add(normalizedName);
-        }
-      }
-    }
-
-    const normalizedQuestion =
-      typeof question === 'string'
-        ? normalizeDiagnosticCategory(question)
-        : '';
-    const questionCategoryMatch = normalizedQuestion.match(
-      /\b(?:spend|spent|spending)\b.*?\bon\s+(.+?)\s+(last month|this month)\b/,
-    );
-    const normalizedQuestionCategoryPhrase =
-      questionCategoryMatch?.[1]?.slice(0, 100) || null;
     const categorySpendIntent = getCategorySpendIntent(
       question,
       financialTransactions,
     );
-
-    console.info('[ask/category-diagnostic]', {
-      transactionCount: diagnosticRows.length,
-      canonicalCategoryShapes: categoryShapeCounts,
-      rowsWithNonEmptyRawPlaidCategory: rowsWithRawCategory,
-      normalizedCanonicalCategoryNames: Array.from(
-        normalizedCanonicalCategoryNames,
-      ).sort(),
-      normalizedRawPlaidCategoryNames: Array.from(
-        normalizedRawCategoryNames,
-      ).sort(),
-      normalizedQuestionCategoryPhrase,
-      deterministicCategoryIntentMatched: Boolean(categorySpendIntent),
-    });
 
     if (categorySpendIntent) {
       const range = categorySpendIntent.period === 'last-month'
