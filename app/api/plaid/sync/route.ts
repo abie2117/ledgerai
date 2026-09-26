@@ -171,6 +171,96 @@ export async function POST(req: Request) {
       );
     }
 
+    try {
+      const { data: diagnosticCandidates, error: diagnosticError } =
+        await db
+          .from('transactions')
+          .select(`
+            merchant_name,
+            amount,
+            plaid_transaction_id,
+            account_id,
+            account:accounts!inner (
+              plaid_item_id
+            )
+          `)
+          .eq('client_id', selectedClient.id)
+          .eq('amount', 89.4)
+          .ilike('merchant_name', '%FUN%');
+
+      if (!diagnosticError && Array.isArray(diagnosticCandidates)) {
+        const matchingRows = diagnosticCandidates.filter(
+          (transaction) =>
+            typeof transaction.merchant_name === 'string' &&
+            transaction.merchant_name.trim().toUpperCase() === 'FUN' &&
+            Number(transaction.amount) === 89.4,
+        );
+        const plaidTransactionIdCounts = new Map<string, number>();
+        const accountIds = new Set<string>();
+        const plaidItemIds = new Set<string>();
+        const itemAccountPairs = new Set<string>();
+
+        for (const transaction of matchingRows) {
+          if (typeof transaction.plaid_transaction_id === 'string') {
+            plaidTransactionIdCounts.set(
+              transaction.plaid_transaction_id,
+              (plaidTransactionIdCounts.get(
+                transaction.plaid_transaction_id,
+              ) || 0) + 1,
+            );
+          }
+
+          const accountId = transaction.account_id;
+          const accountRelation = transaction.account as unknown;
+          const plaidItemId =
+            accountRelation &&
+            typeof accountRelation === 'object' &&
+            !Array.isArray(accountRelation)
+              ? (accountRelation as { plaid_item_id?: unknown })
+                  .plaid_item_id
+              : null;
+
+          if (typeof accountId === 'string') {
+            accountIds.add(accountId);
+          }
+
+          if (typeof plaidItemId === 'string') {
+            plaidItemIds.add(plaidItemId);
+          }
+
+          if (
+            typeof accountId === 'string' &&
+            typeof plaidItemId === 'string'
+          ) {
+            itemAccountPairs.add(`${plaidItemId}:${accountId}`);
+          }
+        }
+
+        let duplicatePlaidTransactionIdGroupCount = 0;
+        let duplicateExtraRowCount = 0;
+
+        plaidTransactionIdCounts.forEach((count) => {
+          if (count > 1) {
+            duplicatePlaidTransactionIdGroupCount += 1;
+            duplicateExtraRowCount += count - 1;
+          }
+        });
+
+        console.info('[plaid/duplicate-diagnostic]', {
+          matchingRowCount: matchingRows.length,
+          distinctPlaidTransactionIdCount:
+            plaidTransactionIdCounts.size,
+          distinctAccountCount: accountIds.size,
+          distinctPlaidItemCount: plaidItemIds.size,
+          distinctItemAccountPairCount: itemAccountPairs.size,
+          duplicatePlaidTransactionIdGroupCount,
+          duplicateExtraRowCount,
+        });
+      }
+    } catch {
+      // A diagnostic read failure must not block the existing sync.
+    }
+
     // ---------------------------------------------------------
     // 5. LOAD ACTIVE PLAID ITEMS
     //
