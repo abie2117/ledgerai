@@ -171,6 +171,180 @@ export async function POST(req: Request) {
       );
     }
 
+    const logItemInventoryQueryFailure = (error?: unknown) => {
+      const errorFields =
+        error && typeof error === 'object'
+          ? (error as Record<string, unknown>)
+          : {};
+      const code =
+        typeof errorFields.code === 'string' &&
+        /^[A-Za-z0-9_-]{1,40}$/.test(errorFields.code)
+          ? errorFields.code
+          : undefined;
+      const status =
+        typeof errorFields.status === 'number' &&
+        Number.isInteger(errorFields.status)
+          ? errorFields.status
+          : undefined;
+
+      console.error('[plaid/item-inventory-diagnostic] query failed', {
+        ...(code ? { code } : {}),
+        ...(status ? { status } : {}),
+      });
+    };
+
+    try {
+      const { data: itemRows, error: inventoryError } = await db
+        .from('plaid_items')
+        .select(`
+          status,
+          cursor,
+          institution_name,
+          created_at,
+          accounts (id)
+        `)
+        .eq('client_id', selectedClient.id);
+
+      if (inventoryError) {
+        logItemInventoryQueryFailure(inventoryError);
+      } else {
+        const items = itemRows || [];
+        const statusCounts = {
+          active: 0,
+          error: 0,
+          revoked: 0,
+          other: 0,
+        };
+        const institutionNameCounts = new Map<string, number>();
+        const accountCountFrequencies = new Map<number, number>();
+        let itemsWithCursorCount = 0;
+        let itemsWithInstitutionNameCount = 0;
+        let itemsWithZeroAccountsCount = 0;
+        let itemsWithOneAccountCount = 0;
+        let itemsWithMultipleAccountsCount = 0;
+        let earliestItemCreatedAt: string | null = null;
+        let latestItemCreatedAt: string | null = null;
+        let earliestCreatedAtTime = Number.POSITIVE_INFINITY;
+        let latestCreatedAtTime = Number.NEGATIVE_INFINITY;
+
+        for (const item of items) {
+          const status =
+            typeof item.status === 'string'
+              ? item.status.toLowerCase()
+              : '';
+
+          if (status === 'active') {
+            statusCounts.active += 1;
+          } else if (status === 'error') {
+            statusCounts.error += 1;
+          } else if (status === 'revoked') {
+            statusCounts.revoked += 1;
+          } else {
+            statusCounts.other += 1;
+          }
+
+          if (typeof item.cursor === 'string' && item.cursor.trim()) {
+            itemsWithCursorCount += 1;
+          }
+
+          if (
+            typeof item.institution_name === 'string' &&
+            item.institution_name.trim()
+          ) {
+            itemsWithInstitutionNameCount += 1;
+            const normalizedInstitutionName = item.institution_name
+              .normalize('NFKC')
+              .trim()
+              .replace(/\s+/g, ' ')
+              .toLowerCase();
+
+            institutionNameCounts.set(
+              normalizedInstitutionName,
+              (institutionNameCounts.get(normalizedInstitutionName) || 0) + 1,
+            );
+          }
+
+          const accounts = Array.isArray(item.accounts)
+            ? item.accounts
+            : item.accounts && typeof item.accounts === 'object'
+              ? [item.accounts]
+              : [];
+          const accountCount = accounts.length;
+
+          accountCountFrequencies.set(
+            accountCount,
+            (accountCountFrequencies.get(accountCount) || 0) + 1,
+          );
+
+          if (accountCount === 0) {
+            itemsWithZeroAccountsCount += 1;
+          } else if (accountCount === 1) {
+            itemsWithOneAccountCount += 1;
+          } else {
+            itemsWithMultipleAccountsCount += 1;
+          }
+
+          if (typeof item.created_at === 'string') {
+            const createdAtTime = Date.parse(item.created_at);
+
+            if (Number.isFinite(createdAtTime)) {
+              if (createdAtTime < earliestCreatedAtTime) {
+                earliestCreatedAtTime = createdAtTime;
+                earliestItemCreatedAt = new Date(createdAtTime).toISOString();
+              }
+
+              if (createdAtTime > latestCreatedAtTime) {
+                latestCreatedAtTime = createdAtTime;
+                latestItemCreatedAt = new Date(createdAtTime).toISOString();
+              }
+            }
+          }
+        }
+
+        const repeatedInstitutionNameGroupSizeDistribution = new Map<
+          number,
+          number
+        >();
+
+        institutionNameCounts.forEach((groupSize) => {
+          if (groupSize > 1) {
+            repeatedInstitutionNameGroupSizeDistribution.set(
+              groupSize,
+              (repeatedInstitutionNameGroupSizeDistribution.get(groupSize) ||
+                0) + 1,
+            );
+          }
+        });
+
+        console.info('[plaid/item-inventory-diagnostic]', {
+          totalPlaidItemCount: items.length,
+          itemCountsByStatus: statusCounts,
+          itemsWithCursorCount,
+          itemsWithoutCursorCount: items.length - itemsWithCursorCount,
+          itemsWithInstitutionNameCount,
+          itemsWithoutInstitutionNameCount:
+            items.length - itemsWithInstitutionNameCount,
+          distinctNormalizedInstitutionNameGroupCount:
+            institutionNameCounts.size,
+          repeatedInstitutionNameGroupSizeDistribution: Array.from(
+            repeatedInstitutionNameGroupSizeDistribution,
+            ([groupSize, groupCount]) => ({ groupSize, groupCount }),
+          ).sort((a, b) => a.groupSize - b.groupSize),
+          accountCountPerItemDistribution: Array.from(
+            accountCountFrequencies,
+            ([accountCount, itemCount]) => ({ accountCount, itemCount }),
+          ).sort((a, b) => a.accountCount - b.accountCount),
+          itemsWithZeroAccountsCount,
+          itemsWithOneAccountCount,
+          itemsWithMultipleAccountsCount,
+          earliestItemCreatedAt,
+          latestItemCreatedAt,
+        });
+      }
+    } catch (error: unknown) {
+      logItemInventoryQueryFailure(error);
+    }
+
     // ---------------------------------------------------------
     // 5. LOAD ACTIVE PLAID ITEMS
     //
