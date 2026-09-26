@@ -9,6 +9,7 @@ export interface FinancialTransaction {
   merchant_name?: string | null;
   name?: string | null;
   category?: string | null;
+  raw_plaid_category?: string | null;
   canonical_category?: FinancialCategory | null;
 }
 
@@ -50,9 +51,56 @@ export function getMerchantName(transaction: FinancialTransaction) {
 export function getTransactionCategory(transaction: FinancialTransaction) {
   return (
     transaction.canonical_category?.name ||
+    transaction.raw_plaid_category ||
     transaction.category ||
     'Uncategorized'
   );
+}
+
+function normalizeCategoryQuestionText(value: string) {
+  return value
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+export function getCategorySpendIntent(
+  question: string,
+  transactions: FinancialTransaction[],
+) {
+  const normalizedQuestion = normalizeCategoryQuestionText(question);
+  const match = normalizedQuestion.match(
+    /\b(?:spend|spent|spending)\b.*?\bon\s+(.+?)\s+(last month|this month)\b/,
+  );
+
+  if (!match) {
+    return null;
+  }
+
+  const categories = new Map<string, string>();
+
+  for (const transaction of transactions) {
+    const category = getTransactionCategory(transaction);
+    const normalizedCategory = normalizeCategoryQuestionText(category);
+
+    if (normalizedCategory && normalizedCategory !== 'uncategorized') {
+      categories.set(normalizedCategory, category);
+    }
+  }
+
+  const category = categories.get(match[1]);
+
+  if (!category) {
+    return null;
+  }
+
+  return {
+    category,
+    period: match[2] === 'last month' ? 'last-month' : 'this-month',
+  } as const;
 }
 
 function isNonSpendingCategory(category: string) {
@@ -148,10 +196,20 @@ export function getFoodDiningSpending(
   transactions: FinancialTransaction[],
   range: DateRange,
 ) {
+  return getCategorySpending(transactions, 'Food & Dining', range);
+}
+
+export function getCategorySpending(
+  transactions: FinancialTransaction[],
+  category: string,
+  range: DateRange,
+) {
+  const normalizedCategory = normalizeCategory(category);
+
   return getQualifyingSpendingTransactions(transactions, range).filter(
     (transaction) =>
       normalizeCategory(getTransactionCategory(transaction)) ===
-      'food & dining',
+      normalizedCategory,
   );
 }
 
