@@ -168,6 +168,7 @@ export default function DashboardPage() {
   const [categoryFilter, setCategoryFilter] = useState('All Categories');
   const [accountFilter, setAccountFilter] = useState('All Accounts');
   const [reviewFilter, setReviewFilter] = useState('Needs Review');
+  const [transactionPage, setTransactionPage] = useState(1);
 
   const [editingCategoryId, setEditingCategoryId] = useState<string | null>(
     null,
@@ -483,7 +484,29 @@ export default function DashboardPage() {
     endDate,
   ]);
 
-  const dashboardTransactions = filteredTransactions.slice(0, 12);
+  const transactionsPerPage = 10;
+  const transactionPageCount = Math.max(
+    1,
+    Math.ceil(filteredTransactions.length / transactionsPerPage),
+  );
+  const safeTransactionPage = Math.min(transactionPage, transactionPageCount);
+  const transactionPageStart = (safeTransactionPage - 1) * transactionsPerPage;
+  const dashboardTransactions = filteredTransactions.slice(
+    transactionPageStart,
+    transactionPageStart + transactionsPerPage,
+  );
+
+  useEffect(() => {
+    setTransactionPage(1);
+  }, [
+    selectedClientId,
+    searchTerm,
+    categoryFilter,
+    accountFilter,
+    reviewFilter,
+    startDate,
+    endDate,
+  ]);
 
   const spendingTransactions = useMemo(() => {
     return filteredTransactions.filter(isQualifyingSpending);
@@ -1550,8 +1573,9 @@ function handleAskQuestion() {
         </div>
         </section>
 
-        <section id="assistant" className="scroll-mt-6 rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-xl">
-          <div className="mb-4">
+        <section id="assistant" className="scroll-mt-6 rounded-2xl border border-slate-800 bg-slate-900 p-5 shadow-xl">
+          <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+            <div>
             <p className="text-xs font-semibold uppercase tracking-[0.16em] text-violet-400">LedgerAI intelligence</p>
             <h2 className="mt-1 text-lg font-semibold text-white">
               🔍 Ask anything about your finances
@@ -1560,6 +1584,8 @@ function handleAskQuestion() {
             <p className="mt-1 text-sm text-slate-400">
               Ask a question about your transaction history and spending.
             </p>
+            </div>
+            <span className="hidden text-xs text-slate-500 sm:block">Financial copilot</span>
           </div>
 
           <div className="flex flex-col gap-3 sm:flex-row">
@@ -1588,7 +1614,7 @@ function handleAskQuestion() {
             </button>
           </div>
 
-          <div className="mt-4 flex flex-wrap gap-2">
+          <div className="mt-3 flex flex-wrap gap-2">
             {SUGGESTED_QUESTIONS.map((question) => (
               <button
                 key={question}
@@ -1616,7 +1642,7 @@ function handleAskQuestion() {
             </div>
             <span className="text-sm text-slate-500">{filteredTransactions.length} shown</span>
           </div>
-          <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+          <div className="grid gap-4 xl:grid-cols-[minmax(280px,1.25fr)_2fr] xl:items-end">
             <div className="flex-1">
               <label
                 htmlFor="search"
@@ -1632,7 +1658,7 @@ function handleAskQuestion() {
               />
             </div>
 
-            <div className="grid gap-3 sm:grid-cols-2 xl:flex xl:items-end">
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 xl:items-end">
               <div>
                 <label
                   htmlFor="category-filter"
@@ -1763,11 +1789,12 @@ function handleAskQuestion() {
                 <p className="mt-1 text-sm text-slate-400">
                   {transactionsLoading
                     ? 'Loading transactions...'
-                    : filteredTransactions.length > dashboardTransactions.length
-                      ? `Showing ${dashboardTransactions.length} of ${filteredTransactions.length} transactions`
-                      : `${filteredTransactions.length} transaction${
-                          filteredTransactions.length === 1 ? '' : 's'
-                        } shown`}
+                    : filteredTransactions.length > 0
+                      ? `Showing ${transactionPageStart + 1}–${Math.min(
+                          transactionPageStart + dashboardTransactions.length,
+                          filteredTransactions.length,
+                        )} of ${filteredTransactions.length} transactions`
+                      : '0 transactions shown'}
                 </p>
               </div>
 
@@ -2002,9 +2029,37 @@ function handleAskQuestion() {
                 </tbody>
               </table>
             </div>
+
+            {filteredTransactions.length > transactionsPerPage && (
+              <div className="flex flex-col gap-3 border-t border-slate-800 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+                <p className="text-xs text-slate-500">
+                  Page {safeTransactionPage} of {transactionPageCount}
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setTransactionPage((page) => Math.max(1, page - 1))}
+                    disabled={safeTransactionPage === 1}
+                    className="rounded-lg border border-slate-700 px-3 py-2 text-xs font-semibold text-slate-300 transition hover:border-cyan-400 hover:text-cyan-300 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Previous
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setTransactionPage((page) => Math.min(transactionPageCount, page + 1))
+                    }
+                    disabled={safeTransactionPage === transactionPageCount}
+                    className="rounded-lg border border-slate-700 px-3 py-2 text-xs font-semibold text-slate-300 transition hover:border-cyan-400 hover:text-cyan-300 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
-          <div className="grid gap-6 lg:grid-cols-2">
+          <div className="grid items-start gap-6 lg:grid-cols-2">
             <section className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
               <div className="flex items-center justify-between">
                 <div>
@@ -2024,7 +2079,7 @@ function handleAskQuestion() {
                     No merchant data available.
                   </p>
                 ) : (
-                  merchantSummary.slice(0, 6).map((merchant) => (
+                  merchantSummary.slice(0, 5).map((merchant) => (
                     <div key={merchant.merchant}>
                       <div className="flex items-center justify-between gap-3">
                         <p className="truncate text-sm font-medium text-slate-200">
@@ -2088,7 +2143,7 @@ function handleAskQuestion() {
                     No category data available.
                   </p>
                 ) : (
-                  categorySummary.slice(0, 6).map((item) => (
+                  categorySummary.slice(0, 5).map((item) => (
                     <div
                       key={item.category}
                       className="flex items-center justify-between gap-3"
