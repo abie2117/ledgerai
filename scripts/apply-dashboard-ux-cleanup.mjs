@@ -60,69 +60,31 @@ replaceOnce(
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">`,
 );
 
+// The emoji is intentionally excluded from the match because Windows console/code-page
+// handling can make a literal emoji matcher unreliable even though page.tsx is valid UTF-8.
 replaceOnce(
   'assistant heading',
-  `          <div className="mb-4">
-            <h2 className="text-lg font-semibold text-white">
-              🔍 Ask anything about your finances`,
-  `          <div className="mb-4">
-            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-violet-400">LedgerAI intelligence</p>
-            <h2 className="mt-1 text-lg font-semibold text-white">
-              Ask anything about your finances`,
+  `Ask anything about your finances`,
+  `Ask anything about your finances`,
+);
+
+// Replace the assistant card opener separately, using only ASCII source text.
+replaceOnce(
+  'assistant card opener',
+  `        <section className="rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-xl">\n          <div className="mb-4">\n            <h2 className="text-lg font-semibold text-white">`,
+  `        </section>\n\n        <section id="assistant" className="scroll-mt-6 rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-xl">\n          <div className="mb-4">\n            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-violet-400">LedgerAI intelligence</p>\n            <h2 className="mt-1 text-lg font-semibold text-white">`,
 );
 
 replaceOnce(
   'transaction filters id',
-  `        <section className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
-          <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">`,
-  `        <section id="transactions" className="scroll-mt-6 rounded-2xl border border-slate-800 bg-slate-900 p-5">
-          <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-cyan-400">Transaction workspace</p>
-              <h2 className="mt-1 text-xl font-bold text-white">Review and organize transactions</h2>
-            </div>
-            <span className="text-sm text-slate-500">{filteredTransactions.length} shown</span>
-          </div>
-          <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">`,
+  `        <section className="rounded-2xl border border-slate-800 bg-slate-900 p-5">\n          <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">`,
+  `        <section id="transactions" className="scroll-mt-6 rounded-2xl border border-slate-800 bg-slate-900 p-5">\n          <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">\n            <div>\n              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-cyan-400">Transaction workspace</p>\n              <h2 className="mt-1 text-xl font-bold text-white">Review and organize transactions</h2>\n            </div>\n            <span className="text-sm text-slate-500">{filteredTransactions.length} shown</span>\n          </div>\n          <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">`,
 );
 
 replaceOnce(
   'connected banks panel wrapper',
-  `        {selectedClientId && (
-          <ConnectedBanksPanel
-            clientId={selectedClientId}
-            refreshKey={connectionsRefreshKey}
-            onTransactionsReload={() =>
-              setTransactionsRefreshKey((currentKey) => currentKey + 1)
-            }
-          />
-        )}`,
-  `        {selectedClientId && (
-          <details className="group rounded-2xl border border-slate-800 bg-slate-900/70">
-            <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-5 py-4 text-sm font-semibold text-slate-200 sm:px-6">
-              <span>Bank connections</span>
-              <span className="text-xs font-medium text-slate-500 group-open:hidden">Show details</span>
-              <span className="hidden text-xs font-medium text-slate-500 group-open:inline">Hide details</span>
-            </summary>
-            <div className="border-t border-slate-800 p-3">
-              <ConnectedBanksPanel
-                clientId={selectedClientId}
-                refreshKey={connectionsRefreshKey}
-                onTransactionsReload={() =>
-                  setTransactionsRefreshKey((currentKey) => currentKey + 1)
-                }
-              />
-            </div>
-          </details>
-        )}`,
-);
-
-// Close the overview wrapper immediately before the AI assistant card.
-const overviewCloseNeedle = `        <section className="rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-xl">\n          <div className="mb-4">\n            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-violet-400">LedgerAI intelligence</p>`;
-replaceOnce(
-  'overview section close',
-  overviewCloseNeedle,
-  `        </section>\n\n${overviewCloseNeedle}`,
+  `        {selectedClientId && (\n          <ConnectedBanksPanel\n            clientId={selectedClientId}\n            refreshKey={connectionsRefreshKey}\n            onTransactionsReload={() =>\n              setTransactionsRefreshKey((currentKey) => currentKey + 1)\n            }\n          />\n        )}`,
+  `        {selectedClientId && (\n          <details className="group rounded-2xl border border-slate-800 bg-slate-900/70">\n            <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-5 py-4 text-sm font-semibold text-slate-200 sm:px-6">\n              <span>Bank connections</span>\n              <span className="text-xs font-medium text-slate-500 group-open:hidden">Show details</span>\n              <span className="hidden text-xs font-medium text-slate-500 group-open:inline">Hide details</span>\n            </summary>\n            <div className="border-t border-slate-800 p-3">\n              <ConnectedBanksPanel\n                clientId={selectedClientId}\n                refreshKey={connectionsRefreshKey}\n                onTransactionsReload={() =>\n                  setTransactionsRefreshKey((currentKey) => currentKey + 1)\n                }\n              />\n            </div>\n          </details>\n        )}`,
 );
 
 if (source === original) {
