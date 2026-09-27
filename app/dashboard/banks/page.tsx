@@ -1,13 +1,11 @@
+'use client';
+
+import { useSearchParams } from 'next/navigation';
 import ConnectedBanksPanel from '@/components/ConnectedBanksPanel';
 
-interface BankManagementPageProps {
-  searchParams: Promise<{ clientId?: string | string[] }>;
-}
-
-export default async function BankManagementPage({ searchParams }: BankManagementPageProps) {
-  const params = await searchParams;
-  const rawClientId = params.clientId;
-  const clientId = Array.isArray(rawClientId) ? rawClientId[0] : rawClientId;
+export default function BankManagementPage() {
+  const searchParams = useSearchParams();
+  const clientId = searchParams.get('clientId') ?? '';
   const dashboardHref = clientId ? `/dashboard?clientId=${encodeURIComponent(clientId)}` : '/dashboard';
 
   return (
