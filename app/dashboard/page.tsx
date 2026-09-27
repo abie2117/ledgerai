@@ -148,6 +148,7 @@ export default function DashboardPage() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [connectionsRefreshKey, setConnectionsRefreshKey] = useState(0);
+  const [transactionsRefreshKey, setTransactionsRefreshKey] = useState(0);
 
   const [loading, setLoading] = useState(true);
   const [transactionsLoading, setTransactionsLoading] = useState(false);
@@ -395,7 +396,7 @@ export default function DashboardPage() {
     }
 
     loadSelectedClientTransactions();
-  }, [selectedClientId]);
+  }, [selectedClientId, transactionsRefreshKey]);
 
   const selectedClient = useMemo(() => {
     return (
@@ -1286,6 +1287,9 @@ function handleAskQuestion() {
           <ConnectedBanksPanel
             clientId={selectedClientId}
             refreshKey={connectionsRefreshKey}
+            onTransactionsReload={() =>
+              setTransactionsRefreshKey((currentKey) => currentKey + 1)
+            }
           />
         )}
 

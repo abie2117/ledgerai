@@ -1,9 +1,9 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 interface Connection {
-  key: string;
+  connectionRef: string;
   label: string;
   status: string;
   accountCount: number;
@@ -14,12 +14,17 @@ interface Connection {
 interface ConnectedBanksPanelProps {
   clientId: string;
   refreshKey: number;
+  onTransactionsReload: () => void;
 }
+
+type RefreshState = 'idle' | 'refreshing' | 'success' | 'reconnect_required' | 'failed';
 
 interface ConnectionLoadState {
   clientId: string;
   refreshKey: number;
+  inventoryRevision: number;
   status: 'loading' | 'success' | 'error';
+  clientRef: string | null;
   connections: Connection[];
 }
 
@@ -68,11 +73,17 @@ function getStatusPresentation(status: string) {
 export default function ConnectedBanksPanel({
   clientId,
   refreshKey,
+  onTransactionsReload,
 }: ConnectedBanksPanelProps) {
+  const [inventoryRevision, setInventoryRevision] = useState(0);
+  const [refreshStates, setRefreshStates] = useState<Record<string, RefreshState>>({});
+  const refreshingReferences = useRef(new Set<string>());
   const [loadState, setLoadState] = useState<ConnectionLoadState>({
     clientId: '',
     refreshKey: -1,
+    inventoryRevision: -1,
     status: 'loading',
+    clientRef: null,
     connections: [],
   });
 
@@ -94,6 +105,7 @@ export default function ConnectedBanksPanel({
         if (
           !response.ok ||
           !result ||
+          typeof result.clientRef !== 'string' ||
           !Array.isArray(result.connections)
         ) {
           throw new Error('Unable to load connected banks.');
@@ -103,7 +115,9 @@ export default function ConnectedBanksPanel({
           setLoadState({
             clientId,
             refreshKey,
+            inventoryRevision,
             status: 'success',
+            clientRef: result.clientRef as string,
             connections: result.connections as Connection[],
           });
         }
@@ -112,7 +126,9 @@ export default function ConnectedBanksPanel({
           setLoadState({
             clientId,
             refreshKey,
+            inventoryRevision,
             status: 'error',
+            clientRef: null,
             connections: [],
           });
         }
@@ -125,17 +141,72 @@ export default function ConnectedBanksPanel({
       isCurrentRequest = false;
       controller.abort();
     };
-  }, [clientId, refreshKey]);
+  }, [clientId, refreshKey, inventoryRevision]);
 
   const isCurrentLoad =
     loadState.clientId === clientId &&
-    loadState.refreshKey === refreshKey;
+    loadState.refreshKey === refreshKey &&
+    loadState.inventoryRevision === inventoryRevision;
   const isLoading = !isCurrentLoad || loadState.status === 'loading';
   const hasError = isCurrentLoad && loadState.status === 'error';
   const connections =
     isCurrentLoad && loadState.status === 'success'
       ? loadState.connections
       : [];
+
+  async function refreshConnection(connection: Connection) {
+    const connectionRef = connection.connectionRef;
+    const clientRef = loadState.clientRef;
+
+    if (!clientRef || refreshingReferences.current.has(connectionRef)) {
+      return;
+    }
+
+    refreshingReferences.current.add(connectionRef);
+    setRefreshStates((currentStates) => ({
+      ...currentStates,
+      [connectionRef]: 'refreshing',
+    }));
+
+    try {
+      const response = await fetch('/api/plaid/connections/refresh', {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ clientRef, connectionRef }),
+      });
+      const result = await response.json().catch(() => null);
+
+      if (result?.outcome === 'reconnect_required') {
+        setRefreshStates((currentStates) => ({
+          ...currentStates,
+          [connectionRef]: 'reconnect_required',
+        }));
+        setInventoryRevision((currentRevision) => currentRevision + 1);
+        return;
+      }
+
+      if (!response.ok || result?.outcome !== 'success') {
+        throw new Error('Unable to refresh this connection.');
+      }
+
+      setRefreshStates((currentStates) => ({
+        ...currentStates,
+        [connectionRef]: 'success',
+      }));
+      setInventoryRevision((currentRevision) => currentRevision + 1);
+      onTransactionsReload();
+    } catch {
+      setRefreshStates((currentStates) => ({
+        ...currentStates,
+        [connectionRef]: 'failed',
+      }));
+    } finally {
+      refreshingReferences.current.delete(connectionRef);
+    }
+  }
 
   return (
     <section
@@ -173,10 +244,19 @@ export default function ConnectedBanksPanel({
         <ul className="mt-4 grid min-w-0 gap-3 sm:grid-cols-2 2xl:grid-cols-3">
           {connections.map((connection) => {
             const status = getStatusPresentation(connection.status);
+            const refreshState =
+              refreshStates[connection.connectionRef] || 'idle';
+            const reconnectRequired =
+              refreshState === 'reconnect_required' ||
+              connection.status === 'error';
+            const refreshDisabled =
+              refreshState === 'refreshing' ||
+              reconnectRequired ||
+              connection.status !== 'active';
 
             return (
               <li
-                key={connection.key}
+                key={connection.connectionRef}
                 className="min-w-0 rounded-xl border border-slate-800 bg-slate-950/70 p-4"
               >
                 <div className="flex flex-wrap items-start justify-between gap-3">
@@ -213,6 +293,42 @@ export default function ConnectedBanksPanel({
                     </dd>
                   </div>
                 </dl>
+
+                <div className="mt-4 flex flex-wrap items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => void refreshConnection(connection)}
+                    disabled={refreshDisabled}
+                    className="rounded-lg border border-emerald-500/30 px-3 py-2 text-xs font-semibold text-emerald-200 transition hover:border-emerald-400 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {refreshState === 'refreshing'
+                      ? 'Refreshing...'
+                      : refreshState === 'success'
+                        ? 'Refreshed'
+                        : reconnectRequired
+                          ? 'Reconnect required'
+                          : refreshState === 'failed'
+                            ? 'Retry refresh'
+                            : connection.status === 'revoked'
+                              ? 'Unavailable'
+                              : 'Refresh'}
+                  </button>
+                  {refreshState === 'success' && (
+                    <p role="status" className="text-xs text-emerald-300">
+                      Bank transactions refreshed.
+                    </p>
+                  )}
+                  {reconnectRequired && (
+                    <p role="alert" className="text-xs text-amber-200">
+                      Reauthentication is required before this connection can refresh.
+                    </p>
+                  )}
+                  {refreshState === 'failed' && (
+                    <p role="alert" className="text-xs text-red-300">
+                      Unable to refresh this connection. Try again.
+                    </p>
+                  )}
+                </div>
               </li>
             );
           })}

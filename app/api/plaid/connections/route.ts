@@ -1,6 +1,10 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { createRouteHandlerClient } from '@/lib/supabase-server';
+import {
+  createPlaidClientReference,
+  createPlaidConnectionReference,
+} from '@/lib/plaid-connection-ref';
 
 const CLIENT_ID_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 
@@ -160,6 +164,7 @@ export async function GET(request: Request) {
     }
 
     const rows = (itemRows || []) as PlaidItemConnectionRow[];
+    const clientRef = createPlaidClientReference(authorizedClient.id);
     const connections = rows.map((item, index) => {
       const institutionName =
         typeof item.institution_name === 'string'
@@ -174,7 +179,10 @@ export async function GET(request: Request) {
           : 0;
 
       return {
-        key: `connection-${index + 1}`,
+        connectionRef: createPlaidConnectionReference(
+          authorizedClient.id,
+          item.id,
+        ),
         label: institutionName || `Bank connection ${index + 1}`,
         status: item.status,
         accountCount,
@@ -183,7 +191,7 @@ export async function GET(request: Request) {
       };
     });
 
-    return NextResponse.json({ connections });
+    return NextResponse.json({ clientRef, connections });
   } catch {
     return NextResponse.json(
       { error: 'Unable to load connected banks.' },
