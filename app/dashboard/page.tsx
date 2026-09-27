@@ -35,6 +35,8 @@ interface Transaction {
   amount: number;
   category?: string | null;
   ai_category_id?: string | null;
+  status?: 'pending_review' | 'confirmed' | string | null;
+  confidence_score?: number | null;
   canonical_category?: {
     id: string;
     name: string;
@@ -165,6 +167,7 @@ export default function DashboardPage() {
   const [searchTerm, setSearchTerm] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('All Categories');
   const [accountFilter, setAccountFilter] = useState('All Accounts');
+  const [reviewFilter, setReviewFilter] = useState('Needs Review');
 
   const [editingCategoryId, setEditingCategoryId] = useState<string | null>(
     null,
@@ -448,6 +451,13 @@ export default function DashboardPage() {
         accountFilter === 'All Accounts' ||
         account === accountFilter;
 
+      const matchesReview =
+        reviewFilter === 'All Transactions' ||
+        (reviewFilter === 'Needs Review' &&
+          transaction.status === 'pending_review') ||
+        (reviewFilter === 'Confirmed' &&
+          transaction.status === 'confirmed');
+
       const matchesStartDate =
         !startDate || getTransactionDate(transaction) >= startDate;
 
@@ -458,6 +468,7 @@ export default function DashboardPage() {
         matchesSearch &&
         matchesCategory &&
         matchesAccount &&
+        matchesReview &&
         matchesStartDate &&
         matchesEndDate
       );
@@ -467,6 +478,7 @@ export default function DashboardPage() {
     searchTerm,
     categoryFilter,
     accountFilter,
+    reviewFilter,
     startDate,
     endDate,
   ]);
@@ -523,6 +535,7 @@ export default function DashboardPage() {
     setSearchTerm('');
     setCategoryFilter('All Categories');
     setAccountFilter('All Accounts');
+    setReviewFilter('Needs Review');
     setStartDate('');
     setEndDate('');
     setTimeframe('all');
@@ -576,6 +589,7 @@ export default function DashboardPage() {
     setSearchTerm('');
     setCategoryFilter('All Categories');
     setAccountFilter('All Accounts');
+    setReviewFilter('Needs Review');
     setStartDate('');
     setEndDate('');
     setTimeframe('all');
@@ -736,6 +750,7 @@ export default function DashboardPage() {
                 ...transaction,
                 ai_category_id: result.category.id,
                 category: result.category.name,
+                status: 'confirmed',
                 canonical_category: {
                   id: result.category.id,
                   name: result.category.name,
@@ -755,6 +770,50 @@ export default function DashboardPage() {
       console.error('Error updating transaction category:', error);
       setErrorMessage(
         error?.message || 'Unable to update transaction category.',
+      );
+    } finally {
+      setSavingCategoryId(null);
+    }
+  }
+
+  async function handleApproveTransaction(transactionId: string) {
+    if (!selectedClientId) return;
+
+    try {
+      setSavingCategoryId(transactionId);
+      setErrorMessage('');
+      setSuccessMessage('');
+
+      const response = await fetch('/api/transactions/confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          transactionId,
+          clientId: selectedClientId,
+        }),
+      });
+
+      const result = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(result.error || 'Unable to approve transaction.');
+      }
+
+      setTransactions((currentTransactions) =>
+        currentTransactions.map((transaction) =>
+          transaction.id === transactionId
+            ? { ...transaction, status: 'confirmed' }
+            : transaction,
+        ),
+      );
+
+      setSuccessMessage('Transaction approved successfully.');
+    } catch (error: unknown) {
+      console.error('Error approving transaction:', error);
+      setErrorMessage(
+        error instanceof Error
+          ? error.message
+          : 'Unable to approve transaction.',
       );
     } finally {
       setSavingCategoryId(null);
@@ -1568,6 +1627,26 @@ function handleAskQuestion() {
 
               <div>
                 <label
+                  htmlFor="review-filter"
+                  className="mb-2 block text-sm font-medium text-slate-300"
+                >
+                  Review Status
+                </label>
+
+                <select
+                  id="review-filter"
+                  value={reviewFilter}
+                  onChange={(event) => setReviewFilter(event.target.value)}
+                  className="w-full min-w-[160px] rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white outline-none transition focus:border-cyan-400"
+                >
+                  <option value="Needs Review">Needs Review</option>
+                  <option value="Confirmed">Confirmed</option>
+                  <option value="All Transactions">All Transactions</option>
+                </select>
+              </div>
+
+              <div>
+                <label
                   htmlFor="start-date"
                   className="mb-2 block text-sm font-medium text-slate-300"
                 >
@@ -1680,6 +1759,18 @@ function handleAskQuestion() {
                       Category
                     </th>
 
+                    <th className="whitespace-nowrap px-5 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      Confidence
+                    </th>
+
+                    <th className="whitespace-nowrap px-5 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      Status
+                    </th>
+
+                    <th className="whitespace-nowrap px-5 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      Review
+                    </th>
+
                     <th className="whitespace-nowrap px-5 py-3 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
                       Amount
                     </th>
@@ -1690,7 +1781,7 @@ function handleAskQuestion() {
                   {transactionsLoading ? (
                     <tr>
                       <td
-                        colSpan={5}
+                        colSpan={8}
                         className="px-5 py-12 text-center text-sm text-slate-400"
                       >
                         Loading transactions...
@@ -1699,7 +1790,7 @@ function handleAskQuestion() {
                   ) : filteredTransactions.length === 0 ? (
                     <tr>
                       <td
-                        colSpan={5}
+                        colSpan={8}
                         className="px-5 py-12 text-center text-sm text-slate-400"
                       >
                         No transactions found for this client and filter
@@ -1800,6 +1891,45 @@ function handleAskQuestion() {
                                 className="rounded-full bg-slate-800 px-3 py-1 text-left text-xs text-slate-300 transition hover:bg-cyan-500/10 hover:text-cyan-300"
                               >
                                 {category}
+                              </button>
+                            )}
+                          </td>
+
+                          <td className="whitespace-nowrap px-5 py-4 text-sm text-slate-300">
+                            {transaction.confidence_score == null
+                              ? '—'
+                              : `${Math.round(Number(transaction.confidence_score) * 100)}%`}
+                          </td>
+
+                          <td className="whitespace-nowrap px-5 py-4">
+                            <span
+                              className={`inline-flex rounded-full px-2.5 py-1 text-xs font-medium ${
+                                transaction.status === 'confirmed'
+                                  ? 'bg-emerald-500/10 text-emerald-300'
+                                  : 'bg-amber-500/10 text-amber-300'
+                              }`}
+                            >
+                              {transaction.status === 'confirmed'
+                                ? 'Confirmed'
+                                : 'Needs review'}
+                            </span>
+                          </td>
+
+                          <td className="whitespace-nowrap px-5 py-4">
+                            {transaction.status === 'confirmed' ? (
+                              <span className="text-xs font-medium text-emerald-300">
+                                Confirmed
+                              </span>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  handleApproveTransaction(transaction.id)
+                                }
+                                disabled={isSaving}
+                                className="rounded-lg border border-emerald-500/50 px-3 py-1.5 text-xs font-semibold text-emerald-300 transition hover:bg-emerald-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+                              >
+                                {isSaving ? 'Approving...' : 'Approve'}
                               </button>
                             )}
                           </td>
