@@ -1,6 +1,11 @@
 import { NextResponse } from 'next/server';
 import { createRouteHandlerClient } from '@/lib/supabase-server';
 import { createClient } from '@supabase/supabase-js';
+import {
+  createPlaidClientReference,
+  createPlaidConnectionReference,
+  matchesPlaidReference,
+} from '@/lib/plaid-connection-ref';
 
 export const dynamic = 'force-dynamic';
 
@@ -8,13 +13,12 @@ function createServiceRoleClient() {
   return createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.SUPABASE_SERVICE_ROLE_KEY!,
-    {
-      auth: {
-        persistSession: false,
-        autoRefreshToken: false,
-      },
-    },
+    { auth: { persistSession: false, autoRefreshToken: false } },
   );
+}
+
+function failedResponse(status: number, error: string) {
+  return NextResponse.json({ success: false, error }, { status });
 }
 
 export async function POST(req: Request) {
@@ -26,23 +30,19 @@ export async function POST(req: Request) {
     } = await authClient.auth.getUser();
 
     if (authError || !user) {
-      return NextResponse.json(
-        { success: false, error: 'Not authenticated.' },
-        { status: 401 },
-      );
+      return failedResponse(401, 'Not authenticated.');
     }
 
     const body = await req.json().catch(() => ({}));
     const plaidItemDatabaseId = body?.plaid_item_database_id;
+    const clientRef = body?.clientRef;
+    const connectionRef = body?.connectionRef;
+    const usesOpaqueReferences =
+      typeof clientRef === 'string' && typeof connectionRef === 'string';
+    const usesLegacyId = typeof plaidItemDatabaseId === 'string';
 
-    if (
-      !plaidItemDatabaseId ||
-      typeof plaidItemDatabaseId !== 'string'
-    ) {
-      return NextResponse.json(
-        { success: false, error: 'A Plaid Item is required.' },
-        { status: 400 },
-      );
+    if (!usesOpaqueReferences && !usesLegacyId) {
+      return failedResponse(400, 'A Plaid connection is required.');
     }
 
     const db = createServiceRoleClient();
@@ -52,50 +52,76 @@ export async function POST(req: Request) {
       .eq('user_id', user.id);
 
     if (membershipError) {
-      return NextResponse.json(
-        { success: false, error: 'Unable to verify firm membership.' },
-        { status: 500 },
-      );
+      return failedResponse(500, 'Unable to verify firm membership.');
     }
 
-    const firmIds = (memberships || []).map((membership) => membership.firm_id);
+    const firmIds = Array.from(
+      new Set((memberships || []).map((membership) => membership.firm_id)),
+    );
 
     if (firmIds.length === 0) {
-      return NextResponse.json(
-        { success: false, error: 'You are not associated with an accounting firm.' },
-        { status: 403 },
-      );
+      return failedResponse(403, 'You are not associated with an accounting firm.');
     }
 
-    const { data: item, error: itemError } = await db
-      .from('plaid_items')
-      .select('id, status, clients!inner(firm_id)')
-      .eq('id', plaidItemDatabaseId)
-      .in('clients.firm_id', firmIds)
-      .maybeSingle();
+    let item: { id: string; status: string } | null = null;
 
-    if (itemError) {
-      return NextResponse.json(
-        { success: false, error: 'Unable to verify the Plaid Item.' },
-        { status: 500 },
+    if (usesOpaqueReferences) {
+      const { data: clients, error: clientsError } = await db
+        .from('clients')
+        .select('id, status')
+        .in('firm_id', firmIds);
+
+      if (clientsError) {
+        return failedResponse(500, 'Unable to verify the LedgerAI client.');
+      }
+
+      const selectedClient = (clients || []).find((client) =>
+        matchesPlaidReference(clientRef, createPlaidClientReference(client.id)),
       );
+
+      if (!selectedClient || selectedClient.status !== 'active') {
+        return failedResponse(404, 'The Plaid connection was not found.');
+      }
+
+      const { data: items, error: itemsError } = await db
+        .from('plaid_items')
+        .select('id, status')
+        .eq('client_id', selectedClient.id)
+        .not('plaid_item_id', 'like', 'item_test_%')
+        .in('status', ['active', 'error']);
+
+      if (itemsError) {
+        return failedResponse(500, 'Unable to verify the Plaid connection.');
+      }
+
+      item =
+        (items || []).find((candidate) =>
+          matchesPlaidReference(
+            connectionRef,
+            createPlaidConnectionReference(selectedClient.id, candidate.id),
+          ),
+        ) || null;
+    } else {
+      const { data: legacyItem, error: itemError } = await db
+        .from('plaid_items')
+        .select('id, status, clients!inner(firm_id)')
+        .eq('id', plaidItemDatabaseId)
+        .in('clients.firm_id', firmIds)
+        .maybeSingle();
+
+      if (itemError) {
+        return failedResponse(500, 'Unable to verify the Plaid Item.');
+      }
+
+      item = legacyItem ? { id: legacyItem.id, status: legacyItem.status } : null;
     }
 
     if (!item) {
-      return NextResponse.json(
-        { success: false, error: 'The Plaid Item was not found.' },
-        { status: 404 },
-      );
+      return failedResponse(404, 'The Plaid connection was not found.');
     }
 
     if (item.status === 'revoked') {
-      return NextResponse.json(
-        {
-          success: false,
-          error: 'The Plaid Item is revoked and cannot be reconnected.',
-        },
-        { status: 400 },
-      );
+      return failedResponse(400, 'The Plaid Item is revoked and cannot be reconnected.');
     }
 
     const { data: updatedItem, error: updateError } = await db
@@ -106,33 +132,17 @@ export async function POST(req: Request) {
       .select('id')
       .maybeSingle();
 
-    if (updateError) {
-      return NextResponse.json(
-        { success: false, error: 'Unable to reactivate the Plaid Item.' },
-        { status: 500 },
-      );
+    if (updateError || !updatedItem || updatedItem.id !== item.id) {
+      return failedResponse(500, 'Unable to complete Plaid reconnection.');
     }
-
-    if (!updatedItem || updatedItem.id !== item.id) {
-      return NextResponse.json(
-        { success: false, error: 'Unable to complete Plaid reconnection.' },
-        { status: 500 },
-      );
-    }
-
-    return NextResponse.json({
-      success: true,
-      plaid_item_database_id: item.id,
-    });
-  } catch (error: any) {
-    console.error(
-      '[plaid/reconnect/complete] Failed:',
-      error?.message || error,
-    );
 
     return NextResponse.json(
-      { success: false, error: 'Unable to complete Plaid reconnection.' },
-      { status: 500 },
+      usesOpaqueReferences
+        ? { success: true }
+        : { success: true, plaid_item_database_id: item.id },
     );
+  } catch (error: any) {
+    console.error('[plaid/reconnect/complete] Failed:', error?.message || error);
+    return failedResponse(500, 'Unable to complete Plaid reconnection.');
   }
 }
