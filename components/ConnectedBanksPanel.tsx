@@ -16,6 +16,7 @@ interface ConnectedBanksPanelProps {
   clientId: string;
   refreshKey: number;
   onTransactionsReload: () => void;
+  mode?: 'summary' | 'management';
 }
 
 type RefreshState = 'idle' | 'refreshing' | 'success' | 'reconnect_required' | 'failed';
@@ -42,10 +43,9 @@ function getStatusPresentation(status: string) {
   return { label: 'Status unavailable', className: 'border-slate-600 bg-slate-800 text-slate-300' };
 }
 
-export default function ConnectedBanksPanel({ clientId, refreshKey, onTransactionsReload }: ConnectedBanksPanelProps) {
+export default function ConnectedBanksPanel({ clientId, refreshKey, onTransactionsReload, mode = 'summary' }: ConnectedBanksPanelProps) {
   const [inventoryRevision, setInventoryRevision] = useState(0);
   const [refreshStates, setRefreshStates] = useState<Record<string, RefreshState>>({});
-  const [managementClientId, setManagementClientId] = useState<string | null>(null);
   const [expandedClientId, setExpandedClientId] = useState<string | null>(null);
   const refreshingReferences = useRef(new Set<string>());
   const [loadState, setLoadState] = useState<ConnectionLoadState>({
@@ -73,12 +73,12 @@ export default function ConnectedBanksPanel({ clientId, refreshKey, onTransactio
   const isLoading = !isCurrentLoad || loadState.status === 'loading';
   const hasError = isCurrentLoad && loadState.status === 'error';
   const connections = isCurrentLoad && loadState.status === 'success' ? loadState.connections : [];
-  const isManaging = managementClientId === clientId;
   const showAll = expandedClientId === clientId;
   const visibleConnections = showAll ? connections : connections.slice(0, 6);
   const connectedCount = connections.filter((connection) => connection.status === 'active').length;
   const attentionCount = connections.filter((connection) => connection.status === 'error').length;
   const unavailableCount = connections.length - connectedCount - attentionCount;
+  const isManagement = mode === 'management';
 
   async function refreshConnection(connection: Connection) {
     const connectionRef = connection.connectionRef;
@@ -116,29 +116,21 @@ export default function ConnectedBanksPanel({ clientId, refreshKey, onTransactio
     <section aria-labelledby="connected-banks-title" aria-busy={isLoading} className="rounded-2xl border border-slate-800 bg-slate-900 p-5 shadow-xl sm:p-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 id="connected-banks-title" className="text-lg font-semibold text-white">Connected banks</h2>
-          {!isLoading && !hasError && connections.length > 0 && !isManaging && (
+          <h2 id="connected-banks-title" className="text-lg font-semibold text-white">{isManagement ? 'Bank management' : 'Connected banks'}</h2>
+          {!isLoading && !hasError && connections.length > 0 && !isManagement && (
             <p className="mt-1 text-sm text-slate-400">{connections.length} total · {connectedCount} connected{attentionCount > 0 ? ` · ${attentionCount} need${attentionCount === 1 ? 's' : ''} attention` : ''}{unavailableCount > 0 ? ` · ${unavailableCount} unavailable` : ''}</p>
           )}
+          {isManagement && <p className="mt-1 text-sm text-slate-400">Review, refresh, and repair this client&apos;s bank connections.</p>}
         </div>
-        {!isLoading && !hasError && connections.length > 0 && (
-          <button
-            type="button"
-            onClick={() => {
-              setManagementClientId(isManaging ? null : clientId);
-              if (isManaging) setExpandedClientId(null);
-            }}
-            className="rounded-lg border border-slate-700 px-4 py-2 text-xs font-semibold text-slate-200 transition hover:border-emerald-500/50 hover:text-white"
-          >
-            {isManaging ? 'Close bank management' : 'Manage banks'}
-          </button>
+        {!isLoading && !hasError && connections.length > 0 && !isManagement && (
+          <a href={`/dashboard/banks?clientId=${encodeURIComponent(clientId)}`} className="rounded-lg border border-slate-700 px-4 py-2 text-xs font-semibold text-slate-200 transition hover:border-emerald-500/50 hover:text-white">Manage banks</a>
         )}
       </div>
 
       {isLoading ? <p role="status" className="mt-4 text-sm text-slate-400">Loading connected banks...</p>
         : hasError ? <p role="alert" className="mt-4 text-sm text-red-300">Unable to load connected banks.</p>
         : connections.length === 0 ? <p className="mt-4 text-sm text-slate-400">No bank connections yet.</p>
-        : !isManaging ? (
+        : !isManagement ? (
           <div className="mt-4 flex flex-wrap gap-2 text-xs">
             <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 font-medium text-emerald-300">{connectedCount} connected</span>
             {attentionCount > 0 && <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 font-medium text-amber-200">{attentionCount} need{attentionCount === 1 ? 's' : ''} attention</span>}
@@ -146,7 +138,7 @@ export default function ConnectedBanksPanel({ clientId, refreshKey, onTransactio
           </div>
         ) : <>
           <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-slate-800 pt-4">
-            <p className="text-sm font-medium text-slate-200">Bank management</p>
+            <p className="text-sm font-medium text-slate-200">Connections</p>
             <span className="text-xs text-slate-500">{connections.length} connection{connections.length === 1 ? '' : 's'}</span>
           </div>
           <ul className="mt-4 grid min-w-0 gap-3 sm:grid-cols-2 2xl:grid-cols-3">
@@ -167,12 +159,7 @@ export default function ConnectedBanksPanel({ clientId, refreshKey, onTransactio
                 </dl>
                 <div className="mt-4 flex flex-wrap items-center gap-3">
                   {reconnectRequired && loadState.clientRef ? (
-                    <PlaidLinkButton
-                      reconnectClientRef={loadState.clientRef}
-                      reconnectConnectionRef={connection.connectionRef}
-                      reconnectLabel="Reconnect"
-                      onReconnected={() => handleReconnected(connection)}
-                    />
+                    <PlaidLinkButton reconnectClientRef={loadState.clientRef} reconnectConnectionRef={connection.connectionRef} reconnectLabel="Reconnect" onReconnected={() => handleReconnected(connection)} />
                   ) : (
                     <button type="button" onClick={() => void refreshConnection(connection)} disabled={refreshDisabled} className="rounded-lg border border-emerald-500/30 px-3 py-2 text-xs font-semibold text-emerald-200 transition hover:border-emerald-400 hover:text-white disabled:cursor-not-allowed disabled:opacity-50">
                       {refreshState === 'refreshing' ? 'Refreshing...' : refreshState === 'success' ? 'Refreshed' : refreshState === 'failed' ? 'Retry refresh' : connection.status === 'revoked' ? 'Unavailable' : 'Refresh'}
