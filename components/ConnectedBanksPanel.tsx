@@ -45,7 +45,7 @@ function getStatusPresentation(status: string) {
 export default function ConnectedBanksPanel({ clientId, refreshKey, onTransactionsReload }: ConnectedBanksPanelProps) {
   const [inventoryRevision, setInventoryRevision] = useState(0);
   const [refreshStates, setRefreshStates] = useState<Record<string, RefreshState>>({});
-  const [showAll, setShowAll] = useState(false);
+  const [expandedClientId, setExpandedClientId] = useState<string | null>(null);
   const refreshingReferences = useRef(new Set<string>());
   const [loadState, setLoadState] = useState<ConnectionLoadState>({
     clientId: '', refreshKey: -1, inventoryRevision: -1, status: 'loading', clientRef: null, connections: [],
@@ -68,12 +68,11 @@ export default function ConnectedBanksPanel({ clientId, refreshKey, onTransactio
     return () => { current = false; controller.abort(); };
   }, [clientId, refreshKey, inventoryRevision]);
 
-  useEffect(() => { setShowAll(false); }, [clientId]);
-
   const isCurrentLoad = loadState.clientId === clientId && loadState.refreshKey === refreshKey && loadState.inventoryRevision === inventoryRevision;
   const isLoading = !isCurrentLoad || loadState.status === 'loading';
   const hasError = isCurrentLoad && loadState.status === 'error';
   const connections = isCurrentLoad && loadState.status === 'success' ? loadState.connections : [];
+  const showAll = expandedClientId === clientId;
   const visibleConnections = showAll ? connections : connections.slice(0, 6);
 
   async function refreshConnection(connection: Connection) {
@@ -157,7 +156,7 @@ export default function ConnectedBanksPanel({ clientId, refreshKey, onTransactio
           </ul>
           {connections.length > 6 && (
             <div className="mt-4 flex justify-center">
-              <button type="button" onClick={() => setShowAll((value) => !value)} className="rounded-lg border border-slate-700 px-4 py-2 text-xs font-semibold text-slate-300 transition hover:border-slate-500 hover:text-white">
+              <button type="button" onClick={() => setExpandedClientId(showAll ? null : clientId)} className="rounded-lg border border-slate-700 px-4 py-2 text-xs font-semibold text-slate-300 transition hover:border-slate-500 hover:text-white">
                 {showAll ? 'Show fewer' : `Show all ${connections.length} connections`}
               </button>
             </div>
