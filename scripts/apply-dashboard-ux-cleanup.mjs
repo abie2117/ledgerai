@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 
 const path = 'app/dashboard/page.tsx';
-let source = fs.readFileSync(path, 'utf8');
+let source = fs.readFileSync(path, 'utf8').replace(/\r\n/g, '\n');
 const original = source;
 
 function replaceOnce(label, from, to) {
@@ -60,15 +60,12 @@ replaceOnce(
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">`,
 );
 
-// The emoji is intentionally excluded from the match because Windows console/code-page
-// handling can make a literal emoji matcher unreliable even though page.tsx is valid UTF-8.
 replaceOnce(
   'assistant heading',
   `Ask anything about your finances`,
   `Ask anything about your finances`,
 );
 
-// Replace the assistant card opener separately, using only ASCII source text.
 replaceOnce(
   'assistant card opener',
   `        <section className="rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-xl">\n          <div className="mb-4">\n            <h2 className="text-lg font-semibold text-white">`,
