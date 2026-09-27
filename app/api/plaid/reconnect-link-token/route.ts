@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import {
   Configuration,
+  CountryCode,
+  LinkTokenCreateRequest,
   PlaidApi,
   PlaidEnvironments,
 } from 'plaid';
@@ -14,6 +16,15 @@ import {
 } from '@/lib/plaid-connection-ref';
 
 export const dynamic = 'force-dynamic';
+
+type ReconnectItem = {
+  id: string;
+  client_id: string;
+  plaid_item_id: string;
+  access_token_encrypted: unknown;
+  token_key_version: number;
+  status?: string | null;
+};
 
 const plaidEnv =
   (process.env.PLAID_ENV as keyof typeof PlaidEnvironments) ||
@@ -87,7 +98,7 @@ export async function POST(req: Request) {
       return failedResponse(403, 'You are not associated with an accounting firm.');
     }
 
-    let item: any = null;
+    let item: ReconnectItem | null = null;
 
     if (usesOpaqueReferences) {
       const { data: clients, error: clientsError } = await db
@@ -122,12 +133,13 @@ export async function POST(req: Request) {
         return failedResponse(500, 'Unable to verify the Plaid connection.');
       }
 
-      item = (items || []).find((candidate) =>
-        matchesPlaidReference(
-          connectionRef,
-          createPlaidConnectionReference(selectedClient.id, candidate.id),
-        ),
-      );
+      item =
+        (items || []).find((candidate) =>
+          matchesPlaidReference(
+            connectionRef,
+            createPlaidConnectionReference(selectedClient.id, candidate.id),
+          ),
+        ) || null;
     } else {
       const { data: legacyItem, error: itemError } = await db
         .from('plaid_items')
@@ -157,7 +169,16 @@ export async function POST(req: Request) {
         return failedResponse(400, 'The selected LedgerAI client is not active.');
       }
 
-      item = legacyItem;
+      item = legacyItem
+        ? {
+            id: legacyItem.id,
+            client_id: legacyItem.client_id,
+            plaid_item_id: legacyItem.plaid_item_id,
+            access_token_encrypted: legacyItem.access_token_encrypted,
+            token_key_version: legacyItem.token_key_version,
+            status: legacyItem.status,
+          }
+        : null;
     }
 
     if (!item) {
@@ -165,13 +186,14 @@ export async function POST(req: Request) {
     }
 
     const accessToken = await readPlaidAccessToken(item);
-    const response = await plaidClient.linkTokenCreate({
+    const request: LinkTokenCreateRequest = {
       user: { client_user_id: `ledgerai-client-${item.client_id}` },
       client_name: 'LedgerAI App',
       language: 'en',
-      country_codes: ['US'] as any,
+      country_codes: [CountryCode.Us],
       access_token: accessToken,
-    } as any);
+    };
+    const response = await plaidClient.linkTokenCreate(request);
 
     return NextResponse.json(
       usesOpaqueReferences
@@ -182,10 +204,10 @@ export async function POST(req: Request) {
             plaid_item_database_id: item.id,
           },
     );
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error(
       '[plaid/reconnect-link-token] Failed:',
-      error?.response?.data || error?.message || error,
+      error instanceof Error ? error.message : error,
     );
     return failedResponse(500, 'Unable to initialize Plaid reconnection.');
   }
