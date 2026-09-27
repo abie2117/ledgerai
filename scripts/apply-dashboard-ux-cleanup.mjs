@@ -60,8 +60,8 @@ replaceOnce(
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">`,
 );
 
-// The original KPI section's </section> now needs to close both the inserted KPI grid
-// and the new overview section. Keep the assistant itself as a sibling section.
+// The original KPI section was a section element. After wrapping it in the new overview
+// section it becomes a div, so close that div first, then close the overview section.
 replaceOnce(
   'overview to assistant boundary',
   `          </div>
@@ -71,6 +71,7 @@ replaceOnce(
           <div className="mb-4">
             <h2 className="text-lg font-semibold text-white">`,
   `          </div>
+        </div>
         </section>
 
         <section id="assistant" className="scroll-mt-6 rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-xl">
