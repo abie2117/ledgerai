@@ -80,15 +80,7 @@ export default function PlaidLinkButton({
   ]);
 
   useEffect(() => {
-    if (isOpaqueReconnect) {
-      setToken(null);
-      setErrorMessage(null);
-      return;
-    }
-
-    if (!selectedClientId) {
-      setToken(null);
-      setErrorMessage(null);
+    if (isOpaqueReconnect || !selectedClientId) {
       return;
     }
 
@@ -96,7 +88,7 @@ export default function PlaidLinkButton({
   }, [selectedClientId, isOpaqueReconnect, fetchLinkToken]);
 
   const onSuccess = useCallback(
-    async (_publicToken: string) => {
+    async (publicToken: string) => {
       try {
         setIsExchanging(true);
         setErrorMessage(null);
@@ -133,7 +125,7 @@ export default function PlaidLinkButton({
           credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            public_token: _publicToken,
+            public_token: publicToken,
             client_id: selectedClientId,
           }),
         });
