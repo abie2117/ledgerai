@@ -141,8 +141,11 @@ export async function POST(req: Request) {
         ? { success: true }
         : { success: true, plaid_item_database_id: item.id },
     );
-  } catch (error: any) {
-    console.error('[plaid/reconnect/complete] Failed:', error?.message || error);
+  } catch (error: unknown) {
+    console.error(
+      '[plaid/reconnect/complete] Failed:',
+      error instanceof Error ? error.message : error,
+    );
     return failedResponse(500, 'Unable to complete Plaid reconnection.');
   }
 }
