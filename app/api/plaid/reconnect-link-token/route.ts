@@ -7,6 +7,11 @@ import {
 import { createRouteHandlerClient } from '@/lib/supabase-server';
 import { createClient } from '@supabase/supabase-js';
 import { readPlaidAccessToken } from '@/lib/plaid-token-storage';
+import {
+  createPlaidClientReference,
+  createPlaidConnectionReference,
+  matchesPlaidReference,
+} from '@/lib/plaid-connection-ref';
 
 export const dynamic = 'force-dynamic';
 
@@ -31,12 +36,13 @@ function createServiceRoleClient() {
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.SUPABASE_SERVICE_ROLE_KEY!,
     {
-      auth: {
-        persistSession: false,
-        autoRefreshToken: false,
-      },
+      auth: { persistSession: false, autoRefreshToken: false },
     },
   );
+}
+
+function failedResponse(status: number, error: string) {
+  return NextResponse.json({ success: false, error }, { status });
 }
 
 export async function POST(req: Request) {
@@ -48,26 +54,19 @@ export async function POST(req: Request) {
     } = await authClient.auth.getUser();
 
     if (authError || !user) {
-      return NextResponse.json(
-        { success: false, error: 'Not authenticated.' },
-        { status: 401 },
-      );
+      return failedResponse(401, 'Not authenticated.');
     }
 
     const body = await req.json().catch(() => ({}));
     const plaidItemDatabaseId = body?.plaid_item_database_id;
+    const clientRef = body?.clientRef;
+    const connectionRef = body?.connectionRef;
+    const usesOpaqueReferences =
+      typeof clientRef === 'string' && typeof connectionRef === 'string';
+    const usesLegacyId = typeof plaidItemDatabaseId === 'string';
 
-    if (
-      !plaidItemDatabaseId ||
-      typeof plaidItemDatabaseId !== 'string'
-    ) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: 'A Plaid Item is required to reconnect a bank.',
-        },
-        { status: 400 },
-      );
+    if (!usesOpaqueReferences && !usesLegacyId) {
+      return failedResponse(400, 'A Plaid connection is required.');
     }
 
     const db = createServiceRoleClient();
@@ -77,93 +76,117 @@ export async function POST(req: Request) {
       .eq('user_id', user.id);
 
     if (membershipError) {
-      return NextResponse.json(
-        { success: false, error: 'Unable to verify firm membership.' },
-        { status: 500 },
-      );
+      return failedResponse(500, 'Unable to verify firm membership.');
     }
 
-    const firmIds = (memberships || []).map((membership) => membership.firm_id);
+    const firmIds = Array.from(
+      new Set((memberships || []).map((membership) => membership.firm_id)),
+    );
 
     if (firmIds.length === 0) {
-      return NextResponse.json(
-        { success: false, error: 'You are not associated with an accounting firm.' },
-        { status: 403 },
-      );
+      return failedResponse(403, 'You are not associated with an accounting firm.');
     }
 
-    const { data: item, error: itemError } = await db
-      .from('plaid_items')
-      .select(`
-        id,
-        client_id,
-        plaid_item_id,
-        access_token_encrypted,
-        token_key_version,
-        clients!inner (firm_id, status)
-      `)
-      .eq('id', plaidItemDatabaseId)
-      .in('clients.firm_id', firmIds)
-      .in('status', ['active', 'error'])
-      .maybeSingle();
+    let item: any = null;
 
-    if (itemError) {
-      console.error('[plaid/reconnect-link-token] Item lookup failed:', itemError);
-      return NextResponse.json(
-        { success: false, error: 'Unable to verify the Plaid Item.' },
-        { status: 500 },
+    if (usesOpaqueReferences) {
+      const { data: clients, error: clientsError } = await db
+        .from('clients')
+        .select('id, status')
+        .in('firm_id', firmIds);
+
+      if (clientsError) {
+        return failedResponse(500, 'Unable to verify the LedgerAI client.');
+      }
+
+      const selectedClient = (clients || []).find((client) =>
+        matchesPlaidReference(clientRef, createPlaidClientReference(client.id)),
       );
+
+      if (!selectedClient) {
+        return failedResponse(404, 'The Plaid connection was not found.');
+      }
+
+      if (selectedClient.status !== 'active') {
+        return failedResponse(400, 'The selected LedgerAI client is not active.');
+      }
+
+      const { data: items, error: itemsError } = await db
+        .from('plaid_items')
+        .select('id, client_id, plaid_item_id, access_token_encrypted, token_key_version, status')
+        .eq('client_id', selectedClient.id)
+        .not('plaid_item_id', 'like', 'item_test_%')
+        .in('status', ['active', 'error']);
+
+      if (itemsError) {
+        return failedResponse(500, 'Unable to verify the Plaid connection.');
+      }
+
+      item = (items || []).find((candidate) =>
+        matchesPlaidReference(
+          connectionRef,
+          createPlaidConnectionReference(selectedClient.id, candidate.id),
+        ),
+      );
+    } else {
+      const { data: legacyItem, error: itemError } = await db
+        .from('plaid_items')
+        .select(`
+          id,
+          client_id,
+          plaid_item_id,
+          access_token_encrypted,
+          token_key_version,
+          status,
+          clients!inner (firm_id, status)
+        `)
+        .eq('id', plaidItemDatabaseId)
+        .in('clients.firm_id', firmIds)
+        .in('status', ['active', 'error'])
+        .maybeSingle();
+
+      if (itemError) {
+        return failedResponse(500, 'Unable to verify the Plaid Item.');
+      }
+
+      const clientRecord = Array.isArray(legacyItem?.clients)
+        ? legacyItem.clients[0]
+        : legacyItem?.clients;
+
+      if (legacyItem && clientRecord?.status !== 'active') {
+        return failedResponse(400, 'The selected LedgerAI client is not active.');
+      }
+
+      item = legacyItem;
     }
 
     if (!item) {
-      return NextResponse.json(
-        { success: false, error: 'The Plaid Item was not found.' },
-        { status: 404 },
-      );
-    }
-
-    const clientRecord = Array.isArray(item.clients)
-      ? item.clients[0]
-      : item.clients;
-
-    if (clientRecord?.status !== 'active') {
-      return NextResponse.json(
-        { success: false, error: 'The selected LedgerAI client is not active.' },
-        { status: 400 },
-      );
+      return failedResponse(404, 'The Plaid connection was not found.');
     }
 
     const accessToken = await readPlaidAccessToken(item);
     const response = await plaidClient.linkTokenCreate({
-      user: {
-        client_user_id: `ledgerai-client-${item.client_id}`,
-      },
+      user: { client_user_id: `ledgerai-client-${item.client_id}` },
       client_name: 'LedgerAI App',
       language: 'en',
       country_codes: ['US'] as any,
       access_token: accessToken,
     } as any);
 
-    return NextResponse.json({
-      success: true,
-      link_token: response.data.link_token,
-      plaid_item_database_id: item.id,
-    });
+    return NextResponse.json(
+      usesOpaqueReferences
+        ? { success: true, link_token: response.data.link_token }
+        : {
+            success: true,
+            link_token: response.data.link_token,
+            plaid_item_database_id: item.id,
+          },
+    );
   } catch (error: any) {
     console.error(
       '[plaid/reconnect-link-token] Failed:',
       error?.response?.data || error?.message || error,
     );
-
-    return NextResponse.json(
-      {
-        success: false,
-        error:
-          error?.response?.data?.error_message ||
-          error?.message ||
-          'Unable to initialize Plaid reconnection.',
-      },
-      { status: 500 },
-    );
+    return failedResponse(500, 'Unable to initialize Plaid reconnection.');
   }
 }
