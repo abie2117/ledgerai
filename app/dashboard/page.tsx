@@ -1246,7 +1246,7 @@ function handleAskQuestion() {
               <div>
                 <div className="flex flex-wrap items-center gap-2.5">
                   <h1 className="text-2xl font-extrabold tracking-[-0.03em] text-white sm:text-3xl">
-                    Ledger<span className="text-cyan-400">AI</span>
+                    Ledger<span className="text-violet-400">AI</span>
                   </h1>
                   <span className="rounded-md border border-cyan-500/40 bg-cyan-500/10 px-2 py-1 text-[10px] font-bold uppercase tracking-[0.18em] text-cyan-300">
                     Enterprise
@@ -1658,7 +1658,7 @@ function handleAskQuestion() {
               />
             </div>
 
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 xl:items-end">
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-[minmax(180px,1.1fr)_minmax(180px,1.1fr)_minmax(160px,1fr)_minmax(155px,0.9fr)_minmax(155px,0.9fr)_auto] xl:items-end">
               <div>
                 <label
                   htmlFor="category-filter"
@@ -1827,6 +1827,10 @@ function handleAskQuestion() {
                 <thead className="bg-slate-950/60">
                   <tr>
                     <th className="whitespace-nowrap px-5 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      #
+                    </th>
+
+                    <th className="whitespace-nowrap px-5 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
                       Date
                     </th>
 
@@ -1864,7 +1868,7 @@ function handleAskQuestion() {
                   {transactionsLoading ? (
                     <tr>
                       <td
-                        colSpan={8}
+                        colSpan={9}
                         className="px-5 py-12 text-center text-sm text-slate-400"
                       >
                         Loading transactions...
@@ -1873,7 +1877,7 @@ function handleAskQuestion() {
                   ) : filteredTransactions.length === 0 ? (
                     <tr>
                       <td
-                        colSpan={8}
+                        colSpan={9}
                         className="px-5 py-12 text-center text-sm text-slate-400"
                       >
                         No transactions found for this client and filter
@@ -1881,7 +1885,7 @@ function handleAskQuestion() {
                       </td>
                     </tr>
                   ) : (
-                    dashboardTransactions.map((transaction) => {
+                    dashboardTransactions.map((transaction, transactionIndex) => {
                       const category =
                         getTransactionCategory(transaction);
 
@@ -1896,6 +1900,10 @@ function handleAskQuestion() {
                           key={transaction.id}
                           className="transition hover:bg-slate-800/40"
                         >
+                          <td className="whitespace-nowrap px-5 py-4 text-sm font-medium text-slate-500">
+                            {transactionPageStart + transactionIndex + 1}
+                          </td>
+
                           <td className="whitespace-nowrap px-5 py-4 text-sm text-slate-300">
                             {formatDate(getTransactionDate(transaction))}
                           </td>
