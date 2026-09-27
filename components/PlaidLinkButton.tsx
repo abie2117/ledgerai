@@ -80,11 +80,13 @@ export default function PlaidLinkButton({
   ]);
 
   useEffect(() => {
-    if (isOpaqueReconnect || !selectedClientId) {
-      return;
-    }
+    if (isOpaqueReconnect || !selectedClientId) return;
 
-    void fetchLinkToken();
+    const timer = window.setTimeout(() => {
+      void fetchLinkToken();
+    }, 0);
+
+    return () => window.clearTimeout(timer);
   }, [selectedClientId, isOpaqueReconnect, fetchLinkToken]);
 
   const onSuccess = useCallback(
