@@ -1,9 +1,10 @@
 'use client';
 
+import { Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import ConnectedBanksPanel from '@/components/ConnectedBanksPanel';
 
-export default function BankManagementPage() {
+function BankManagementContent() {
   const searchParams = useSearchParams();
   const clientId = searchParams.get('clientId') ?? '';
   const dashboardHref = clientId ? `/dashboard?clientId=${encodeURIComponent(clientId)}` : '/dashboard';
@@ -41,5 +42,13 @@ export default function BankManagementPage() {
         )}
       </div>
     </main>
+  );
+}
+
+export default function BankManagementPage() {
+  return (
+    <Suspense fallback={<main className="min-h-screen bg-slate-950" />}>
+      <BankManagementContent />
+    </Suspense>
   );
 }
