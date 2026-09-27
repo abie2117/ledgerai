@@ -61,15 +61,24 @@ replaceOnce(
 );
 
 replaceOnce(
-  'assistant heading',
-  `Ask anything about your finances`,
-  `Ask anything about your finances`,
+  'close overview before assistant',
+  `          </div>
+        </section>
+
+        <section className="rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-xl">`,
+  `          </div>
+        </section>
+
+        <section className="rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-xl">`,
 );
+
+// The replacement above deliberately validates the exact KPI/assistant boundary. Add the
+// missing wrapper close immediately before the assistant after all other replacements.
 
 replaceOnce(
   'assistant card opener',
   `        <section className="rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-xl">\n          <div className="mb-4">\n            <h2 className="text-lg font-semibold text-white">`,
-  `        </section>\n\n        <section id="assistant" className="scroll-mt-6 rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-xl">\n          <div className="mb-4">\n            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-violet-400">LedgerAI intelligence</p>\n            <h2 className="mt-1 text-lg font-semibold text-white">`,
+  `          </div>\n        </section>\n\n        <section id="assistant" className="scroll-mt-6 rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-xl">\n          <div className="mb-4">\n            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-violet-400">LedgerAI intelligence</p>\n            <h2 className="mt-1 text-lg font-semibold text-white">`,
 );
 
 replaceOnce(
