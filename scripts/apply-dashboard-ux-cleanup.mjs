@@ -61,18 +61,11 @@ replaceOnce(
 );
 
 replaceOnce(
-  'assistant section transition',
-  `        </section>
-
-        <section className="rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-xl">
-          <div className="mb-4">
+  'assistant heading',
+  `          <div className="mb-4">
             <h2 className="text-lg font-semibold text-white">
               🔍 Ask anything about your finances`,
-  `          </div>
-        </section>
-
-        <section id="assistant" className="scroll-mt-6 rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-xl">
-          <div className="mb-4">
+  `          <div className="mb-4">
             <p className="text-xs font-semibold uppercase tracking-[0.16em] text-violet-400">LedgerAI intelligence</p>
             <h2 className="mt-1 text-lg font-semibold text-white">
               Ask anything about your finances`,
@@ -122,6 +115,14 @@ replaceOnce(
             </div>
           </details>
         )}`,
+);
+
+// Close the overview wrapper immediately before the AI assistant card.
+const overviewCloseNeedle = `        <section className="rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-xl">\n          <div className="mb-4">\n            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-violet-400">LedgerAI intelligence</p>`;
+replaceOnce(
+  'overview section close',
+  overviewCloseNeedle,
+  `        </section>\n\n${overviewCloseNeedle}`,
 );
 
 if (source === original) {
