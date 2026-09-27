@@ -61,9 +61,8 @@ replaceOnce(
 );
 
 replaceOnce(
-  'overview section close',
-  `          </div>
-        </section>
+  'assistant section transition',
+  `        </section>
 
         <section className="rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-xl">
           <div className="mb-4">
