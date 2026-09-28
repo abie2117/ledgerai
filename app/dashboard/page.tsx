@@ -1188,7 +1188,7 @@ function handleAskQuestion() {
   }
 
   return (
-    <main className="min-h-screen bg-slate-950 px-4 py-6 text-white sm:px-6 lg:px-8">
+    <main className="min-h-screen overflow-x-hidden bg-slate-950 px-4 py-6 text-white sm:px-6 lg:px-8">
       <div className="mx-auto max-w-7xl space-y-6">
         <header className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900 shadow-xl">
           <div className="flex flex-col gap-6 border-b border-slate-800 px-5 py-5 sm:px-6 lg:flex-row lg:items-center lg:justify-between">
@@ -1246,7 +1246,7 @@ function handleAskQuestion() {
               <div>
                 <div className="flex flex-wrap items-center gap-2.5">
                   <h1 className="text-2xl font-extrabold tracking-[-0.03em] text-white sm:text-3xl">
-                    Ledger<span className="text-violet-400">AI</span>
+                    Ledger<span className="text-sky-400">AI</span>
                   </h1>
                   <span className="rounded-md border border-cyan-500/40 bg-cyan-500/10 px-2 py-1 text-[10px] font-bold uppercase tracking-[0.18em] text-cyan-300">
                     Enterprise
@@ -1642,7 +1642,7 @@ function handleAskQuestion() {
             </div>
             <span className="text-sm text-slate-500">{filteredTransactions.length} shown</span>
           </div>
-          <div className="grid gap-4 xl:grid-cols-[minmax(280px,1.25fr)_2fr] xl:items-end">
+          <div className="grid min-w-0 gap-4 2xl:grid-cols-[minmax(260px,0.9fr)_minmax(0,2.1fr)] 2xl:items-end">
             <div className="flex-1">
               <label
                 htmlFor="search"
@@ -1658,7 +1658,7 @@ function handleAskQuestion() {
               />
             </div>
 
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-[minmax(180px,1.1fr)_minmax(180px,1.1fr)_minmax(160px,1fr)_minmax(155px,0.9fr)_minmax(155px,0.9fr)_auto] xl:items-end">
+            <div className="grid min-w-0 gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-[minmax(0,1.1fr)_minmax(0,1.1fr)_minmax(0,1fr)_minmax(0,0.9fr)_minmax(0,0.9fr)_auto] 2xl:items-end">
               <div>
                 <label
                   htmlFor="category-filter"
@@ -1673,7 +1673,7 @@ function handleAskQuestion() {
                   onChange={(event) =>
                     setCategoryFilter(event.target.value)
                   }
-                  className="w-full min-w-[180px] rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white outline-none transition focus:border-cyan-400"
+                  className="w-full min-w-0 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white outline-none transition focus:border-cyan-400"
                 >
                   {categoryOptions.map((category) => (
                     <option key={category} value={category}>
@@ -1697,7 +1697,7 @@ function handleAskQuestion() {
                   onChange={(event) =>
                     setAccountFilter(event.target.value)
                   }
-                  className="w-full min-w-[180px] rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white outline-none transition focus:border-cyan-400"
+                  className="w-full min-w-0 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white outline-none transition focus:border-cyan-400"
                 >
                   {accountOptions.map((account) => (
                     <option key={account} value={account}>
@@ -1719,7 +1719,7 @@ function handleAskQuestion() {
                   id="review-filter"
                   value={reviewFilter}
                   onChange={(event) => setReviewFilter(event.target.value)}
-                  className="w-full min-w-[160px] rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white outline-none transition focus:border-cyan-400"
+                  className="w-full min-w-0 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white outline-none transition focus:border-cyan-400"
                 >
                   <option value="Needs Review">Needs Review</option>
                   <option value="Confirmed">Confirmed</option>
