@@ -30,6 +30,7 @@ const NON_SPENDING_CATEGORY_NAMES = new Set([
   'income',
   'owner contributions',
   'owner draws & distributions',
+  'payment',
 ]);
 
 function normalizeCategory(category: string | null | undefined) {
