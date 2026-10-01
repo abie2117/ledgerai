@@ -522,7 +522,7 @@ export default function DashboardPage() {
     setSelectedTransactionIds([]);
   }, [transactionPage]);
 
-    const financialFilteredTransactions = useMemo(() => {
+  const financialFilteredTransactions = useMemo(() => {
     return transactions.filter((transaction) => {
       const merchant = getMerchantName(transaction).toLowerCase();
       const category = getTransactionCategory(transaction);
