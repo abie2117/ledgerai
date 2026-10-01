@@ -176,6 +176,8 @@ export default function DashboardPage() {
   const [savingCategoryId, setSavingCategoryId] = useState<string | null>(
     null,
   );
+  const [selectedTransactionIds, setSelectedTransactionIds] = useState<string[]>([]);
+  const [bulkApproving, setBulkApproving] = useState(false);
 
   const [financeQuestion, setFinanceQuestion] = useState('');
   const [askAnswer, setAskAnswer] = useState('');
@@ -495,9 +497,17 @@ export default function DashboardPage() {
     transactionPageStart,
     transactionPageStart + transactionsPerPage,
   );
+  const pageReviewTransactionIds = dashboardTransactions
+    .filter((transaction) => transaction.status === 'pending_review')
+    .map((transaction) => transaction.id);
+  const selectedTransactionIdSet = new Set(selectedTransactionIds);
+  const allPageReviewTransactionsSelected =
+    pageReviewTransactionIds.length > 0 &&
+    pageReviewTransactionIds.every((id) => selectedTransactionIdSet.has(id));
 
   useEffect(() => {
     setTransactionPage(1);
+    setSelectedTransactionIds([]);
   }, [
     selectedClientId,
     searchTerm,
@@ -887,6 +897,85 @@ export default function DashboardPage() {
       );
     } finally {
       setSavingCategoryId(null);
+    }
+  }
+
+  function toggleTransactionSelection(transactionId: string) {
+    setSelectedTransactionIds((currentIds) =>
+      currentIds.includes(transactionId)
+        ? currentIds.filter((id) => id !== transactionId)
+        : [...currentIds, transactionId],
+    );
+  }
+
+  function togglePageReviewSelection() {
+    setSelectedTransactionIds((currentIds) => {
+      const currentIdSet = new Set(currentIds);
+      const shouldClearPage = pageReviewTransactionIds.every((id) =>
+        currentIdSet.has(id),
+      );
+
+      if (shouldClearPage) {
+        return currentIds.filter(
+          (id) => !pageReviewTransactionIds.includes(id),
+        );
+      }
+
+      return Array.from(
+        new Set([...currentIds, ...pageReviewTransactionIds]),
+      );
+    });
+  }
+
+  async function handleBulkApprove() {
+    if (!selectedClientId || selectedTransactionIds.length === 0) return;
+
+    try {
+      setBulkApproving(true);
+      setErrorMessage('');
+      setSuccessMessage('');
+
+      const response = await fetch('/api/transactions/confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          transactionIds: selectedTransactionIds,
+          clientId: selectedClientId,
+        }),
+      });
+
+      const result = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(result.error || 'Unable to approve selected transactions.');
+      }
+
+      const approvedIds = new Set<string>(
+        Array.isArray(result.transactionIds)
+          ? result.transactionIds
+          : selectedTransactionIds,
+      );
+
+      setTransactions((currentTransactions) =>
+        currentTransactions.map((transaction) =>
+          approvedIds.has(transaction.id)
+            ? { ...transaction, status: 'confirmed' }
+            : transaction,
+        ),
+      );
+      setSelectedTransactionIds([]);
+      setSuccessMessage(
+        `${approvedIds.size} transaction${approvedIds.size === 1 ? '' : 's'} approved successfully.`,
+      );
+    } catch (error: unknown) {
+      console.error('Error bulk approving transactions:', error);
+      setErrorMessage(
+        error instanceof Error
+          ? error.message
+          : 'Unable to approve selected transactions.',
+      );
+    } finally {
+      setBulkApproving(false);
     }
   }
 
@@ -1843,7 +1932,22 @@ function handleAskQuestion() {
                 </p>
               </div>
 
-              <div className="flex flex-wrap gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                {selectedTransactionIds.length > 0 && (
+                  <>
+                    <span className="text-xs font-medium text-slate-400">
+                      {selectedTransactionIds.length} selected
+                    </span>
+                    <button
+                      type="button"
+                      onClick={handleBulkApprove}
+                      disabled={bulkApproving}
+                      className="rounded-lg border border-emerald-500/50 px-3 py-2 text-sm font-semibold text-emerald-300 transition hover:bg-emerald-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {bulkApproving ? 'Approving...' : 'Approve Selected'}
+                    </button>
+                  </>
+                )}
                 <button
                   type="button"
                   onClick={handleLocalCategorize}
@@ -1871,6 +1975,19 @@ function handleAskQuestion() {
               <table className="min-w-full divide-y divide-slate-800">
                 <thead className="bg-slate-950/60">
                   <tr>
+                    <th className="whitespace-nowrap px-5 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      <input
+                        type="checkbox"
+                        aria-label="Select all review transactions on this page"
+                        checked={allPageReviewTransactionsSelected}
+                        disabled={
+                          pageReviewTransactionIds.length === 0 ||
+                          bulkApproving
+                        }
+                        onChange={togglePageReviewSelection}
+                        className="h-4 w-4 rounded border-slate-600 bg-slate-900"
+                      />
+                    </th>
                     <th className="whitespace-nowrap px-5 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
                       #
                     </th>
@@ -1913,7 +2030,7 @@ function handleAskQuestion() {
                   {transactionsLoading ? (
                     <tr>
                       <td
-                        colSpan={9}
+                        colSpan={10}
                         className="px-5 py-12 text-center text-sm text-slate-400"
                       >
                         Loading transactions...
@@ -1922,7 +2039,7 @@ function handleAskQuestion() {
                   ) : filteredTransactions.length === 0 ? (
                     <tr>
                       <td
-                        colSpan={9}
+                        colSpan={10}
                         className="px-5 py-12 text-center text-sm text-slate-400"
                       >
                         No transactions found for this client and filter
@@ -1945,6 +2062,22 @@ function handleAskQuestion() {
                           key={transaction.id}
                           className="transition hover:bg-slate-800/40"
                         >
+                          <td className="whitespace-nowrap px-5 py-4">
+                            {transaction.status === 'pending_review' ? (
+                              <input
+                                type="checkbox"
+                                aria-label={`Select ${getMerchantName(transaction)} for approval`}
+                                checked={selectedTransactionIdSet.has(transaction.id)}
+                                disabled={bulkApproving || isSaving}
+                                onChange={() =>
+                                  toggleTransactionSelection(transaction.id)
+                                }
+                                className="h-4 w-4 rounded border-slate-600 bg-slate-900"
+                              />
+                            ) : (
+                              <span className="text-slate-700">—</span>
+                            )}
+                          </td>
                           <td className="whitespace-nowrap px-5 py-4 text-sm font-medium text-slate-500">
                             {transactionPageStart + transactionIndex + 1}
                           </td>
@@ -2062,7 +2195,7 @@ function handleAskQuestion() {
                                 onClick={() =>
                                   handleApproveTransaction(transaction.id)
                                 }
-                                disabled={isSaving}
+                                disabled={isSaving || bulkApproving}
                                 className="rounded-lg border border-emerald-500/50 px-3 py-1.5 text-xs font-semibold text-emerald-300 transition hover:bg-emerald-500/10 disabled:cursor-not-allowed disabled:opacity-50"
                               >
                                 {isSaving ? 'Approving...' : 'Approve'}
