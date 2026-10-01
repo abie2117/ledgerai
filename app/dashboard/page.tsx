@@ -9,6 +9,7 @@ import {
 import { supabase } from '@/lib/supabase-browser';
 import { QueryBar } from '@/components/QueryBar';
 import PlaidLinkButton from '@/components/PlaidLinkButton';
+import ConnectedBanksPanel from '@/components/ConnectedBanksPanel';
 import {
   getCurrentMonthRange,
   getFoodDiningSpending,
@@ -34,6 +35,8 @@ interface Transaction {
   amount: number;
   category?: string | null;
   ai_category_id?: string | null;
+  status?: 'pending_review' | 'confirmed' | string | null;
+  confidence_score?: number | null;
   canonical_category?: {
     id: string;
     name: string;
@@ -87,7 +90,7 @@ interface ReauthenticationRequiredItem {
 }
 
 const SUGGESTED_QUESTIONS = [
-  'How much did I spend on Food & Dining last month?',
+  'How much did I spend on Meals & Entertainment last month?',
   'Show me all transactions over $50',
   'What are my top 5 merchants by total spend?',
   'How much did I spend in total this month?',
@@ -146,6 +149,8 @@ export default function DashboardPage() {
   const [selectedClientId, setSelectedClientId] = useState<string>('');
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
+  const [connectionsRefreshKey, setConnectionsRefreshKey] = useState(0);
+  const [transactionsRefreshKey, setTransactionsRefreshKey] = useState(0);
 
   const [loading, setLoading] = useState(true);
   const [transactionsLoading, setTransactionsLoading] = useState(false);
@@ -162,6 +167,8 @@ export default function DashboardPage() {
   const [searchTerm, setSearchTerm] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('All Categories');
   const [accountFilter, setAccountFilter] = useState('All Accounts');
+  const [reviewFilter, setReviewFilter] = useState('Needs Review');
+  const [transactionPage, setTransactionPage] = useState(1);
 
   const [editingCategoryId, setEditingCategoryId] = useState<string | null>(
     null,
@@ -393,7 +400,7 @@ export default function DashboardPage() {
     }
 
     loadSelectedClientTransactions();
-  }, [selectedClientId]);
+  }, [selectedClientId, transactionsRefreshKey]);
 
   const selectedClient = useMemo(() => {
     return (
@@ -445,6 +452,13 @@ export default function DashboardPage() {
         accountFilter === 'All Accounts' ||
         account === accountFilter;
 
+      const matchesReview =
+        reviewFilter === 'All Transactions' ||
+        (reviewFilter === 'Needs Review' &&
+          transaction.status === 'pending_review') ||
+        (reviewFilter === 'Confirmed' &&
+          transaction.status === 'confirmed');
+
       const matchesStartDate =
         !startDate || getTransactionDate(transaction) >= startDate;
 
@@ -455,6 +469,7 @@ export default function DashboardPage() {
         matchesSearch &&
         matchesCategory &&
         matchesAccount &&
+        matchesReview &&
         matchesStartDate &&
         matchesEndDate
       );
@@ -464,6 +479,31 @@ export default function DashboardPage() {
     searchTerm,
     categoryFilter,
     accountFilter,
+    reviewFilter,
+    startDate,
+    endDate,
+  ]);
+
+  const transactionsPerPage = 10;
+  const transactionPageCount = Math.max(
+    1,
+    Math.ceil(filteredTransactions.length / transactionsPerPage),
+  );
+  const safeTransactionPage = Math.min(transactionPage, transactionPageCount);
+  const transactionPageStart = (safeTransactionPage - 1) * transactionsPerPage;
+  const dashboardTransactions = filteredTransactions.slice(
+    transactionPageStart,
+    transactionPageStart + transactionsPerPage,
+  );
+
+  useEffect(() => {
+    setTransactionPage(1);
+  }, [
+    selectedClientId,
+    searchTerm,
+    categoryFilter,
+    accountFilter,
+    reviewFilter,
     startDate,
     endDate,
   ]);
@@ -520,6 +560,7 @@ export default function DashboardPage() {
     setSearchTerm('');
     setCategoryFilter('All Categories');
     setAccountFilter('All Accounts');
+    setReviewFilter('Needs Review');
     setStartDate('');
     setEndDate('');
     setTimeframe('all');
@@ -573,6 +614,7 @@ export default function DashboardPage() {
     setSearchTerm('');
     setCategoryFilter('All Categories');
     setAccountFilter('All Accounts');
+    setReviewFilter('Needs Review');
     setStartDate('');
     setEndDate('');
     setTimeframe('all');
@@ -607,6 +649,8 @@ export default function DashboardPage() {
           syncResult?.error || 'Unable to synchronize transactions with Plaid.',
         );
       }
+
+      setConnectionsRefreshKey((currentKey) => currentKey + 1);
 
       const requiredItems = Array.isArray(
         syncResult?.reauthentication_required,
@@ -731,6 +775,7 @@ export default function DashboardPage() {
                 ...transaction,
                 ai_category_id: result.category.id,
                 category: result.category.name,
+                status: 'confirmed',
                 canonical_category: {
                   id: result.category.id,
                   name: result.category.name,
@@ -750,6 +795,50 @@ export default function DashboardPage() {
       console.error('Error updating transaction category:', error);
       setErrorMessage(
         error?.message || 'Unable to update transaction category.',
+      );
+    } finally {
+      setSavingCategoryId(null);
+    }
+  }
+
+  async function handleApproveTransaction(transactionId: string) {
+    if (!selectedClientId) return;
+
+    try {
+      setSavingCategoryId(transactionId);
+      setErrorMessage('');
+      setSuccessMessage('');
+
+      const response = await fetch('/api/transactions/confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          transactionId,
+          clientId: selectedClientId,
+        }),
+      });
+
+      const result = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(result.error || 'Unable to approve transaction.');
+      }
+
+      setTransactions((currentTransactions) =>
+        currentTransactions.map((transaction) =>
+          transaction.id === transactionId
+            ? { ...transaction, status: 'confirmed' }
+            : transaction,
+        ),
+      );
+
+      setSuccessMessage('Transaction approved successfully.');
+    } catch (error: unknown) {
+      console.error('Error approving transaction:', error);
+      setErrorMessage(
+        error instanceof Error
+          ? error.message
+          : 'Unable to approve transaction.',
       );
     } finally {
       setSavingCategoryId(null);
@@ -1099,56 +1188,72 @@ function handleAskQuestion() {
   }
 
   return (
-    <main className="min-h-screen bg-slate-950 px-4 py-6 text-white sm:px-6 lg:px-8">
+    <main className="min-h-screen overflow-x-hidden bg-slate-950 px-4 py-6 text-white sm:px-6 lg:px-8">
       <div className="mx-auto max-w-7xl space-y-6">
         <header className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900 shadow-xl">
           <div className="flex flex-col gap-6 border-b border-slate-800 px-5 py-5 sm:px-6 lg:flex-row lg:items-center lg:justify-between">
             <div className="flex items-center gap-4">
-              <div className="relative flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl border border-cyan-400/50 bg-slate-950 shadow-[0_0_28px_rgba(34,211,238,0.16)]">
+              <div
+                className="relative flex shrink-0 items-center justify-center"
+                style={{
+                  width: 50,
+                  height: 50,
+                  borderRadius: 14,
+                  background:
+                    'linear-gradient(135deg,#0b1329 0%,#030712 100%)',
+                  boxShadow:
+                    '0 0 22px rgba(56,189,248,0.4), inset 0 0 10px rgba(129,140,248,0.2)',
+                  border: '1.5px solid rgba(56,189,248,0.6)',
+                }}
+              >
                 <svg
-                  viewBox="0 0 64 64"
+                  width="28"
+                  height="28"
+                  viewBox="0 0 32 32"
+                  fill="none"
                   aria-hidden="true"
-                  className="h-10 w-10"
+                  xmlns="http://www.w3.org/2000/svg"
                 >
                   <defs>
-                    <linearGradient id="ledgerai-mark" x1="8" y1="8" x2="56" y2="56">
-                      <stop offset="0%" stopColor="#67e8f9" />
-                      <stop offset="55%" stopColor="#38bdf8" />
-                      <stop offset="100%" stopColor="#8b5cf6" />
+                    <linearGradient
+                      id="ledgerai-mark"
+                      x1="0"
+                      y1="0"
+                      x2="32"
+                      y2="32"
+                      gradientUnits="userSpaceOnUse"
+                    >
+                      <stop stopColor="#38bdf8" />
+                      <stop offset="0.5" stopColor="#818cf8" />
+                      <stop offset="1" stopColor="#c084fc" />
                     </linearGradient>
                   </defs>
                   <path
-                    d="M32 6 54 19v26L32 58 10 45V19L32 6Z"
-                    fill="none"
+                    d="M16 3L28 9.5V22.5L16 29L4 22.5V9.5L16 3Z"
                     stroke="url(#ledgerai-mark)"
-                    strokeWidth="5"
+                    strokeWidth="2"
                     strokeLinejoin="round"
                   />
-                  <path
-                    d="M32 17 44 24v16L32 47 20 40V24l12-7Z"
-                    fill="none"
-                    stroke="url(#ledgerai-mark)"
-                    strokeWidth="5"
-                    strokeLinejoin="round"
-                  />
-                  <path
-                    d="m32 26 6 3.5v7L32 40l-6-3.5v-7L32 26Z"
-                    fill="url(#ledgerai-mark)"
+                  <circle
+                    cx="16"
+                    cy="16"
+                    r="3"
+                    fill="#818cf8"
                   />
                 </svg>
               </div>
 
               <div>
                 <div className="flex flex-wrap items-center gap-2.5">
-                  <h1 className="text-2xl font-bold tracking-tight text-white sm:text-3xl">
-                    Ledger<span className="text-cyan-400">AI</span>
+                  <h1 className="text-2xl font-extrabold tracking-[-0.03em] text-white sm:text-3xl">
+                    Ledger<span className="text-sky-400">AI</span>
                   </h1>
                   <span className="rounded-md border border-cyan-500/40 bg-cyan-500/10 px-2 py-1 text-[10px] font-bold uppercase tracking-[0.18em] text-cyan-300">
                     Enterprise
                   </span>
                 </div>
                 <p className="mt-1 text-sm text-slate-400">
-                  AI-assisted bookkeeping &amp; financial intelligence
+                  Smarter financial insights. Clearer decisions.
                 </p>
               </div>
             </div>
@@ -1167,7 +1272,15 @@ function handleAskQuestion() {
             </div>
           </div>
 
-          <div className="grid gap-4 px-5 py-5 sm:px-6 xl:grid-cols-[minmax(260px,1.2fr)_minmax(190px,0.7fr)_auto] xl:items-end">
+          <nav className="flex flex-wrap items-center gap-1 border-b border-slate-800 bg-slate-950/35 px-5 py-2 sm:px-6" aria-label="LedgerAI workspace">
+            <a href="#overview" className="rounded-lg bg-cyan-500/10 px-3 py-2 text-sm font-semibold text-cyan-300">Overview</a>
+            <a href="#transactions" className="rounded-lg px-3 py-2 text-sm font-medium text-slate-400 transition hover:bg-slate-800 hover:text-white">Transactions</a>
+            <a href="#transactions" onClick={() => setReviewFilter('Needs Review')} className="rounded-lg px-3 py-2 text-sm font-medium text-slate-400 transition hover:bg-slate-800 hover:text-white">Review</a>
+            <a href={selectedClientId ? `/dashboard/banks?clientId=${selectedClientId}` : '/dashboard/banks'} className="rounded-lg px-3 py-2 text-sm font-medium text-slate-400 transition hover:bg-slate-800 hover:text-white">Banks</a>
+            <span className="cursor-not-allowed rounded-lg px-3 py-2 text-sm font-medium text-slate-600" title="Coming later in the LedgerAI roadmap">Reports</span>
+          </nav>
+
+          <div className="grid gap-4 px-5 py-4 sm:px-6 xl:grid-cols-[minmax(260px,1.2fr)_minmax(190px,0.7fr)_auto] xl:items-end">
             <div>
               <div className="mb-2 flex items-center justify-between gap-3">
                 <label
@@ -1261,6 +1374,25 @@ function handleAskQuestion() {
             </span>
           </div>
         </header>
+
+        {selectedClientId && (
+          <details className="group rounded-2xl border border-slate-800 bg-slate-900/70">
+            <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-5 py-4 text-sm font-semibold text-slate-200 sm:px-6">
+              <span>Bank connections</span>
+              <span className="text-xs font-medium text-slate-500 group-open:hidden">Show details</span>
+              <span className="hidden text-xs font-medium text-slate-500 group-open:inline">Hide details</span>
+            </summary>
+            <div className="border-t border-slate-800 p-3">
+              <ConnectedBanksPanel
+                clientId={selectedClientId}
+                refreshKey={connectionsRefreshKey}
+                onTransactionsReload={() =>
+                  setTransactionsRefreshKey((currentKey) => currentKey + 1)
+                }
+              />
+            </div>
+          </details>
+        )}
 
         {errorMessage && (
           <div className="rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-300">
@@ -1360,7 +1492,35 @@ function handleAskQuestion() {
             </section>
           )}
 
-        <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <section id="overview" className="scroll-mt-6 space-y-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-cyan-400">Financial overview</p>
+              <h2 className="mt-1 text-xl font-bold text-white">{selectedClient?.name || 'Client'} at a glance</h2>
+              <p className="mt-1 text-sm text-slate-400">Key activity and items that need your attention.</p>
+            </div>
+            <a href="#transactions" onClick={() => setReviewFilter('Needs Review')} className="text-sm font-semibold text-cyan-400 transition hover:text-cyan-300">
+              Review transactions →
+            </a>
+          </div>
+
+          <div className="grid gap-4 lg:grid-cols-[1.4fr_1fr]">
+            <div className="rounded-2xl border border-amber-500/20 bg-amber-500/[0.06] p-5">
+              <p className="text-sm font-semibold text-amber-200">Needs your attention</p>
+              <div className="mt-2 flex items-end gap-3">
+                <span className="text-3xl font-bold text-white">{transactions.filter((transaction) => transaction.status === 'pending_review').length}</span>
+                <span className="pb-1 text-sm text-slate-400">transactions awaiting review</span>
+              </div>
+              <p className="mt-2 text-xs text-slate-500">Approve or correct transactions before finalizing the books.</p>
+            </div>
+            <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
+              <p className="text-sm font-semibold text-white">Bank workspace</p>
+              <p className="mt-2 text-sm leading-6 text-slate-400">Connection management now has its own focused workspace.</p>
+              <a href={selectedClientId ? `/dashboard/banks?clientId=${selectedClientId}` : '/dashboard/banks'} className="mt-3 inline-flex text-sm font-semibold text-cyan-400 transition hover:text-cyan-300">Manage banks →</a>
+            </div>
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
           <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
             <p className="text-sm text-slate-400">Total Spending</p>
 
@@ -1410,17 +1570,22 @@ function handleAskQuestion() {
               Unique merchants in view
             </p>
           </div>
+        </div>
         </section>
 
-        <section className="rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-xl">
-          <div className="mb-4">
-            <h2 className="text-lg font-semibold text-white">
+        <section id="assistant" className="scroll-mt-6 rounded-2xl border border-slate-800 bg-slate-900 p-5 shadow-xl">
+          <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-violet-400">LedgerAI intelligence</p>
+            <h2 className="mt-1 text-lg font-semibold text-white">
               🔍 Ask anything about your finances
             </h2>
 
             <p className="mt-1 text-sm text-slate-400">
               Ask a question about your transaction history and spending.
             </p>
+            </div>
+            <span className="hidden text-xs text-slate-500 sm:block">Financial copilot</span>
           </div>
 
           <div className="flex flex-col gap-3 sm:flex-row">
@@ -1449,7 +1614,7 @@ function handleAskQuestion() {
             </button>
           </div>
 
-          <div className="mt-4 flex flex-wrap gap-2">
+          <div className="mt-3 flex flex-wrap gap-2">
             {SUGGESTED_QUESTIONS.map((question) => (
               <button
                 key={question}
@@ -1469,8 +1634,15 @@ function handleAskQuestion() {
           )}
         </section>
 
-        <section className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
-          <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+        <section id="transactions" className="scroll-mt-6 rounded-2xl border border-slate-800 bg-slate-900 p-5">
+          <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-cyan-400">Transaction workspace</p>
+              <h2 className="mt-1 text-xl font-bold text-white">Review and organize transactions</h2>
+            </div>
+            <span className="text-sm text-slate-500">{filteredTransactions.length} shown</span>
+          </div>
+          <div className="grid min-w-0 gap-4 2xl:grid-cols-[minmax(260px,0.9fr)_minmax(0,2.1fr)] 2xl:items-end">
             <div className="flex-1">
               <label
                 htmlFor="search"
@@ -1486,7 +1658,7 @@ function handleAskQuestion() {
               />
             </div>
 
-            <div className="grid gap-3 sm:grid-cols-2 xl:flex xl:items-end">
+            <div className="grid min-w-0 gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-[minmax(0,1.1fr)_minmax(0,1.1fr)_minmax(0,1fr)_minmax(0,0.9fr)_minmax(0,0.9fr)_auto] 2xl:items-end">
               <div>
                 <label
                   htmlFor="category-filter"
@@ -1501,7 +1673,7 @@ function handleAskQuestion() {
                   onChange={(event) =>
                     setCategoryFilter(event.target.value)
                   }
-                  className="w-full min-w-[180px] rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white outline-none transition focus:border-cyan-400"
+                  className="w-full min-w-0 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white outline-none transition focus:border-cyan-400"
                 >
                   {categoryOptions.map((category) => (
                     <option key={category} value={category}>
@@ -1525,13 +1697,33 @@ function handleAskQuestion() {
                   onChange={(event) =>
                     setAccountFilter(event.target.value)
                   }
-                  className="w-full min-w-[180px] rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white outline-none transition focus:border-cyan-400"
+                  className="w-full min-w-0 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white outline-none transition focus:border-cyan-400"
                 >
                   {accountOptions.map((account) => (
                     <option key={account} value={account}>
                       {account}
                     </option>
                   ))}
+                </select>
+              </div>
+
+              <div>
+                <label
+                  htmlFor="review-filter"
+                  className="mb-2 block text-sm font-medium text-slate-300"
+                >
+                  Review Status
+                </label>
+
+                <select
+                  id="review-filter"
+                  value={reviewFilter}
+                  onChange={(event) => setReviewFilter(event.target.value)}
+                  className="w-full min-w-0 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white outline-none transition focus:border-cyan-400"
+                >
+                  <option value="Needs Review">Needs Review</option>
+                  <option value="Confirmed">Confirmed</option>
+                  <option value="All Transactions">All Transactions</option>
                 </select>
               </div>
 
@@ -1586,7 +1778,7 @@ function handleAskQuestion() {
           </div>
         </section>
 
-        <section className="grid gap-6 xl:grid-cols-[1fr_360px]">
+        <section className="space-y-6">
           <div className="rounded-2xl border border-slate-800 bg-slate-900">
             <div className="flex flex-col gap-3 border-b border-slate-800 p-5 sm:flex-row sm:items-center sm:justify-between">
               <div>
@@ -1597,11 +1789,12 @@ function handleAskQuestion() {
                 <p className="mt-1 text-sm text-slate-400">
                   {transactionsLoading
                     ? 'Loading transactions...'
-                    : `${filteredTransactions.length} transaction${
-                        filteredTransactions.length === 1
-                          ? ''
-                          : 's'
-                      } shown`}
+                    : filteredTransactions.length > 0
+                      ? `Showing ${transactionPageStart + 1}–${Math.min(
+                          transactionPageStart + dashboardTransactions.length,
+                          filteredTransactions.length,
+                        )} of ${filteredTransactions.length} transactions`
+                      : '0 transactions shown'}
                 </p>
               </div>
 
@@ -1634,6 +1827,10 @@ function handleAskQuestion() {
                 <thead className="bg-slate-950/60">
                   <tr>
                     <th className="whitespace-nowrap px-5 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      #
+                    </th>
+
+                    <th className="whitespace-nowrap px-5 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
                       Date
                     </th>
 
@@ -1649,6 +1846,18 @@ function handleAskQuestion() {
                       Category
                     </th>
 
+                    <th className="whitespace-nowrap px-5 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      Confidence
+                    </th>
+
+                    <th className="whitespace-nowrap px-5 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      Status
+                    </th>
+
+                    <th className="whitespace-nowrap px-5 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      Review
+                    </th>
+
                     <th className="whitespace-nowrap px-5 py-3 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
                       Amount
                     </th>
@@ -1659,7 +1868,7 @@ function handleAskQuestion() {
                   {transactionsLoading ? (
                     <tr>
                       <td
-                        colSpan={5}
+                        colSpan={9}
                         className="px-5 py-12 text-center text-sm text-slate-400"
                       >
                         Loading transactions...
@@ -1668,7 +1877,7 @@ function handleAskQuestion() {
                   ) : filteredTransactions.length === 0 ? (
                     <tr>
                       <td
-                        colSpan={5}
+                        colSpan={9}
                         className="px-5 py-12 text-center text-sm text-slate-400"
                       >
                         No transactions found for this client and filter
@@ -1676,7 +1885,7 @@ function handleAskQuestion() {
                       </td>
                     </tr>
                   ) : (
-                    filteredTransactions.map((transaction) => {
+                    dashboardTransactions.map((transaction, transactionIndex) => {
                       const category =
                         getTransactionCategory(transaction);
 
@@ -1691,6 +1900,10 @@ function handleAskQuestion() {
                           key={transaction.id}
                           className="transition hover:bg-slate-800/40"
                         >
+                          <td className="whitespace-nowrap px-5 py-4 text-sm font-medium text-slate-500">
+                            {transactionPageStart + transactionIndex + 1}
+                          </td>
+
                           <td className="whitespace-nowrap px-5 py-4 text-sm text-slate-300">
                             {formatDate(getTransactionDate(transaction))}
                           </td>
@@ -1773,6 +1986,45 @@ function handleAskQuestion() {
                             )}
                           </td>
 
+                          <td className="whitespace-nowrap px-5 py-4 text-sm text-slate-300">
+                            {transaction.confidence_score == null
+                              ? '—'
+                              : `${Math.round(Number(transaction.confidence_score) * 100)}%`}
+                          </td>
+
+                          <td className="whitespace-nowrap px-5 py-4">
+                            <span
+                              className={`inline-flex rounded-full px-2.5 py-1 text-xs font-medium ${
+                                transaction.status === 'confirmed'
+                                  ? 'bg-emerald-500/10 text-emerald-300'
+                                  : 'bg-amber-500/10 text-amber-300'
+                              }`}
+                            >
+                              {transaction.status === 'confirmed'
+                                ? 'Confirmed'
+                                : 'Needs review'}
+                            </span>
+                          </td>
+
+                          <td className="whitespace-nowrap px-5 py-4">
+                            {transaction.status === 'confirmed' ? (
+                              <span className="text-xs font-medium text-emerald-300">
+                                Confirmed
+                              </span>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  handleApproveTransaction(transaction.id)
+                                }
+                                disabled={isSaving}
+                                className="rounded-lg border border-emerald-500/50 px-3 py-1.5 text-xs font-semibold text-emerald-300 transition hover:bg-emerald-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+                              >
+                                {isSaving ? 'Approving...' : 'Approve'}
+                              </button>
+                            )}
+                          </td>
+
                           <td className="whitespace-nowrap px-5 py-4 text-right text-sm font-semibold text-white">
                             {formatCurrency(
                               Number(transaction.amount || 0),
@@ -1785,9 +2037,37 @@ function handleAskQuestion() {
                 </tbody>
               </table>
             </div>
+
+            {filteredTransactions.length > transactionsPerPage && (
+              <div className="flex flex-col gap-3 border-t border-slate-800 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+                <p className="text-xs text-slate-500">
+                  Page {safeTransactionPage} of {transactionPageCount}
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setTransactionPage((page) => Math.max(1, page - 1))}
+                    disabled={safeTransactionPage === 1}
+                    className="rounded-lg border border-slate-700 px-3 py-2 text-xs font-semibold text-slate-300 transition hover:border-cyan-400 hover:text-cyan-300 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Previous
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setTransactionPage((page) => Math.min(transactionPageCount, page + 1))
+                    }
+                    disabled={safeTransactionPage === transactionPageCount}
+                    className="rounded-lg border border-slate-700 px-3 py-2 text-xs font-semibold text-slate-300 transition hover:border-cyan-400 hover:text-cyan-300 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
-          <div className="space-y-6">
+          <div className="grid items-start gap-6 lg:grid-cols-2">
             <section className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
               <div className="flex items-center justify-between">
                 <div>
@@ -1807,7 +2087,7 @@ function handleAskQuestion() {
                     No merchant data available.
                   </p>
                 ) : (
-                  merchantSummary.slice(0, 8).map((merchant) => (
+                  merchantSummary.slice(0, 5).map((merchant) => (
                     <div key={merchant.merchant}>
                       <div className="flex items-center justify-between gap-3">
                         <p className="truncate text-sm font-medium text-slate-200">
@@ -1871,7 +2151,7 @@ function handleAskQuestion() {
                     No category data available.
                   </p>
                 ) : (
-                  categorySummary.map((item) => (
+                  categorySummary.slice(0, 5).map((item) => (
                     <div
                       key={item.category}
                       className="flex items-center justify-between gap-3"

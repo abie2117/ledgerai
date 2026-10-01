@@ -9,6 +9,7 @@ export interface FinancialTransaction {
   merchant_name?: string | null;
   name?: string | null;
   category?: string | null;
+  raw_plaid_category?: string | null;
   canonical_category?: FinancialCategory | null;
 }
 
@@ -50,9 +51,103 @@ export function getMerchantName(transaction: FinancialTransaction) {
 export function getTransactionCategory(transaction: FinancialTransaction) {
   return (
     transaction.canonical_category?.name ||
+    transaction.raw_plaid_category ||
     transaction.category ||
     'Uncategorized'
   );
+}
+
+function normalizeCategoryQuestionText(value: string) {
+  return value
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+const USER_CATEGORY_ALIASES = new Map<string, string>([
+  ['meals and entertainment', 'food and dining'],
+  ['food and dining', 'food and dining'],
+  ['travel', 'travel'],
+]);
+
+const PLAID_CATEGORY_ALIASES = new Map<string, string>([
+  ['food and drink restaurants', 'food and dining'],
+  ['food and drink restaurants coffee shop', 'food and dining'],
+  ['food and drink restaurants fast food', 'food and dining'],
+  ['travel airlines and aviation services', 'travel'],
+  ['travel taxi', 'travel'],
+]);
+
+const CATEGORY_FAMILY_LABELS = new Map<string, string>([
+  ['food and dining', 'Meals & Entertainment'],
+  ['travel', 'Travel'],
+]);
+
+function normalizeUserCategory(category: string) {
+  const normalizedCategory = normalizeCategoryQuestionText(category);
+
+  return USER_CATEGORY_ALIASES.get(normalizedCategory) || normalizedCategory;
+}
+
+function getTransactionCategoryKey(transaction: FinancialTransaction) {
+  const canonicalCategory = transaction.canonical_category?.name?.trim();
+
+  if (canonicalCategory) {
+    return normalizeUserCategory(canonicalCategory);
+  }
+
+  const rawCategory = transaction.raw_plaid_category?.trim();
+
+  if (!rawCategory) {
+    return null;
+  }
+
+  return PLAID_CATEGORY_ALIASES.get(
+    normalizeCategoryQuestionText(rawCategory),
+  ) || null;
+}
+
+export function getCategorySpendIntent(
+  question: string,
+  transactions: FinancialTransaction[],
+) {
+  const normalizedQuestion = normalizeCategoryQuestionText(question);
+  const match = normalizedQuestion.match(
+    /\b(?:spend|spent|spending)\b.*?\bon\s+(.+?)\s+(last month|this month)\b/,
+  );
+
+  if (!match) {
+    return null;
+  }
+
+  const categories = new Map<string, string>();
+
+  for (const transaction of transactions) {
+    const categoryKey = getTransactionCategoryKey(transaction);
+
+    if (categoryKey && !categories.has(categoryKey)) {
+      const canonicalCategory = transaction.canonical_category?.name?.trim();
+      categories.set(
+        categoryKey,
+        canonicalCategory || CATEGORY_FAMILY_LABELS.get(categoryKey) || categoryKey,
+      );
+    }
+  }
+
+  const requestedCategoryKey = normalizeUserCategory(match[1]);
+  const category = categories.get(requestedCategoryKey);
+
+  if (!category) {
+    return null;
+  }
+
+  return {
+    category,
+    period: match[2] === 'last month' ? 'last-month' : 'this-month',
+  } as const;
 }
 
 function isNonSpendingCategory(category: string) {
@@ -148,10 +243,20 @@ export function getFoodDiningSpending(
   transactions: FinancialTransaction[],
   range: DateRange,
 ) {
+  return getCategorySpending(transactions, 'Food & Dining', range);
+}
+
+export function getCategorySpending(
+  transactions: FinancialTransaction[],
+  category: string,
+  range: DateRange,
+) {
+  const normalizedCategory = normalizeUserCategory(category);
+
   return getQualifyingSpendingTransactions(transactions, range).filter(
     (transaction) =>
-      normalizeCategory(getTransactionCategory(transaction)) ===
-      'food & dining',
+      getTransactionCategoryKey(transaction) ===
+      normalizedCategory,
   );
 }
 

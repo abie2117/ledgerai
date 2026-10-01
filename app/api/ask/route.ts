@@ -3,6 +3,8 @@ import Anthropic from '@anthropic-ai/sdk';
 import { createServerSupabaseClient } from '@/lib/supabase-server';
 import {
   getCurrentMonthRange,
+  getCategorySpendIntent,
+  getCategorySpending,
   getFoodDiningSpending,
   getPreviousMonthRange,
   getQualifyingSpendingTransactions,
@@ -147,10 +149,9 @@ export async function POST(request: Request) {
       .from('transactions')
       .select(`
         posted_date,
-        date,
         amount,
         merchant_name,
-        category,
+        raw_plaid_category,
         canonical_category:categories!transactions_ai_category_id_fkey (
           name
         )
@@ -248,18 +249,45 @@ export async function POST(request: Request) {
       });
     }
 
+    const categorySpendIntent = getCategorySpendIntent(
+      question,
+      financialTransactions,
+    );
+
+    if (categorySpendIntent) {
+      const range = categorySpendIntent.period === 'last-month'
+        ? getPreviousMonthRange()
+        : getCurrentMonthRange();
+      const total = sumTransactionAmounts(
+        getCategorySpending(
+          financialTransactions,
+          categorySpendIntent.category,
+          range,
+        ),
+      );
+      const periodLabel = categorySpendIntent.period === 'last-month'
+        ? 'last month'
+        : 'this month';
+
+      return NextResponse.json({
+        answer: `You spent ${new Intl.NumberFormat('en-US', {
+          style: 'currency',
+          currency: 'USD',
+        }).format(total)} on ${categorySpendIntent.category} ${periodLabel}.`,
+      });
+    }
+
     if (!process.env.ANTHROPIC_API_KEY) {
-      console.error('[ask] ANTHROPIC_API_KEY is not configured.');
+      console.error('[ask] Anthropic fallback is unavailable.');
 
       return NextResponse.json(
-        { error: 'The finance assistant is not configured.' },
+        {
+          error:
+            'The finance assistant is temporarily unavailable, so this question could not be answered. Please try again later.',
+        },
         { status: 503 },
       );
     }
-
-    const anthropic = new Anthropic({
-      apiKey: process.env.ANTHROPIC_API_KEY,
-    });
 
     const prompt = `
 You are a helpful financial dashboard assistant.
@@ -280,32 +308,57 @@ Transaction data:
 ${JSON.stringify(transactions || [], null, 2)}
 `;
 
-    const response = await anthropic.messages.create({
-      model:
-        process.env.ANTHROPIC_MODEL ||
-        'claude-3-5-sonnet-20240620',
-      max_tokens: 800,
-      temperature: 0,
-      messages: [
+    try {
+      const anthropic = new Anthropic({
+        apiKey: process.env.ANTHROPIC_API_KEY,
+      });
+      const response = await anthropic.messages.create({
+        model:
+          process.env.ANTHROPIC_MODEL ||
+          'claude-3-5-sonnet-20240620',
+        max_tokens: 800,
+        temperature: 0,
+        messages: [
+          {
+            role: 'user',
+            content: prompt,
+          },
+        ],
+      });
+
+      const answer = response.content
+        .filter((block) => block.type === 'text')
+        .map((block) => block.text)
+        .join('\n');
+
+      return NextResponse.json({ answer });
+    } catch (error: unknown) {
+      const providerStatus =
+        error &&
+        typeof error === 'object' &&
+        'status' in error &&
+        typeof error.status === 'number'
+          ? error.status
+          : undefined;
+
+      console.error('[ask] Anthropic fallback request failed.', {
+        status: providerStatus,
+      });
+
+      return NextResponse.json(
         {
-          role: 'user',
-          content: prompt,
+          error:
+            'The finance assistant is temporarily unavailable, so this question could not be answered. Please try again later.',
         },
-      ],
-    });
+        { status: 503 },
+      );
+    }
+  } catch (error: unknown) {
+    const errorDetails = error instanceof Error ? error : undefined;
 
-    const answer = response.content
-      .filter((block) => block.type === 'text')
-      .map((block) => block.text)
-      .join('\n');
-
-    return NextResponse.json({ answer });
-  } catch (error: any) {
     console.error('[ask] Unexpected failure:', {
-      message: error?.message || 'Unknown error',
-      name: error?.name,
-      status: error?.status,
-      code: error?.code,
+      message: errorDetails?.message || 'Unknown error',
+      name: errorDetails?.name,
     });
 
     return NextResponse.json(
