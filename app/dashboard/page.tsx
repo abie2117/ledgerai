@@ -508,9 +508,54 @@ export default function DashboardPage() {
     endDate,
   ]);
 
+  const financialFilteredTransactions = useMemo(() => {
+    return transactions.filter((transaction) => {
+      const merchant = getMerchantName(transaction).toLowerCase();
+      const category = getTransactionCategory(transaction);
+      const account = transaction.account_name || 'Unknown account';
+
+      const normalizedSearchTerm = searchTerm.toLowerCase().trim();
+
+      const matchesSearch =
+        !normalizedSearchTerm ||
+        merchant.includes(normalizedSearchTerm) ||
+        category.toLowerCase().includes(normalizedSearchTerm) ||
+        account.toLowerCase().includes(normalizedSearchTerm);
+
+      const matchesCategory =
+        categoryFilter === 'All Categories' ||
+        category === categoryFilter;
+
+      const matchesAccount =
+        accountFilter === 'All Accounts' ||
+        account === accountFilter;
+
+      const matchesStartDate =
+        !startDate || getTransactionDate(transaction) >= startDate;
+
+      const matchesEndDate =
+        !endDate || getTransactionDate(transaction) <= endDate;
+
+      return (
+        matchesSearch &&
+        matchesCategory &&
+        matchesAccount &&
+        matchesStartDate &&
+        matchesEndDate
+      );
+    });
+  }, [
+    transactions,
+    searchTerm,
+    categoryFilter,
+    accountFilter,
+    startDate,
+    endDate,
+  ]);
+
   const spendingTransactions = useMemo(() => {
-    return filteredTransactions.filter(isQualifyingSpending);
-  }, [filteredTransactions]);
+    return financialFilteredTransactions.filter(isQualifyingSpending);
+  }, [financialFilteredTransactions]);
 
   const totalSpending = useMemo(() => {
     return sumTransactionAmounts(spendingTransactions);
