@@ -518,7 +518,11 @@ export default function DashboardPage() {
     endDate,
   ]);
 
-  const financialFilteredTransactions = useMemo(() => {
+  useEffect(() => {
+    setSelectedTransactionIds([]);
+  }, [transactionPage]);
+
+    const financialFilteredTransactions = useMemo(() => {
     return transactions.filter((transaction) => {
       const merchant = getMerchantName(transaction).toLowerCase();
       const category = getTransactionCategory(transaction);
@@ -840,6 +844,9 @@ export default function DashboardPage() {
         ),
       );
 
+      setSelectedTransactionIds((currentIds) =>
+        currentIds.filter((id) => id !== transactionId),
+      );
       setEditingCategoryId(null);
       setSuccessMessage(
         result.unchanged
@@ -887,6 +894,9 @@ export default function DashboardPage() {
         ),
       );
 
+      setSelectedTransactionIds((currentIds) =>
+        currentIds.filter((id) => id !== transactionId),
+      );
       setSuccessMessage('Transaction approved successfully.');
     } catch (error: unknown) {
       console.error('Error approving transaction:', error);
