@@ -561,7 +561,7 @@ export default function DashboardPage() {
     return sumTransactionAmounts(spendingTransactions);
   }, [spendingTransactions]);
 
-  const transactionCount = filteredTransactions.length;
+  const transactionCount = spendingTransactions.length;
   const spendingTransactionCount = spendingTransactions.length;
 
   const averageTransaction = useMemo(() => {
