@@ -518,10 +518,6 @@ export default function DashboardPage() {
     endDate,
   ]);
 
-  useEffect(() => {
-    setSelectedTransactionIds([]);
-  }, [transactionPage]);
-
   const financialFilteredTransactions = useMemo(() => {
     return transactions.filter((transaction) => {
       const merchant = getMerchantName(transaction).toLowerCase();
@@ -2234,7 +2230,10 @@ function handleAskQuestion() {
                 <div className="flex gap-2">
                   <button
                     type="button"
-                    onClick={() => setTransactionPage((page) => Math.max(1, page - 1))}
+                    onClick={() => {
+                      setSelectedTransactionIds([]);
+                      setTransactionPage((page) => Math.max(1, page - 1));
+                    }}
                     disabled={safeTransactionPage === 1}
                     className="rounded-lg border border-slate-700 px-3 py-2 text-xs font-semibold text-slate-300 transition hover:border-cyan-400 hover:text-cyan-300 disabled:cursor-not-allowed disabled:opacity-40"
                   >
@@ -2242,9 +2241,12 @@ function handleAskQuestion() {
                   </button>
                   <button
                     type="button"
-                    onClick={() =>
-                      setTransactionPage((page) => Math.min(transactionPageCount, page + 1))
-                    }
+                    onClick={() => {
+                      setSelectedTransactionIds([]);
+                      setTransactionPage((page) =>
+                        Math.min(transactionPageCount, page + 1),
+                      );
+                    }}
                     disabled={safeTransactionPage === transactionPageCount}
                     className="rounded-lg border border-slate-700 px-3 py-2 text-xs font-semibold text-slate-300 transition hover:border-cyan-400 hover:text-cyan-300 disabled:cursor-not-allowed disabled:opacity-40"
                   >
