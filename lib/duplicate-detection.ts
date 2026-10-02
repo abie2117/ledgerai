@@ -102,7 +102,7 @@ export async function detectDuplicateCandidates(
     };
   }> = [];
 
-  for (const group of groups.values()) {
+  for (const group of Array.from(groups.values())) {
     for (let leftIndex = 0; leftIndex < group.length; leftIndex += 1) {
       for (
         let rightIndex = leftIndex + 1;
