@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createRouteHandlerClient } from "../../../../lib/supabase-server";
+import { getReviewDecision } from "../../../../lib/review-policy";
 
 export async function POST(req: NextRequest) {
   const supabase = await createRouteHandlerClient();
@@ -40,7 +41,7 @@ export async function POST(req: NextRequest) {
     const { data: eligibleTransactions, error: eligibilityError } =
       await supabase
         .from("transactions")
-        .select("id, status")
+        .select("id, status, ai_category_id, ai_confidence, categorization_source, category")
         .eq("client_id", clientId)
         .in("id", transactionIds);
 
@@ -72,6 +73,17 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    const policyException = eligibleTransactions.find(
+      (transaction) => getReviewDecision(transaction).state !== "routine",
+    );
+
+    if (policyException) {
+      return NextResponse.json(
+        { error: "Review exceptions must be resolved before confirmation" },
+        { status: 409 },
+      );
+    }
+
     const { data, error } = await supabase
       .from("transactions")
       .update({ status: "confirmed" })
@@ -98,23 +110,53 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  if (!transactionId) {
+  if (!transactionId || !clientId) {
     return NextResponse.json(
-      { error: "transactionId required" },
+      { error: "transactionId and clientId required" },
       { status: 400 },
     );
   }
 
-  let query = supabase
-    .from("transactions")
-    .update({ status: "confirmed" })
-    .eq("id", transactionId);
+  const { data: eligibleTransactions, error: eligibilityError } =
+    await supabase
+      .from("transactions")
+      .select("id, status, ai_category_id, ai_confidence, categorization_source, category")
+      .eq("id", transactionId)
+      .eq("client_id", clientId);
 
-  if (clientId) {
-    query = query.eq("client_id", clientId);
+  if (eligibilityError) {
+    return NextResponse.json(
+      { error: eligibilityError.message },
+      { status: 500 },
+    );
   }
 
-  const { data, error } = await query.select();
+  const eligibleTransaction = eligibleTransactions?.[0];
+
+  if (!eligibleTransaction) {
+    return NextResponse.json(
+      { error: "Not found or not authorized" },
+      { status: 404 },
+    );
+  }
+
+  if (
+    eligibleTransaction.status !== "pending_review" ||
+    getReviewDecision(eligibleTransaction).state !== "routine"
+  ) {
+    return NextResponse.json(
+      { error: "Only routine transactions awaiting sign-off can be confirmed" },
+      { status: 409 },
+    );
+  }
+
+  const { data, error } = await supabase
+    .from("transactions")
+    .update({ status: "confirmed" })
+    .eq("id", transactionId)
+    .eq("client_id", clientId)
+    .eq("status", "pending_review")
+    .select();
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
@@ -122,8 +164,8 @@ export async function POST(req: NextRequest) {
 
   if (!data?.length) {
     return NextResponse.json(
-      { error: "Not found or not authorized" },
-      { status: 404 },
+      { error: "Transaction changed before it could be confirmed" },
+      { status: 409 },
     );
   }
 
