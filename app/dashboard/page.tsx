@@ -23,7 +23,10 @@ import {
   isQualifyingSpending,
   sumTransactionAmounts,
 } from '@/lib/financial-queries';
-import { getReviewDecision } from '@/lib/review-policy';
+import {
+  getReviewDecision,
+  getReviewDecisionMessage,
+} from '@/lib/review-policy';
 
 interface Transaction {
   id: string;
@@ -2321,28 +2324,32 @@ function handleAskQuestion() {
                           </td>
 
                           <td className="px-5 py-4 text-sm text-slate-300">
-                            {transaction.ai_confidence == null ? (
-                              <div>
-                                <p>—</p>
-                                <p className="mt-1 text-xs font-medium text-amber-300">
-                                  Confidence unavailable — verify category
-                                </p>
-                              </div>
-                            ) : Number(transaction.ai_confidence) < 0.8 ? (
-                              <div>
-                                <p>{Math.round(Number(transaction.ai_confidence) * 100)}%</p>
-                                <p className="mt-1 text-xs font-medium text-amber-300">
-                                  Lower confidence — review category
-                                </p>
-                              </div>
-                            ) : (
-                              <div>
-                                <p>{Math.round(Number(transaction.ai_confidence) * 100)}%</p>
-                                <p className="mt-1 text-xs text-slate-500">
-                                  High confidence
-                                </p>
-                              </div>
-                            )}
+                            {(() => {
+                              const decision = getReviewDecision(transaction);
+                              const confidence =
+                                transaction.ai_confidence == null
+                                  ? null
+                                  : Number(transaction.ai_confidence);
+
+                              return (
+                                <div>
+                                  <p>
+                                    {confidence == null
+                                      ? '—'
+                                      : `${Math.round(confidence * 100)}%`}
+                                  </p>
+                                  <p
+                                    className={`mt-1 text-xs ${
+                                      decision.state === 'needs_attention'
+                                        ? 'font-medium text-amber-300'
+                                        : 'text-slate-500'
+                                    }`}
+                                  >
+                                    {getReviewDecisionMessage(decision)}
+                                  </p>
+                                </div>
+                              );
+                            })()}
                           </td>
 
                           <td className="whitespace-nowrap px-5 py-4">
