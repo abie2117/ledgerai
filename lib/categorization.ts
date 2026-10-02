@@ -143,6 +143,7 @@ async function applyCategory(
   transactionId: string,
   categoryId: string,
   confidence: number,
+  source: 'learned_rule' | 'local_rule' | 'ai',
 ) {
   const category = await getCategoryById(
     supabase,
@@ -160,6 +161,7 @@ async function applyCategory(
     .update({
       ai_category_id: category.id,
       ai_confidence: confidence,
+      categorization_source: source,
       category: category.name,
       updated_at: new Date().toISOString(),
     })
@@ -281,6 +283,7 @@ export async function categorizePendingTransactions(
         txn.id,
         rule.category_id,
         Number(rule.confidence_score),
+        'learned_rule',
       );
 
       await bumpRuleUsage(
@@ -429,6 +432,7 @@ async function categorizeBatchWithClaude(
       txn.id,
       categoryId,
       confidence,
+      'ai',
     );
 
     /*
@@ -559,6 +563,7 @@ export async function recordCorrection(
       .update({
         ai_category_id: toCategoryId,
         ai_confidence: 1,
+        categorization_source: 'manual',
         category: category.name,
         status: 'confirmed',
         updated_at:
@@ -867,6 +872,7 @@ export async function categorizeWithLocalRules(
           txn.id,
           learnedRule.category_id,
           learnedRule.confidence_score,
+          'learned_rule',
         );
 
         await bumpRuleUsage(
@@ -917,6 +923,7 @@ export async function categorizeWithLocalRules(
       txn.id,
       matchedCategory.id,
       1,
+      'local_rule',
     );
 
     categorized++;
