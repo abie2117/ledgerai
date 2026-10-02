@@ -152,6 +152,7 @@ export async function POST(request: Request) {
         amount,
         merchant_name,
         raw_plaid_category,
+        duplicate_of_transaction_id,
         canonical_category:categories!transactions_ai_category_id_fkey (
           name
         )
@@ -305,7 +306,7 @@ User question:
 ${question}
 
 Transaction data:
-${JSON.stringify(transactions || [], null, 2)}
+${JSON.stringify(getQualifyingSpendingTransactions(financialTransactions), null, 2)}
 `;
 
     try {
