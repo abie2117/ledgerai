@@ -2366,16 +2366,26 @@ function handleAskQuestion() {
                                 Confirmed
                               </span>
                             ) : (
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  handleApproveTransaction(transaction.id)
-                                }
-                                disabled={isSaving || bulkApproving}
-                                className="rounded-lg border border-emerald-500/50 px-3 py-1.5 text-xs font-semibold text-emerald-300 transition hover:bg-emerald-500/10 disabled:cursor-not-allowed disabled:opacity-50"
-                              >
-                                {isSaving ? 'Approving...' : 'Approve'}
-                              </button>
+                              <div className="flex flex-col items-start gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    handleApproveTransaction(transaction.id)
+                                  }
+                                  disabled={isSaving || bulkApproving}
+                                  className="rounded-lg border border-emerald-500/50 px-3 py-1.5 text-xs font-semibold text-emerald-300 transition hover:bg-emerald-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                  {isSaving ? 'Confirming...' : 'Confirm category'}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setEditingCategoryId(transaction.id)}
+                                  disabled={isSaving || bulkApproving}
+                                  className="text-xs font-medium text-cyan-400 transition hover:text-cyan-300 disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                  Change category
+                                </button>
+                              </div>
                             )}
                           </td>
 
