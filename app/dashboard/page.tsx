@@ -2371,28 +2371,40 @@ function handleAskQuestion() {
                               <span className="text-xs font-medium text-emerald-300">
                                 Confirmed
                               </span>
-                            ) : (
-                              <div className="flex flex-col items-start gap-1.5">
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    handleApproveTransaction(transaction.id)
-                                  }
-                                  disabled={isSaving || bulkApproving}
-                                  className="rounded-lg border border-emerald-500/50 px-3 py-1.5 text-xs font-semibold text-emerald-300 transition hover:bg-emerald-500/10 disabled:cursor-not-allowed disabled:opacity-50"
-                                >
-                                  {isSaving ? 'Confirming...' : 'Confirm category'}
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => setEditingCategoryId(transaction.id)}
-                                  disabled={isSaving || bulkApproving}
-                                  className="text-xs font-medium text-cyan-400 transition hover:text-cyan-300 disabled:cursor-not-allowed disabled:opacity-50"
-                                >
-                                  Change category
-                                </button>
-                              </div>
-                            )}
+                            ) : (() => {
+                              const decision = getReviewDecision(transaction);
+
+                              return (
+                                <div className="flex flex-col items-start gap-1.5">
+                                  {decision.state === 'routine' ? (
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        handleApproveTransaction(transaction.id)
+                                      }
+                                      disabled={isSaving || bulkApproving}
+                                      className="rounded-lg border border-emerald-500/50 px-3 py-1.5 text-xs font-semibold text-emerald-300 transition hover:bg-emerald-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+                                    >
+                                      {isSaving ? 'Confirming...' : 'Confirm category'}
+                                    </button>
+                                  ) : (
+                                    <span className="text-xs font-medium text-amber-300">
+                                      Resolve exception
+                                    </span>
+                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={() => setEditingCategoryId(transaction.id)}
+                                    disabled={isSaving || bulkApproving}
+                                    className="text-xs font-medium text-cyan-400 transition hover:text-cyan-300 disabled:cursor-not-allowed disabled:opacity-50"
+                                  >
+                                    {decision.state === 'needs_attention'
+                                      ? 'Review category'
+                                      : 'Change category'}
+                                  </button>
+                                </div>
+                              );
+                            })()}
                           </td>
 
                           <td className="whitespace-nowrap px-5 py-4 text-right text-sm font-semibold text-white">
