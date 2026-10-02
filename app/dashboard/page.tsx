@@ -469,6 +469,32 @@ export default function DashboardPage() {
     ];
   }, [categories, transactions]);
 
+  const reviewSummary = useMemo(() => {
+    let activeExceptions = 0;
+    let legacyReview = 0;
+    let routineAwaitingSignoff = 0;
+
+    for (const transaction of transactions) {
+      if (transaction.status !== 'pending_review') continue;
+
+      const decision = getReviewDecision(transaction);
+
+      if (decision.reason === 'unknown_provenance') {
+        legacyReview += 1;
+      } else if (decision.state === 'needs_attention') {
+        activeExceptions += 1;
+      } else {
+        routineAwaitingSignoff += 1;
+      }
+    }
+
+    return {
+      activeExceptions,
+      legacyReview,
+      routineAwaitingSignoff,
+    };
+  }, [transactions]);
+
   const filteredTransactions = useMemo(() => {
     return transactions.filter((transaction) => {
       const merchant = getMerchantName(transaction).toLowerCase();
@@ -672,7 +698,7 @@ export default function DashboardPage() {
     setCategoryFilter('All Categories');
     setAccountFilter('All Accounts');
     setReviewFilter('Needs Review');
-    setConfidenceFilter('All Confidence');
+    setConfidenceFilter('Active Exceptions');
     setStartDate('');
     setEndDate('');
     setTimeframe('all');
@@ -726,7 +752,8 @@ export default function DashboardPage() {
     setSearchTerm('');
     setCategoryFilter('All Categories');
     setAccountFilter('All Accounts');
-    setReviewFilter('Needs Review');
+    setReviewFilter('All Transactions');
+    setConfidenceFilter('All Review Decisions');
     setStartDate('');
     setEndDate('');
     setTimeframe('all');
@@ -1521,7 +1548,10 @@ function handleAskQuestion() {
           <nav className="flex flex-wrap items-center gap-1 border-b border-slate-800 bg-slate-950/35 px-5 py-2 sm:px-6" aria-label="LedgerAI workspace">
             <a href="#overview" className="rounded-lg bg-cyan-500/10 px-3 py-2 text-sm font-semibold text-cyan-300">Overview</a>
             <a href="#transactions" className="rounded-lg px-3 py-2 text-sm font-medium text-slate-400 transition hover:bg-slate-800 hover:text-white">Transactions</a>
-            <a href="#transactions" onClick={() => setReviewFilter('Needs Review')} className="rounded-lg px-3 py-2 text-sm font-medium text-slate-400 transition hover:bg-slate-800 hover:text-white">Review</a>
+            <a href="#transactions" onClick={() => {
+              setReviewFilter('Needs Review');
+              setConfidenceFilter('Active Exceptions');
+            }} className="rounded-lg px-3 py-2 text-sm font-medium text-slate-400 transition hover:bg-slate-800 hover:text-white">Review</a>
             <a href={selectedClientId ? `/dashboard/banks?clientId=${selectedClientId}` : '/dashboard/banks'} className="rounded-lg px-3 py-2 text-sm font-medium text-slate-400 transition hover:bg-slate-800 hover:text-white">Banks</a>
             <span className="cursor-not-allowed rounded-lg px-3 py-2 text-sm font-medium text-slate-600" title="Coming later in the LedgerAI roadmap">Reports</span>
           </nav>
@@ -1745,7 +1775,10 @@ function handleAskQuestion() {
               <h2 className="mt-1 text-xl font-bold text-white">{selectedClient?.name || 'Client'} at a glance</h2>
               <p className="mt-1 text-sm text-slate-400">Key activity and items that need your attention.</p>
             </div>
-            <a href="#transactions" onClick={() => setReviewFilter('Needs Review')} className="text-sm font-semibold text-cyan-400 transition hover:text-cyan-300">
+            <a href="#transactions" onClick={() => {
+              setReviewFilter('Needs Review');
+              setConfidenceFilter('Active Exceptions');
+            }} className="text-sm font-semibold text-cyan-400 transition hover:text-cyan-300">
               Review transactions →
             </a>
           </div>
@@ -1754,10 +1787,22 @@ function handleAskQuestion() {
             <div className="rounded-2xl border border-amber-500/20 bg-amber-500/[0.06] p-5">
               <p className="text-sm font-semibold text-amber-200">Needs your attention</p>
               <div className="mt-2 flex items-end gap-3">
-                <span className="text-3xl font-bold text-white">{transactions.filter((transaction) => transaction.status === 'pending_review').length}</span>
-                <span className="pb-1 text-sm text-slate-400">transactions awaiting review</span>
+                <span className="text-3xl font-bold text-white">{reviewSummary.activeExceptions}</span>
+                <span className="pb-1 text-sm text-slate-400">active exceptions</span>
               </div>
-              <p className="mt-2 text-xs text-slate-500">Approve or correct transactions before finalizing the books.</p>
+              <p className="mt-2 text-xs text-slate-500">
+                {reviewSummary.activeExceptions > 0
+                  ? 'Resolve these exceptions before relying on automated categorization.'
+                  : 'No current categorization exceptions require your attention.'}
+              </p>
+              {(reviewSummary.legacyReview > 0 ||
+                reviewSummary.routineAwaitingSignoff > 0) && (
+                <p className="mt-2 text-xs text-slate-600">
+                  {reviewSummary.legacyReview} legacy review item{reviewSummary.legacyReview === 1 ? '' : 's'}
+                  {' · '}
+                  {reviewSummary.routineAwaitingSignoff} routine item{reviewSummary.routineAwaitingSignoff === 1 ? '' : 's'} awaiting sign-off
+                </p>
+              )}
             </div>
             <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
               <p className="text-sm font-semibold text-white">Bank workspace</p>
@@ -1978,7 +2023,7 @@ function handleAskQuestion() {
                   htmlFor="confidence-filter"
                   className="mb-2 block text-sm font-medium text-slate-300"
                 >
-                  Confidence
+                  Review Decision
                 </label>
 
                 <select
@@ -1987,9 +2032,10 @@ function handleAskQuestion() {
                   onChange={(event) => setConfidenceFilter(event.target.value)}
                   className="w-full min-w-0 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white outline-none transition focus:border-cyan-400"
                 >
-                  <option value="All Confidence">All Confidence</option>
-                  <option value="Needs Attention">Needs Attention (&lt;80% or missing)</option>
-                  <option value="High Confidence">High Confidence (80%+)</option>
+                  <option value="Active Exceptions">Active Exceptions</option>
+                  <option value="Legacy Review">Legacy Review</option>
+                  <option value="Routine">Routine</option>
+                  <option value="All Review Decisions">All Review Decisions</option>
                 </select>
               </div>
 
@@ -2195,7 +2241,8 @@ function handleAskQuestion() {
                           className="transition hover:bg-slate-800/40"
                         >
                           <td className="whitespace-nowrap px-5 py-4">
-                            {transaction.status === 'pending_review' ? (
+                            {transaction.status === 'pending_review' &&
+                            getReviewDecision(transaction).state === 'routine' ? (
                               <input
                                 type="checkbox"
                                 aria-label={`Select ${getMerchantName(transaction)} for approval`}
@@ -2369,7 +2416,11 @@ function handleAskQuestion() {
                             >
                               {transaction.status === 'confirmed'
                                 ? 'Confirmed'
-                                : 'Needs review'}
+                                : getReviewDecision(transaction).reason === 'unknown_provenance'
+                                  ? 'Legacy review'
+                                  : getReviewDecision(transaction).state === 'needs_attention'
+                                    ? 'Needs attention'
+                                    : 'Awaiting sign-off'}
                             </span>
                           </td>
 
@@ -2396,7 +2447,9 @@ function handleAskQuestion() {
                                     </button>
                                   ) : (
                                     <span className="text-xs font-medium text-amber-300">
-                                      Resolve exception
+                                      {decision.reason === 'unknown_provenance'
+                                        ? 'Legacy review'
+                                        : 'Resolve exception'}
                                     </span>
                                   )}
                                   <button
