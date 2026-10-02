@@ -71,6 +71,17 @@ interface FirmMembership {
   role?: string | null;
 }
 
+interface CategoryCorrection {
+  id: string;
+  transaction_id: string;
+  from_category_id?: string | null;
+  to_category_id: string;
+  corrected_by: string;
+  corrected_at: string;
+  from_category?: { name: string } | null;
+  to_category?: { name: string } | null;
+}
+
 interface GroupedMerchant {
   merchant: string;
   total: number;
@@ -179,6 +190,9 @@ export default function DashboardPage() {
   );
   const [selectedTransactionIds, setSelectedTransactionIds] = useState<string[]>([]);
   const [bulkApproving, setBulkApproving] = useState(false);
+  const [historyTransactionId, setHistoryTransactionId] = useState<string | null>(null);
+  const [correctionHistory, setCorrectionHistory] = useState<CategoryCorrection[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
 
   const [financeQuestion, setFinanceQuestion] = useState('');
   const [askAnswer, setAskAnswer] = useState('');
@@ -809,6 +823,49 @@ export default function DashboardPage() {
   async function handleBankReconnected() {
     await refreshTransactions();
     setSuccessMessage('Bank connection repaired and transactions refreshed successfully.');
+  }
+
+  async function loadCorrectionHistory(transactionId: string) {
+    if (historyTransactionId === transactionId) {
+      setHistoryTransactionId(null);
+      setCorrectionHistory([]);
+      return;
+    }
+
+    try {
+      setHistoryLoading(true);
+      setErrorMessage('');
+
+      const { data, error } = await supabase
+        .from('category_corrections')
+        .select(`
+          id,
+          transaction_id,
+          from_category_id,
+          to_category_id,
+          corrected_by,
+          corrected_at,
+          from_category:categories!category_corrections_from_category_id_fkey (
+            name
+          ),
+          to_category:categories!category_corrections_to_category_id_fkey (
+            name
+          )
+        `)
+        .eq('client_id', selectedClientId)
+        .eq('transaction_id', transactionId)
+        .order('corrected_at', { ascending: false });
+
+      if (error) throw error;
+
+      setCorrectionHistory((data || []) as unknown as CategoryCorrection[]);
+      setHistoryTransactionId(transactionId);
+    } catch (error: any) {
+      console.error('Error loading correction history:', error);
+      setErrorMessage(error?.message || 'Unable to load correction history.');
+    } finally {
+      setHistoryLoading(false);
+    }
   }
 
   async function handleCategoryChange(
@@ -2204,6 +2261,36 @@ function handleAskQuestion() {
                               >
                                 {category}
                               </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => loadCorrectionHistory(transaction.id)}
+                              disabled={historyLoading}
+                              className="ml-2 text-xs font-medium text-cyan-400 transition hover:text-cyan-300 disabled:opacity-50"
+                            >
+                              {historyTransactionId === transaction.id ? 'Hide history' : 'History'}
+                            </button>
+                            {historyTransactionId === transaction.id && (
+                              <div className="mt-2 min-w-[240px] rounded-lg border border-slate-700 bg-slate-950 p-3 text-xs">
+                                {historyLoading ? (
+                                  <p className="text-slate-400">Loading history...</p>
+                                ) : correctionHistory.length === 0 ? (
+                                  <p className="text-slate-500">No category corrections recorded.</p>
+                                ) : (
+                                  <div className="space-y-2">
+                                    {correctionHistory.map((correction) => (
+                                      <div key={correction.id} className="border-b border-slate-800 pb-2 last:border-0 last:pb-0">
+                                        <p className="text-slate-300">
+                                          {correction.from_category?.name || 'Uncategorized'} → {correction.to_category?.name || 'Unknown category'}
+                                        </p>
+                                        <p className="mt-1 text-slate-500">
+                                          {new Date(correction.corrected_at).toLocaleString()}
+                                        </p>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
                             )}
                           </td>
 
