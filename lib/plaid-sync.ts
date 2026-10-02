@@ -7,6 +7,7 @@ import {
 } from 'plaid';
 import { readPlaidAccessToken } from './plaid-token-storage';
 import { categorizeWithLocalRules } from './categorization';
+import { detectDuplicateCandidates } from './duplicate-detection';
 
 const plaidEnv =
   (process.env.PLAID_ENV as keyof typeof PlaidEnvironments) ||
@@ -504,6 +505,38 @@ export async function syncPlaidItem({
         '[plaid-sync] Bank sync succeeded, but automatic categorization could not complete:',
         categorizationError?.message ||
           categorizationError
+      );
+    }
+
+    // ---------------------------------------------------------
+    // 9. DETECT SUSPECTED DUPLICATES
+    //
+    // Evidence only: never mutates transaction financial state.
+    // A detector failure cannot make a successful bank sync fail.
+    // ---------------------------------------------------------
+
+    try {
+      const duplicateResult =
+        await detectDuplicateCandidates(
+          db,
+          clientId
+        );
+
+      console.log(
+        '[plaid-sync] Duplicate candidate detection complete:',
+        {
+          clientId,
+          scanned:
+            duplicateResult.scanned,
+          candidates:
+            duplicateResult.candidates,
+        }
+      );
+    } catch (duplicateError: any) {
+      console.warn(
+        '[plaid-sync] Bank sync succeeded, but duplicate candidate detection could not complete:',
+        duplicateError?.message ||
+          duplicateError
       );
     }
 
