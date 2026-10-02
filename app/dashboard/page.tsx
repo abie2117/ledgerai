@@ -36,7 +36,7 @@ interface Transaction {
   category?: string | null;
   ai_category_id?: string | null;
   status?: 'pending_review' | 'confirmed' | string | null;
-  confidence_score?: number | null;
+  ai_confidence?: number | null;
   canonical_category?: {
     id: string;
     name: string;
@@ -2171,9 +2171,9 @@ function handleAskQuestion() {
                           </td>
 
                           <td className="whitespace-nowrap px-5 py-4 text-sm text-slate-300">
-                            {transaction.confidence_score == null
+                            {transaction.ai_confidence == null
                               ? '—'
-                              : `${Math.round(Number(transaction.confidence_score) * 100)}%`}
+                              : `${Math.round(Number(transaction.ai_confidence) * 100)}%`}
                           </td>
 
                           <td className="whitespace-nowrap px-5 py-4">
