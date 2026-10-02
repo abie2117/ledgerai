@@ -546,7 +546,11 @@ export default function DashboardPage() {
     transactionPageStart + transactionsPerPage,
   );
   const pageReviewTransactionIds = dashboardTransactions
-    .filter((transaction) => transaction.status === 'pending_review')
+    .filter(
+      (transaction) =>
+        transaction.status === 'pending_review' &&
+        getReviewDecision(transaction).state === 'routine',
+    )
     .map((transaction) => transaction.id);
   const selectedTransactionIdSet = new Set(selectedTransactionIds);
   const allPageReviewTransactionsSelected =
