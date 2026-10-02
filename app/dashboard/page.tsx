@@ -168,6 +168,7 @@ export default function DashboardPage() {
   const [categoryFilter, setCategoryFilter] = useState('All Categories');
   const [accountFilter, setAccountFilter] = useState('All Accounts');
   const [reviewFilter, setReviewFilter] = useState('Needs Review');
+  const [confidenceFilter, setConfidenceFilter] = useState('All Confidence');
   const [transactionPage, setTransactionPage] = useState(1);
 
   const [editingCategoryId, setEditingCategoryId] = useState<string | null>(
@@ -461,6 +462,18 @@ export default function DashboardPage() {
         (reviewFilter === 'Confirmed' &&
           transaction.status === 'confirmed');
 
+      const confidence =
+        transaction.ai_confidence == null
+          ? null
+          : Number(transaction.ai_confidence);
+      const matchesConfidence =
+        confidenceFilter === 'All Confidence' ||
+        (confidenceFilter === 'Needs Attention' &&
+          (confidence == null || confidence < 0.8)) ||
+        (confidenceFilter === 'High Confidence' &&
+          confidence != null &&
+          confidence >= 0.8);
+
       const matchesStartDate =
         !startDate || getTransactionDate(transaction) >= startDate;
 
@@ -472,6 +485,7 @@ export default function DashboardPage() {
         matchesCategory &&
         matchesAccount &&
         matchesReview &&
+        matchesConfidence &&
         matchesStartDate &&
         matchesEndDate
       );
@@ -482,6 +496,7 @@ export default function DashboardPage() {
     categoryFilter,
     accountFilter,
     reviewFilter,
+    confidenceFilter,
     startDate,
     endDate,
   ]);
@@ -514,6 +529,7 @@ export default function DashboardPage() {
     categoryFilter,
     accountFilter,
     reviewFilter,
+    confidenceFilter,
     startDate,
     endDate,
   ]);
@@ -616,6 +632,7 @@ export default function DashboardPage() {
     setCategoryFilter('All Categories');
     setAccountFilter('All Accounts');
     setReviewFilter('Needs Review');
+    setConfidenceFilter('All Confidence');
     setStartDate('');
     setEndDate('');
     setTimeframe('all');
@@ -1798,7 +1815,7 @@ function handleAskQuestion() {
               />
             </div>
 
-            <div className="grid min-w-0 gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-[minmax(0,1.1fr)_minmax(0,1.1fr)_minmax(0,1fr)_minmax(0,0.9fr)_minmax(0,0.9fr)_auto] 2xl:items-end">
+            <div className="grid min-w-0 gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-[minmax(0,1.1fr)_minmax(0,1.1fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,0.9fr)_minmax(0,0.9fr)_auto] 2xl:items-end">
               <div>
                 <label
                   htmlFor="category-filter"
@@ -1864,6 +1881,26 @@ function handleAskQuestion() {
                   <option value="Needs Review">Needs Review</option>
                   <option value="Confirmed">Confirmed</option>
                   <option value="All Transactions">All Transactions</option>
+                </select>
+              </div>
+
+              <div>
+                <label
+                  htmlFor="confidence-filter"
+                  className="mb-2 block text-sm font-medium text-slate-300"
+                >
+                  Confidence
+                </label>
+
+                <select
+                  id="confidence-filter"
+                  value={confidenceFilter}
+                  onChange={(event) => setConfidenceFilter(event.target.value)}
+                  className="w-full min-w-0 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white outline-none transition focus:border-cyan-400"
+                >
+                  <option value="All Confidence">All Confidence</option>
+                  <option value="Needs Attention">Needs Attention (&lt;80% or missing)</option>
+                  <option value="High Confidence">High Confidence (80%+)</option>
                 </select>
               </div>
 
