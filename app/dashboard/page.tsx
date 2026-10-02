@@ -193,6 +193,7 @@ export default function DashboardPage() {
   const [historyTransactionId, setHistoryTransactionId] = useState<string | null>(null);
   const [correctionHistory, setCorrectionHistory] = useState<CategoryCorrection[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [correctionCounts, setCorrectionCounts] = useState<Record<string, number>>({});
 
   const [financeQuestion, setFinanceQuestion] = useState('');
   const [askAnswer, setAskAnswer] = useState('');
@@ -399,6 +400,21 @@ export default function DashboardPage() {
         );
 
         setTransactions(formattedTransactions as Transaction[]);
+
+        const { data: correctionData, error: correctionError } = await supabase
+          .from('category_corrections')
+          .select('transaction_id')
+          .eq('client_id', selectedClientId);
+
+        if (correctionError) throw correctionError;
+
+        const nextCorrectionCounts: Record<string, number> = {};
+        for (const correction of correctionData || []) {
+          if (!correction.transaction_id) continue;
+          nextCorrectionCounts[correction.transaction_id] =
+            (nextCorrectionCounts[correction.transaction_id] || 0) + 1;
+        }
+        setCorrectionCounts(nextCorrectionCounts);
       } catch (error: any) {
         console.error(
           'Error loading selected client transactions:',
@@ -406,6 +422,7 @@ export default function DashboardPage() {
         );
 
         setTransactions([]);
+        setCorrectionCounts({});
 
         setErrorMessage(
           error?.message ||
@@ -917,6 +934,12 @@ export default function DashboardPage() {
       setSelectedTransactionIds((currentIds) =>
         currentIds.filter((id) => id !== transactionId),
       );
+      if (result.changed !== false) {
+        setCorrectionCounts((currentCounts) => ({
+          ...currentCounts,
+          [transactionId]: (currentCounts[transactionId] || 0) + 1,
+        }));
+      }
       setEditingCategoryId(null);
       setSuccessMessage(
         result.unchanged
@@ -2262,14 +2285,18 @@ function handleAskQuestion() {
                                 {category}
                               </button>
                             )}
-                            <button
-                              type="button"
-                              onClick={() => loadCorrectionHistory(transaction.id)}
-                              disabled={historyLoading}
-                              className="ml-2 text-xs font-medium text-cyan-400 transition hover:text-cyan-300 disabled:opacity-50"
-                            >
-                              {historyTransactionId === transaction.id ? 'Hide history' : 'History'}
-                            </button>
+                            {(correctionCounts[transaction.id] || 0) > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => loadCorrectionHistory(transaction.id)}
+                                disabled={historyLoading}
+                                className="ml-2 text-xs font-medium text-cyan-400 transition hover:text-cyan-300 disabled:opacity-50"
+                              >
+                                {historyTransactionId === transaction.id
+                                  ? 'Hide history'
+                                  : `${correctionCounts[transaction.id]} correction${correctionCounts[transaction.id] === 1 ? '' : 's'}`}
+                              </button>
+                            )}
                             {historyTransactionId === transaction.id && (
                               <div className="mt-2 min-w-[240px] rounded-lg border border-slate-700 bg-slate-950 p-3 text-xs">
                                 {historyLoading ? (
@@ -2294,10 +2321,29 @@ function handleAskQuestion() {
                             )}
                           </td>
 
-                          <td className="whitespace-nowrap px-5 py-4 text-sm text-slate-300">
-                            {transaction.ai_confidence == null
-                              ? '—'
-                              : `${Math.round(Number(transaction.ai_confidence) * 100)}%`}
+                          <td className="px-5 py-4 text-sm text-slate-300">
+                            {transaction.ai_confidence == null ? (
+                              <div>
+                                <p>—</p>
+                                <p className="mt-1 text-xs font-medium text-amber-300">
+                                  Confidence unavailable — verify category
+                                </p>
+                              </div>
+                            ) : Number(transaction.ai_confidence) < 0.8 ? (
+                              <div>
+                                <p>{Math.round(Number(transaction.ai_confidence) * 100)}%</p>
+                                <p className="mt-1 text-xs font-medium text-amber-300">
+                                  Lower confidence — review category
+                                </p>
+                              </div>
+                            ) : (
+                              <div>
+                                <p>{Math.round(Number(transaction.ai_confidence) * 100)}%</p>
+                                <p className="mt-1 text-xs text-slate-500">
+                                  High confidence
+                                </p>
+                              </div>
+                            )}
                           </td>
 
                           <td className="whitespace-nowrap px-5 py-4">
