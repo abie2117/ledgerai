@@ -111,3 +111,25 @@ export function getReviewDecision(
     reason: 'supported_automation',
   };
 }
+
+
+export function getReviewDecisionMessage(
+  decision: ReviewDecision,
+): string {
+  if (decision.state === 'routine') {
+    return decision.reason === 'manual'
+      ? 'Category verified by a person'
+      : 'LedgerAI has sufficient categorization evidence';
+  }
+
+  switch (decision.reason) {
+    case 'missing_category':
+      return 'LedgerAI needs more information to choose a category';
+    case 'unknown_provenance':
+      return 'Legacy category source cannot be verified';
+    case 'low_confidence':
+      return 'LedgerAI is not confident enough in this category';
+    case 'sensitive_category':
+      return 'Transfer or payment needs context before bookkeeping treatment';
+  }
+}
