@@ -23,6 +23,7 @@ import {
   isQualifyingSpending,
   sumTransactionAmounts,
 } from '@/lib/financial-queries';
+import { getReviewDecision } from '@/lib/review-policy';
 
 interface Transaction {
   id: string;
@@ -37,6 +38,7 @@ interface Transaction {
   ai_category_id?: string | null;
   status?: 'pending_review' | 'confirmed' | string | null;
   ai_confidence?: number | null;
+  categorization_source?: 'ai' | 'learned_rule' | 'local_rule' | 'manual' | null;
   canonical_category?: {
     id: string;
     name: string;
@@ -493,17 +495,14 @@ export default function DashboardPage() {
         (reviewFilter === 'Confirmed' &&
           transaction.status === 'confirmed');
 
-      const confidence =
-        transaction.ai_confidence == null
-          ? null
-          : Number(transaction.ai_confidence);
+      const reviewDecision =
+        getReviewDecision(transaction);
       const matchesConfidence =
         confidenceFilter === 'All Confidence' ||
         (confidenceFilter === 'Needs Attention' &&
-          (confidence == null || confidence < 0.8)) ||
+          reviewDecision.state === 'needs_attention') ||
         (confidenceFilter === 'High Confidence' &&
-          confidence != null &&
-          confidence >= 0.8);
+          reviewDecision.state === 'routine');
 
       const matchesStartDate =
         !startDate || getTransactionDate(transaction) >= startDate;
