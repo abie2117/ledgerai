@@ -44,14 +44,6 @@ function createServiceRoleClient() {
   );
 }
 
-function getPlaidErrorCode(error: any) {
-  return (
-    error?.response?.data?.error_code ||
-    error?.error_code ||
-    null
-  );
-}
-
 export async function POST(req: Request) {
   try {
     // ---------------------------------------------------------
