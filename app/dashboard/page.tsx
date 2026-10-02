@@ -184,7 +184,7 @@ export default function DashboardPage() {
   const [categoryFilter, setCategoryFilter] = useState('All Categories');
   const [accountFilter, setAccountFilter] = useState('All Accounts');
   const [reviewFilter, setReviewFilter] = useState('Needs Review');
-  const [confidenceFilter, setConfidenceFilter] = useState('All Confidence');
+  const [confidenceFilter, setConfidenceFilter] = useState('Active Exceptions');
   const [transactionPage, setTransactionPage] = useState(1);
 
   const [editingCategoryId, setEditingCategoryId] = useState<string | null>(
@@ -501,10 +501,13 @@ export default function DashboardPage() {
       const reviewDecision =
         getReviewDecision(transaction);
       const matchesConfidence =
-        confidenceFilter === 'All Confidence' ||
-        (confidenceFilter === 'Needs Attention' &&
-          reviewDecision.state === 'needs_attention') ||
-        (confidenceFilter === 'High Confidence' &&
+        confidenceFilter === 'All Review Decisions' ||
+        (confidenceFilter === 'Active Exceptions' &&
+          reviewDecision.state === 'needs_attention' &&
+          reviewDecision.reason !== 'unknown_provenance') ||
+        (confidenceFilter === 'Legacy Review' &&
+          reviewDecision.reason === 'unknown_provenance') ||
+        (confidenceFilter === 'Routine' &&
           reviewDecision.state === 'routine');
 
       const matchesStartDate =
