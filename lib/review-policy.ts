@@ -55,20 +55,23 @@ function categoryName(
 export function getReviewDecision(
   transaction: ReviewPolicyTransaction,
 ): ReviewDecision {
-  if (!transaction.ai_category_id) {
-    return {
-      state: 'needs_attention',
-      reason: 'missing_category',
-    };
-  }
-
   const source =
     transaction.categorization_source;
 
+  // Provenance is the first safety boundary. Historical transactions that
+  // predate provenance tracking stay in Legacy Review even when they also
+  // lack a category; we must not misrepresent them as new active exceptions.
   if (!source) {
     return {
       state: 'needs_attention',
       reason: 'unknown_provenance',
+    };
+  }
+
+  if (!transaction.ai_category_id) {
+    return {
+      state: 'needs_attention',
+      reason: 'missing_category',
     };
   }
 
