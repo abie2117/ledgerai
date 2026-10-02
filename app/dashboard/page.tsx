@@ -87,6 +87,22 @@ interface CategoryCorrection {
   to_category?: { name: string } | null;
 }
 
+interface DuplicateCandidate {
+  id: string;
+  transaction_a_id: string;
+  transaction_b_id: string;
+  severity: 'low' | 'medium' | 'high';
+  evidence?: {
+    detector_version?: string;
+    same_account?: boolean;
+    exact_amount?: boolean;
+    normalized_merchant_match?: boolean;
+    date_distance_days?: number;
+  } | null;
+  status: 'open' | 'dismissed' | 'resolved';
+  detected_at: string;
+}
+
 interface GroupedMerchant {
   merchant: string;
   total: number;
@@ -199,6 +215,8 @@ export default function DashboardPage() {
   const [correctionHistory, setCorrectionHistory] = useState<CategoryCorrection[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [correctionCounts, setCorrectionCounts] = useState<Record<string, number>>({});
+  const [duplicateCandidates, setDuplicateCandidates] = useState<DuplicateCandidate[]>([]);
+  const [dismissingDuplicateId, setDismissingDuplicateId] = useState<string | null>(null);
 
   const [financeQuestion, setFinanceQuestion] = useState('');
   const [askAnswer, setAskAnswer] = useState('');
@@ -420,6 +438,17 @@ export default function DashboardPage() {
             (nextCorrectionCounts[correction.transaction_id] || 0) + 1;
         }
         setCorrectionCounts(nextCorrectionCounts);
+
+        const { data: duplicateData, error: duplicateError } = await supabase
+          .from('duplicate_candidates')
+          .select('id, transaction_a_id, transaction_b_id, severity, evidence, status, detected_at')
+          .eq('client_id', selectedClientId)
+          .eq('status', 'open')
+          .order('detected_at', { ascending: false });
+
+        if (duplicateError) throw duplicateError;
+
+        setDuplicateCandidates((duplicateData || []) as DuplicateCandidate[]);
       } catch (error: any) {
         console.error(
           'Error loading selected client transactions:',
@@ -428,6 +457,7 @@ export default function DashboardPage() {
 
         setTransactions([]);
         setCorrectionCounts({});
+        setDuplicateCandidates([]);
 
         setErrorMessage(
           error?.message ||
@@ -494,6 +524,56 @@ export default function DashboardPage() {
       routineAwaitingSignoff,
     };
   }, [transactions]);
+
+  const duplicateCandidateByTransactionId = useMemo(() => {
+    const byTransactionId = new Map<string, DuplicateCandidate>();
+
+    for (const candidate of duplicateCandidates) {
+      byTransactionId.set(candidate.transaction_a_id, candidate);
+      byTransactionId.set(candidate.transaction_b_id, candidate);
+    }
+
+    return byTransactionId;
+  }, [duplicateCandidates]);
+
+  async function handleDismissDuplicate(candidateId: string) {
+    if (!selectedClientId) return;
+
+    try {
+      setDismissingDuplicateId(candidateId);
+      setErrorMessage('');
+      setSuccessMessage('');
+
+      const response = await fetch('/api/duplicates/dismiss', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          candidateId,
+          clientId: selectedClientId,
+        }),
+      });
+
+      const result = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(result.error || 'Unable to dismiss duplicate candidate.');
+      }
+
+      setDuplicateCandidates((currentCandidates) =>
+        currentCandidates.filter((candidate) => candidate.id !== candidateId),
+      );
+      setSuccessMessage('Duplicate warning dismissed. No transaction data was changed.');
+    } catch (error: unknown) {
+      console.error('Error dismissing duplicate candidate:', error);
+      setErrorMessage(
+        error instanceof Error
+          ? error.message
+          : 'Unable to dismiss duplicate candidate.',
+      );
+    } finally {
+      setDismissingDuplicateId(null);
+    }
+  }
 
   const filteredTransactions = useMemo(() => {
     return transactions.filter((transaction) => {
@@ -2276,6 +2356,46 @@ function handleAskQuestion() {
                                   Pending
                                 </span>
                               )}
+                              {(() => {
+                                const candidate =
+                                  duplicateCandidateByTransactionId.get(transaction.id);
+
+                                if (!candidate) return null;
+
+                                const pairedTransactionId =
+                                  candidate.transaction_a_id === transaction.id
+                                    ? candidate.transaction_b_id
+                                    : candidate.transaction_a_id;
+                                const pairedTransaction = transactions.find(
+                                  (item) => item.id === pairedTransactionId,
+                                );
+
+                                return (
+                                  <div className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/[0.06] p-2 text-xs">
+                                    <p className="font-semibold text-amber-300">
+                                      Possible duplicate
+                                    </p>
+                                    <p className="mt-1 text-slate-400">
+                                      {pairedTransaction
+                                        ? `Matches ${getMerchantName(pairedTransaction)} · ${formatDate(getTransactionDate(pairedTransaction))} · ${formatCurrency(Number(pairedTransaction.amount || 0))}`
+                                        : 'A matching transaction was detected for this client.'}
+                                    </p>
+                                    <p className="mt-1 text-slate-500">
+                                      Same account, amount and merchant within one day. This is a warning only.
+                                    </p>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDismissDuplicate(candidate.id)}
+                                      disabled={dismissingDuplicateId === candidate.id}
+                                      className="mt-2 font-semibold text-amber-200 transition hover:text-white disabled:opacity-50"
+                                    >
+                                      {dismissingDuplicateId === candidate.id
+                                        ? 'Dismissing...'
+                                        : 'Not a duplicate — dismiss'}
+                                    </button>
+                                  </div>
+                                );
+                              })()}
                             </div>
                           </td>
 
