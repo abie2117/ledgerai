@@ -6,6 +6,7 @@ import {
   PlaidEnvironments,
 } from 'plaid';
 import { readPlaidAccessToken } from './plaid-token-storage';
+import { categorizeWithLocalRules } from './categorization';
 
 const plaidEnv =
   (process.env.PLAID_ENV as keyof typeof PlaidEnvironments) ||
@@ -467,6 +468,42 @@ export async function syncPlaidItem({
     if (!updatedItem) {
       throw new Error(
         'The Plaid Item cursor changed during synchronization. The final cursor was not overwritten.'
+      );
+    }
+
+    // ---------------------------------------------------------
+    // 8. CATEGORIZE PENDING TRANSACTIONS
+    //
+    // Categorization runs only after bank ingestion and the cursor
+    // commit succeed. A categorization failure must never make a
+    // successful Plaid sync look unsuccessful.
+    //
+    // The engine assigns categories and provenance, but does not
+    // confirm transactions. Uncertain bookkeeping remains available
+    // for exception review.
+    // ---------------------------------------------------------
+
+    try {
+      const categorizationResult =
+        await categorizeWithLocalRules(
+          clientId
+        );
+
+      console.log(
+        '[plaid-sync] Automatic categorization complete:',
+        {
+          clientId,
+          categorized:
+            categorizationResult.categorized,
+          leftForReview:
+            categorizationResult.skipped,
+        }
+      );
+    } catch (categorizationError: any) {
+      console.warn(
+        '[plaid-sync] Bank sync succeeded, but automatic categorization could not complete:',
+        categorizationError?.message ||
+          categorizationError
       );
     }
 
