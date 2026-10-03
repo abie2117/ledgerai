@@ -77,13 +77,23 @@ export async function POST(request: Request) {
       );
     }
 
-    const firmIds = (memberships || [])
+    const accountingMemberships = (memberships || []).filter(
+      (membership: any) =>
+        ['owner', 'admin', 'bookkeeper'].includes(
+          membership.role,
+        ),
+    );
+
+    const firmIds = accountingMemberships
       .map((membership: any) => membership.firm_id)
       .filter(Boolean);
 
     if (firmIds.length === 0) {
       return NextResponse.json(
-        { error: 'You do not belong to a firm.' },
+        {
+          error:
+            'You are not authorized to change transaction bookkeeping.',
+        },
         { status: 403 },
       );
     }
