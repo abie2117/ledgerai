@@ -1,7 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { createServerSupabaseClient } from '../../../lib/supabase-server';
-import { recordCorrection } from '../../../lib/categorization';
 
 export async function POST(request: Request) {
   try {
@@ -211,21 +210,41 @@ export async function POST(request: Request) {
     }
 
     /*
-     * recordCorrection() performs the canonical bookkeeping work:
-     *
-     * - records category_corrections
-     * - updates ai_category_id
-     * - synchronizes the legacy category text
-     * - marks the transaction confirmed
-     * - teaches the merchant mapping rule for this client
+     * The authenticated database RPC is the canonical mutation boundary.
+     * It atomically reverses an active posted journal when necessary,
+     * records the correction, updates the transaction, and audits the
+     * bookkeeping change. Database authorization is authoritative.
      */
-    await recordCorrection(
-      transactionId,
-      clientId,
-      transaction.ai_category_id || null,
-      toCategoryId,
-      user.id,
+    const { error: correctionError } = await supabase.rpc(
+      'correct_transaction_category',
+      {
+        p_transaction_id: transactionId,
+        p_client_id: clientId,
+        p_to_category_id: toCategoryId,
+      },
     );
+
+    if (correctionError) {
+      console.error(
+        '[category-correction] Correction failed:',
+        {
+          userId: user.id,
+          clientId,
+          transactionId,
+          code: correctionError.code,
+          message: correctionError.message,
+        },
+      );
+
+      return NextResponse.json(
+        {
+          error:
+            correctionError.message ||
+            'Unable to save category correction.',
+        },
+        { status: 409 },
+      );
+    }
 
     return NextResponse.json({
       success: true,
