@@ -42,6 +42,9 @@ interface Transaction {
   status?: 'pending_review' | 'confirmed' | string | null;
   ai_confidence?: number | null;
   categorization_source?: 'ai' | 'learned_rule' | 'local_rule' | 'manual' | null;
+  duplicate_of_transaction_id?: string | null;
+  duplicate_resolved_at?: string | null;
+  duplicate_resolved_by?: string | null;
   canonical_category?: {
     id: string;
     name: string;
@@ -217,6 +220,7 @@ export default function DashboardPage() {
   const [correctionCounts, setCorrectionCounts] = useState<Record<string, number>>({});
   const [duplicateCandidates, setDuplicateCandidates] = useState<DuplicateCandidate[]>([]);
   const [dismissingDuplicateId, setDismissingDuplicateId] = useState<string | null>(null);
+  const [resolvingDuplicateKey, setResolvingDuplicateKey] = useState<string | null>(null);
 
   const [financeQuestion, setFinanceQuestion] = useState('');
   const [askAnswer, setAskAnswer] = useState('');
@@ -525,12 +529,18 @@ export default function DashboardPage() {
     };
   }, [transactions]);
 
-  const duplicateCandidateByTransactionId = useMemo(() => {
-    const byTransactionId = new Map<string, DuplicateCandidate>();
+  const duplicateCandidatesByTransactionId = useMemo(() => {
+    const byTransactionId = new Map<string, DuplicateCandidate[]>();
 
     for (const candidate of duplicateCandidates) {
-      byTransactionId.set(candidate.transaction_a_id, candidate);
-      byTransactionId.set(candidate.transaction_b_id, candidate);
+      for (const transactionId of [
+        candidate.transaction_a_id,
+        candidate.transaction_b_id,
+      ]) {
+        const current = byTransactionId.get(transactionId) || [];
+        current.push(candidate);
+        byTransactionId.set(transactionId, current);
+      }
     }
 
     return byTransactionId;
@@ -572,6 +582,82 @@ export default function DashboardPage() {
       );
     } finally {
       setDismissingDuplicateId(null);
+    }
+  }
+
+  async function handleResolveDuplicate(
+    candidate: DuplicateCandidate,
+    duplicateTransactionId: string,
+  ) {
+    if (!selectedClientId) return;
+
+    const retainedTransactionId =
+      candidate.transaction_a_id === duplicateTransactionId
+        ? candidate.transaction_b_id
+        : candidate.transaction_a_id;
+    const duplicateTransaction = transactions.find(
+      (transaction) => transaction.id === duplicateTransactionId,
+    );
+    const retainedTransaction = transactions.find(
+      (transaction) => transaction.id === retainedTransactionId,
+    );
+
+    const confirmed = window.confirm(
+      `Confirm duplicate bookkeeping treatment?\n\nExclude: ${duplicateTransaction ? `${getMerchantName(duplicateTransaction)} · ${formatDate(getTransactionDate(duplicateTransaction))} · ${formatCurrency(Number(duplicateTransaction.amount || 0))}` : duplicateTransactionId}\nKeep: ${retainedTransaction ? `${getMerchantName(retainedTransaction)} · ${formatDate(getTransactionDate(retainedTransaction))} · ${formatCurrency(Number(retainedTransaction.amount || 0))}` : retainedTransactionId}\n\nThe excluded bank-feed record will remain visible for audit history but will no longer count in financial totals or accounting exports.`,
+    );
+
+    if (!confirmed) return;
+
+    const resolutionKey = `${candidate.id}:${duplicateTransactionId}`;
+
+    try {
+      setResolvingDuplicateKey(resolutionKey);
+      setErrorMessage('');
+      setSuccessMessage('');
+
+      const response = await fetch('/api/duplicates/resolve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          candidateId: candidate.id,
+          clientId: selectedClientId,
+          duplicateTransactionId,
+        }),
+      });
+
+      const result = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(result.error || 'Unable to confirm duplicate.');
+      }
+
+      setTransactions((currentTransactions) =>
+        currentTransactions.map((transaction) =>
+          transaction.id === result.duplicateTransactionId
+            ? {
+                ...transaction,
+                duplicate_of_transaction_id: result.retainedTransactionId,
+                duplicate_resolved_at: new Date().toISOString(),
+                duplicate_resolved_by: userId,
+              }
+            : transaction,
+        ),
+      );
+      setDuplicateCandidates((currentCandidates) =>
+        currentCandidates.filter((item) => item.id !== candidate.id),
+      );
+      setSuccessMessage(
+        'Duplicate confirmed. The bank record was preserved and the duplicate copy is excluded from financial totals and accounting exports.',
+      );
+    } catch (error: unknown) {
+      console.error('Error resolving duplicate candidate:', error);
+      setErrorMessage(
+        error instanceof Error
+          ? error.message
+          : 'Unable to confirm duplicate.',
+      );
+    } finally {
+      setResolvingDuplicateKey(null);
     }
   }
 
@@ -1469,8 +1555,12 @@ function handleAskQuestion() {
 }
 
   function exportTransactionsToCsv() {
-    if (filteredTransactions.length === 0) {
-      setErrorMessage('There are no transactions to export.');
+    const accountingTransactions = filteredTransactions.filter(
+      (transaction) => !transaction.duplicate_of_transaction_id,
+    );
+
+    if (accountingTransactions.length === 0) {
+      setErrorMessage('There are no accounting transactions to export.');
       return;
     }
 
@@ -1486,7 +1576,7 @@ function handleAskQuestion() {
       'Currency',
     ];
 
-    const rows = filteredTransactions.map((transaction) => [
+    const rows = accountingTransactions.map((transaction) => [
       getTransactionDate(transaction),
       getMerchantName(transaction),
       Number(transaction.amount || 0).toFixed(2),
@@ -2356,46 +2446,90 @@ function handleAskQuestion() {
                                   Pending
                                 </span>
                               )}
-                              {(() => {
-                                const candidate =
-                                  duplicateCandidateByTransactionId.get(transaction.id);
+                              {transaction.duplicate_of_transaction_id && (
+                                <div className="mt-2 rounded-lg border border-slate-600 bg-slate-800/70 p-2 text-xs">
+                                  <p className="font-semibold text-slate-200">
+                                    Excluded duplicate
+                                  </p>
+                                  <p className="mt-1 text-slate-400">
+                                    Preserved for audit history. Excluded from financial totals and accounting exports.
+                                  </p>
+                                </div>
+                              )}
+                              {(duplicateCandidatesByTransactionId.get(transaction.id) || []).map(
+                                (candidate) => {
+                                  const pairedTransactionId =
+                                    candidate.transaction_a_id === transaction.id
+                                      ? candidate.transaction_b_id
+                                      : candidate.transaction_a_id;
+                                  const pairedTransaction = transactions.find(
+                                    (item) => item.id === pairedTransactionId,
+                                  );
+                                  const excludeThisKey = `${candidate.id}:${transaction.id}`;
+                                  const excludePairedKey = `${candidate.id}:${pairedTransactionId}`;
+                                  const isResolving =
+                                    resolvingDuplicateKey === excludeThisKey ||
+                                    resolvingDuplicateKey === excludePairedKey;
 
-                                if (!candidate) return null;
-
-                                const pairedTransactionId =
-                                  candidate.transaction_a_id === transaction.id
-                                    ? candidate.transaction_b_id
-                                    : candidate.transaction_a_id;
-                                const pairedTransaction = transactions.find(
-                                  (item) => item.id === pairedTransactionId,
-                                );
-
-                                return (
-                                  <div className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/[0.06] p-2 text-xs">
-                                    <p className="font-semibold text-amber-300">
-                                      Possible duplicate
-                                    </p>
-                                    <p className="mt-1 text-slate-400">
-                                      {pairedTransaction
-                                        ? `Matches ${getMerchantName(pairedTransaction)} · ${formatDate(getTransactionDate(pairedTransaction))} · ${formatCurrency(Number(pairedTransaction.amount || 0))}`
-                                        : 'A matching transaction was detected for this client.'}
-                                    </p>
-                                    <p className="mt-1 text-slate-500">
-                                      Same account, amount and merchant within one day. This is a warning only.
-                                    </p>
-                                    <button
-                                      type="button"
-                                      onClick={() => handleDismissDuplicate(candidate.id)}
-                                      disabled={dismissingDuplicateId === candidate.id}
-                                      className="mt-2 font-semibold text-amber-200 transition hover:text-white disabled:opacity-50"
+                                  return (
+                                    <div
+                                      key={candidate.id}
+                                      className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/[0.06] p-2 text-xs"
                                     >
-                                      {dismissingDuplicateId === candidate.id
-                                        ? 'Dismissing...'
-                                        : 'Not a duplicate — dismiss'}
-                                    </button>
-                                  </div>
-                                );
-                              })()}
+                                      <p className="font-semibold text-amber-300">
+                                        Possible duplicate
+                                      </p>
+                                      <p className="mt-1 text-slate-400">
+                                        {pairedTransaction
+                                          ? `Matches ${getMerchantName(pairedTransaction)} · ${formatDate(getTransactionDate(pairedTransaction))} · ${formatCurrency(Number(pairedTransaction.amount || 0))}`
+                                          : 'A matching transaction was detected for this client.'}
+                                      </p>
+                                      <p className="mt-1 text-slate-500">
+                                        Same account, amount and merchant within one day. Review both records before choosing.
+                                      </p>
+                                      <div className="mt-2 flex flex-wrap gap-x-3 gap-y-2">
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            handleResolveDuplicate(candidate, transaction.id)
+                                          }
+                                          disabled={isResolving}
+                                          className="font-semibold text-rose-300 transition hover:text-white disabled:opacity-50"
+                                        >
+                                          {resolvingDuplicateKey === excludeThisKey
+                                            ? 'Confirming...'
+                                            : 'Exclude this; keep matching'}
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            handleResolveDuplicate(candidate, pairedTransactionId)
+                                          }
+                                          disabled={isResolving}
+                                          className="font-semibold text-cyan-300 transition hover:text-white disabled:opacity-50"
+                                        >
+                                          {resolvingDuplicateKey === excludePairedKey
+                                            ? 'Confirming...'
+                                            : 'Keep this; exclude matching'}
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => handleDismissDuplicate(candidate.id)}
+                                          disabled={
+                                            isResolving ||
+                                            dismissingDuplicateId === candidate.id
+                                          }
+                                          className="font-semibold text-amber-200 transition hover:text-white disabled:opacity-50"
+                                        >
+                                          {dismissingDuplicateId === candidate.id
+                                            ? 'Dismissing...'
+                                            : 'Not a duplicate — dismiss'}
+                                        </button>
+                                      </div>
+                                    </div>
+                                  );
+                                },
+                              )}
                             </div>
                           </td>
 
