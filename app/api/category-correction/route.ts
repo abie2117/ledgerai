@@ -67,7 +67,7 @@ export async function POST(request: Request) {
       error: membershipError,
     } = await admin
       .from('firm_users')
-      .select('firm_id')
+      .select('firm_id, role')
       .eq('user_id', user.id);
 
     if (membershipError) {
