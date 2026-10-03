@@ -153,6 +153,7 @@ export async function POST(request: Request) {
         merchant_name,
         raw_plaid_category,
         duplicate_of_transaction_id,
+        plaid_removed_at,
         canonical_category:categories!transactions_ai_category_id_fkey (
           name
         )
