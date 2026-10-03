@@ -45,6 +45,7 @@ interface Transaction {
   duplicate_of_transaction_id?: string | null;
   duplicate_resolved_at?: string | null;
   duplicate_resolved_by?: string | null;
+  plaid_removed_at?: string | null;
   canonical_category?: {
     id: string;
     name: string;
@@ -1556,7 +1557,8 @@ function handleAskQuestion() {
 
   function exportTransactionsToCsv() {
     const accountingTransactions = filteredTransactions.filter(
-      (transaction) => !transaction.duplicate_of_transaction_id,
+      (transaction) =>
+        !transaction.duplicate_of_transaction_id && !transaction.plaid_removed_at,
     );
 
     if (accountingTransactions.length === 0) {
