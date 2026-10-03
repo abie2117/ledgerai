@@ -12,6 +12,7 @@ export interface FinancialTransaction {
   raw_plaid_category?: string | null;
   canonical_category?: FinancialCategory | null;
   duplicate_of_transaction_id?: string | null;
+  plaid_removed_at?: string | null;
 }
 
 export interface DateRange {
@@ -175,6 +176,7 @@ export function isQualifyingSpending(
 
   return (
     !transaction.duplicate_of_transaction_id &&
+    !transaction.plaid_removed_at &&
     Number.isFinite(amount) &&
     amount > 0 &&
     !isNonSpendingCategory(
