@@ -378,8 +378,8 @@ export async function syncPlaidItem({
     // ---------------------------------------------------------
     // 6. APPLY REMOVED TRANSACTIONS
     //
-    // LedgerAI currently has no transaction soft-delete field,
-    // so Plaid removals are physically deleted.
+    // Preserve bank-feed history instead of deleting bookkeeping evidence.
+    // Shared financial logic excludes provider-removed rows.
     // ---------------------------------------------------------
 
     const removedIds = Array.from(
@@ -405,7 +405,12 @@ export async function syncPlaidItem({
         error: removedError,
       } = await db
         .from('transactions')
-        .delete()
+        .update({
+          plaid_removed_at:
+            new Date().toISOString(),
+          updated_at:
+            new Date().toISOString(),
+        })
         .eq(
           'client_id',
           clientId
@@ -418,7 +423,7 @@ export async function syncPlaidItem({
       if (removedError) {
         throw new Error(
           removedError.message ||
-            'Failed to remove deleted Plaid transactions.'
+            'Failed to mark removed Plaid transactions.'
         );
       }
     }
