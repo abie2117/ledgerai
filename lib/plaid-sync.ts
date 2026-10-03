@@ -68,6 +68,55 @@ export function getPlaidSyncErrorMessage(error: any) {
   );
 }
 
+type ProviderExceptionEventType = 'modified' | 'removed';
+
+function providerCurrentValues(transaction: any) {
+  return {
+    account_id: transaction.account_id,
+    posted_date: transaction.posted_date,
+    amount: transaction.amount,
+    merchant_name: transaction.merchant_name,
+    raw_plaid_category: transaction.raw_plaid_category,
+    plaid_removed_at: transaction.plaid_removed_at,
+  };
+}
+
+async function capturePostedProviderException({
+  db,
+  item,
+  clientId,
+  transaction,
+  eventType,
+  proposedValues,
+}: {
+  db: any;
+  item: PlaidItemForSync;
+  clientId: string;
+  transaction: any;
+  eventType: ProviderExceptionEventType;
+  proposedValues: Record<string, unknown>;
+}) {
+  const { error } = await db.rpc(
+    'capture_provider_transaction_exception',
+    {
+      p_client_id: clientId,
+      p_plaid_item_id: item.id,
+      p_transaction_id: transaction.id,
+      p_plaid_transaction_id: transaction.plaid_transaction_id,
+      p_event_type: eventType,
+      p_current_values: providerCurrentValues(transaction),
+      p_proposed_values: proposedValues,
+    }
+  );
+
+  if (error) {
+    throw new Error(
+      error.message ||
+        `Failed to capture provider ${eventType} exception for transaction ${transaction.plaid_transaction_id}.`
+    );
+  }
+}
+
 export async function syncPlaidItem({
   db,
   item,
@@ -337,30 +386,84 @@ export async function syncPlaidItem({
       }
 
       const {
+        data: existingTransaction,
+        error: existingTransactionError,
+      } = await db
+        .from('transactions')
+        .select(
+          'id, account_id, posted_date, amount, merchant_name, raw_plaid_category, plaid_removed_at, plaid_transaction_id, journal_entries!left(id, status, reversal_of_journal_entry_id)'
+        )
+        .eq(
+          'plaid_transaction_id',
+          tx.transaction_id
+        )
+        .eq(
+          'client_id',
+          clientId
+        )
+        .maybeSingle();
+
+      if (existingTransactionError) {
+        throw new Error(
+          existingTransactionError.message ||
+            `Failed to inspect transaction ${tx.transaction_id} before applying its provider modification.`
+        );
+      }
+
+      if (!existingTransaction) {
+        skippedTransactions += 1;
+        continue;
+      }
+
+      const hasActivePostedJournal =
+        (
+          existingTransaction.journal_entries ||
+          []
+        ).some(
+          (journal: any) =>
+            journal.status === 'posted' &&
+            journal.reversal_of_journal_entry_id === null
+        );
+
+      const proposedValues = {
+        account_id: localAccountId,
+        posted_date: tx.date,
+        amount: tx.amount,
+        merchant_name:
+          tx.merchant_name ||
+          tx.name ||
+          'Unknown Merchant',
+        raw_plaid_category:
+          Array.isArray(tx.category)
+            ? tx.category.join(', ')
+            : null,
+      };
+
+      if (hasActivePostedJournal) {
+        await capturePostedProviderException({
+          db,
+          item,
+          clientId,
+          transaction: existingTransaction,
+          eventType: 'modified',
+          proposedValues,
+        });
+
+        continue;
+      }
+
+      const {
         error: modifiedError,
       } = await db
         .from('transactions')
         .update({
-          account_id:
-            localAccountId,
-          posted_date:
-            tx.date,
-          amount:
-            tx.amount,
-          merchant_name:
-            tx.merchant_name ||
-            tx.name ||
-            'Unknown Merchant',
-          raw_plaid_category:
-            Array.isArray(tx.category)
-              ? tx.category.join(', ')
-              : null,
+          ...proposedValues,
           updated_at:
             new Date().toISOString(),
         })
         .eq(
-          'plaid_transaction_id',
-          tx.transaction_id
+          'id',
+          existingTransaction.id
         )
         .eq(
           'client_id',
@@ -402,15 +505,13 @@ export async function syncPlaidItem({
 
     if (removedIds.length > 0) {
       const {
-        error: removedError,
+        data: transactionsToRemove,
+        error: transactionsToRemoveError,
       } = await db
         .from('transactions')
-        .update({
-          plaid_removed_at:
-            new Date().toISOString(),
-          updated_at:
-            new Date().toISOString(),
-        })
+        .select(
+          'id, account_id, posted_date, amount, merchant_name, raw_plaid_category, plaid_removed_at, plaid_transaction_id, journal_entries!left(id, status, reversal_of_journal_entry_id)'
+        )
         .eq(
           'client_id',
           clientId
@@ -420,11 +521,59 @@ export async function syncPlaidItem({
           removedIds
         );
 
-      if (removedError) {
+      if (transactionsToRemoveError) {
         throw new Error(
-          removedError.message ||
-            'Failed to mark removed Plaid transactions.'
+          transactionsToRemoveError.message ||
+            'Failed to inspect removed Plaid transactions.'
         );
+      }
+
+      for (const transaction of transactionsToRemove || []) {
+        const hasActivePostedJournal =
+          (
+            transaction.journal_entries ||
+            []
+          ).some(
+            (journal: any) =>
+              journal.status === 'posted' &&
+              journal.reversal_of_journal_entry_id === null
+          );
+
+        if (hasActivePostedJournal) {
+          await capturePostedProviderException({
+            db,
+            item,
+            clientId,
+            transaction,
+            eventType: 'removed',
+            proposedValues: {
+              plaid_removed_at:
+                new Date().toISOString(),
+            },
+          });
+
+          continue;
+        }
+
+        const {
+          error: removedError,
+        } = await db
+          .from('transactions')
+          .update({
+            plaid_removed_at:
+              new Date().toISOString(),
+            updated_at:
+              new Date().toISOString(),
+          })
+          .eq('id', transaction.id)
+          .eq('client_id', clientId);
+
+        if (removedError) {
+          throw new Error(
+            removedError.message ||
+              `Failed to mark removed Plaid transaction ${transaction.plaid_transaction_id}.`
+          );
+        }
       }
     }
 
