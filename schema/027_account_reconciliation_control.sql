@@ -265,8 +265,8 @@ begin
     raise exception 'Reconciliation not found.';
   end if;
 
-  if v_reconciliation.status <> 'in_progress' then
-    raise exception 'Only an in-progress reconciliation can be completed.';
+  if v_reconciliation.status not in ('in_progress', 'needs_attention') then
+    raise exception 'Only an in-progress or needs-attention reconciliation can be completed.';
   end if;
 
   if v_reconciliation.account_id is null
@@ -368,7 +368,24 @@ begin
       )
     where id = v_reconciliation.id;
 
-    raise exception 'Reconciliation difference is %. Completion requires an exact zero difference.', v_difference;
+    insert into audit_log (actor_id, client_id, action, detail)
+    values (
+      v_user_id,
+      p_client_id,
+      'account_reconciliation_needs_attention',
+      jsonb_build_object(
+        'reconciliation_id', v_reconciliation.id,
+        'account_id', v_reconciliation.account_id,
+        'book_movement', v_movement,
+        'book_closing_balance', v_book_closing,
+        'statement_closing_balance', v_reconciliation.closing_statement_balance,
+        'difference', v_difference
+      )
+    );
+
+    return query
+      select v_reconciliation.id, v_movement, v_book_closing, v_difference, 0;
+    return;
   end if;
 
   insert into reconciliation_journal_entries (
@@ -424,6 +441,88 @@ begin
 
   return query
     select v_reconciliation.id, v_movement, v_book_closing, 0::numeric, v_count;
+end;
+$$;
+
+create or replace function update_account_reconciliation_balances(
+  p_reconciliation_id uuid,
+  p_client_id uuid,
+  p_opening_statement_balance numeric,
+  p_opening_book_balance numeric,
+  p_closing_statement_balance numeric
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_user_id uuid := auth.uid();
+  v_reconciliation reconciliations%rowtype;
+begin
+  if v_user_id is null then
+    raise exception 'Authentication required.';
+  end if;
+
+  if p_opening_statement_balance is null
+     or p_opening_book_balance is null
+     or p_closing_statement_balance is null then
+    raise exception 'Opening statement, opening book, and closing statement balances are required.';
+  end if;
+
+  if not exists (
+    select 1
+    from clients c
+    join firm_users fu on fu.firm_id = c.firm_id
+    where c.id = p_client_id
+      and fu.user_id = v_user_id
+      and fu.role in ('owner', 'admin', 'bookkeeper')
+  ) then
+    raise exception 'User is not authorized to update reconciliations for this client.';
+  end if;
+
+  select r.*
+    into v_reconciliation
+  from reconciliations r
+  where r.id = p_reconciliation_id
+    and r.client_id = p_client_id
+  for update;
+
+  if not found then
+    raise exception 'Reconciliation not found.';
+  end if;
+
+  if v_reconciliation.status not in ('in_progress', 'needs_attention') then
+    raise exception 'Only an in-progress or needs-attention reconciliation can be updated.';
+  end if;
+
+  update reconciliations
+  set
+    status = 'in_progress',
+    opening_statement_balance = round(p_opening_statement_balance, 2),
+    opening_book_balance = round(p_opening_book_balance, 2),
+    closing_statement_balance = round(p_closing_statement_balance, 2),
+    calculated_book_movement = null,
+    calculated_book_closing_balance = null,
+    reconciliation_difference = null,
+    summary = '{}'::jsonb
+  where id = v_reconciliation.id;
+
+  insert into audit_log (actor_id, client_id, action, detail)
+  values (
+    v_user_id,
+    p_client_id,
+    'account_reconciliation_balances_updated',
+    jsonb_build_object(
+      'reconciliation_id', v_reconciliation.id,
+      'account_id', v_reconciliation.account_id,
+      'opening_statement_balance', round(p_opening_statement_balance, 2),
+      'opening_book_balance', round(p_opening_book_balance, 2),
+      'closing_statement_balance', round(p_closing_statement_balance, 2)
+    )
+  );
+
+  return v_reconciliation.id;
 end;
 $$;
 
@@ -643,6 +742,10 @@ grant execute on function start_account_reconciliation(uuid, uuid, date, date, n
 revoke all on function complete_account_reconciliation(uuid, uuid) from public;
 revoke all on function complete_account_reconciliation(uuid, uuid) from anon;
 grant execute on function complete_account_reconciliation(uuid, uuid) to authenticated;
+
+revoke all on function update_account_reconciliation_balances(uuid, uuid, numeric, numeric, numeric) from public;
+revoke all on function update_account_reconciliation_balances(uuid, uuid, numeric, numeric, numeric) from anon;
+grant execute on function update_account_reconciliation_balances(uuid, uuid, numeric, numeric, numeric) to authenticated;
 
 revoke all on function reopen_account_reconciliation(uuid, uuid, text) from public;
 revoke all on function reopen_account_reconciliation(uuid, uuid, text) from anon;
