@@ -6,16 +6,19 @@ import { supabase } from '@/lib/supabase-browser';
 
 type AccountType = 'asset' | 'liability' | 'equity' | 'revenue' | 'expense';
 
+interface LedgerCategory {
+  id: string;
+  name: string;
+  coa_code?: string | null;
+  account_type?: AccountType | null;
+  normal_balance?: 'debit' | 'credit' | null;
+}
+
 interface JournalLine {
   debit: number | string;
   credit: number | string;
-  categories?: {
-    id: string;
-    name: string;
-    coa_code?: string | null;
-    account_type?: AccountType | null;
-    normal_balance?: 'debit' | 'credit' | null;
-  } | null;
+  categories?: LedgerCategory | LedgerCategory[] | null;
+  /* Supabase relationship inference can represent a joined relation as one row or an array. */
 }
 
 interface JournalEntry {
@@ -26,6 +29,7 @@ interface JournalEntry {
 }
 
 interface AccountBalance {
+
   id: string;
   name: string;
   coaCode?: string | null;
@@ -74,7 +78,7 @@ function ReportsContent() {
           .order('entry_date', { ascending: true });
 
         if (queryError) throw queryError;
-        if (!cancelled) setEntries((data || []) as JournalEntry[]);
+        if (!cancelled) setEntries((data || []) as unknown as JournalEntry[]);
       } catch (loadError) {
         if (!cancelled) setError(loadError instanceof Error ? loadError.message : 'Unable to load ledger reports.');
       } finally {
@@ -91,7 +95,7 @@ function ReportsContent() {
 
     for (const entry of source) {
       for (const line of entry.journal_lines || []) {
-        const category = line.categories;
+        const category = Array.isArray(line.categories) ? line.categories[0] : line.categories;
         if (!category?.id || !category.account_type || !category.normal_balance) continue;
 
         const debit = Number(line.debit || 0);
