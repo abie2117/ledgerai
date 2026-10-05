@@ -611,7 +611,7 @@ export async function syncPlaidItem({
             []
           ).some(
             (journal: any) =>
-              journal.status === 'posted' &&
+              (journal.status === 'draft' || journal.status === 'posted') &&
               journal.reversal_of_journal_entry_id === null
           );
 
