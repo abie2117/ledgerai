@@ -15,6 +15,7 @@ interface LedgerCategory {
 }
 
 interface JournalLine {
+  description?: string | null;
   debit: number | string;
   credit: number | string;
   categories?: LedgerCategory | LedgerCategory[] | null;
@@ -24,6 +25,7 @@ interface JournalLine {
 interface JournalEntry {
   id: string;
   entry_date: string;
+  memo?: string | null;
   status: string;
   journal_lines?: JournalLine[];
 }
@@ -71,7 +73,7 @@ function ReportsContent() {
       try {
         const { data, error: queryError } = await supabase
           .from('journal_entries')
-          .select('id, entry_date, status, journal_lines(debit, credit, categories(id, name, coa_code, account_type, normal_balance))')
+          .select('id, entry_date, memo, status, journal_lines(description, debit, credit, categories(id, name, coa_code, account_type, normal_balance))')
           .eq('client_id', clientId)
           .in('status', ['posted', 'reversed'])
           .lte('entry_date', endDate)
@@ -149,6 +151,39 @@ function ReportsContent() {
   const trialDebit = asOfBalances.reduce((sum, account) => sum + account.debit, 0);
   const trialCredit = asOfBalances.reduce((sum, account) => sum + account.credit, 0);
 
+  const generalLedgerRows = useMemo(() => {
+    const rows: Array<{
+      key: string;
+      date: string;
+      account: string;
+      type: AccountType;
+      memo: string;
+      description: string;
+      debit: number;
+      credit: number;
+    }> = [];
+
+    for (const entry of periodEntries) {
+      (entry.journal_lines || []).forEach((line, index) => {
+        const category = Array.isArray(line.categories) ? line.categories[0] : line.categories;
+        if (!category?.account_type) return;
+
+        rows.push({
+          key: `${entry.id}-${index}`,
+          date: entry.entry_date,
+          account: `${category.coa_code ? `${category.coa_code} · ` : ''}${category.name}`,
+          type: category.account_type,
+          memo: entry.memo || 'Journal entry',
+          description: line.description || '—',
+          debit: Number(line.debit || 0),
+          credit: Number(line.credit || 0),
+        });
+      });
+    }
+
+    return rows;
+  }, [periodEntries]);
+
   function rows(accounts: AccountBalance[]) {
     if (accounts.length === 0) return <p className="py-3 text-sm text-slate-500">No posted ledger activity.</p>;
     return accounts.map((account) => (
@@ -221,6 +256,34 @@ function ReportsContent() {
                     <div className="mt-2 flex justify-between rounded-xl bg-slate-950/60 p-4 text-sm font-semibold"><span>Accounting equation difference</span><span>{money(balanceDifference)}</span></div>
                   </section>
                 </div>
+
+                <section className="rounded-2xl border border-slate-800 bg-slate-900 p-6">
+                  <h2 className="text-xl font-semibold">General Ledger</h2>
+                  <p className="mt-1 text-xs text-slate-500">{startDate} → {endDate} · posted ledger lines only</p>
+                  {generalLedgerRows.length === 0 ? (
+                    <p className="mt-4 text-sm text-slate-500">No posted ledger activity for this period.</p>
+                  ) : (
+                    <div className="mt-4 overflow-x-auto">
+                      <table className="w-full min-w-[820px] text-sm">
+                        <thead className="text-left text-xs uppercase tracking-wide text-slate-500">
+                          <tr><th className="pb-2">Date</th><th className="pb-2">Account</th><th className="pb-2">Memo</th><th className="pb-2">Description</th><th className="pb-2 text-right">Debit</th><th className="pb-2 text-right">Credit</th></tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-800">
+                          {generalLedgerRows.map((row) => (
+                            <tr key={row.key}>
+                              <td className="py-2 text-slate-400">{row.date}</td>
+                              <td className="py-2 text-slate-200">{row.account}</td>
+                              <td className="py-2 text-slate-300">{row.memo}</td>
+                              <td className="py-2 text-slate-400">{row.description}</td>
+                              <td className="py-2 text-right text-slate-300">{row.debit > 0 ? money(row.debit) : '—'}</td>
+                              <td className="py-2 text-right text-slate-300">{row.credit > 0 ? money(row.credit) : '—'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </section>
 
                 <section className="rounded-2xl border border-slate-800 bg-slate-900 p-6">
                   <h2 className="text-xl font-semibold">Trial Balance</h2>
