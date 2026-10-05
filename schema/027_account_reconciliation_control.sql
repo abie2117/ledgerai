@@ -74,6 +74,35 @@ revoke insert, update, delete on reconciliations from authenticated;
 revoke insert, update, delete on reconciliation_journal_entries from authenticated;
 revoke all on reconciliation_journal_entries from anon;
 
+create or replace function protect_posted_account_coa_mapping()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  if new.coa_category_id is distinct from old.coa_category_id
+     and exists (
+       select 1
+       from transactions t
+       join journal_entries je on je.transaction_id = t.id
+       where t.account_id = old.id
+         and je.reversal_of_journal_entry_id is null
+         and je.status in ('draft', 'posted')
+     ) then
+    raise exception 'Connected account COA mapping cannot change while active transaction journals exist. Resolve the journal history first.';
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists protect_posted_account_coa_mapping_trigger on accounts;
+
+create trigger protect_posted_account_coa_mapping_trigger
+before update of coa_category_id on accounts
+for each row
+execute function protect_posted_account_coa_mapping();
+
 create or replace function start_account_reconciliation(
   p_client_id uuid,
   p_account_id uuid,
