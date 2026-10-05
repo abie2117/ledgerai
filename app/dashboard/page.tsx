@@ -46,6 +46,11 @@ interface Transaction {
   duplicate_resolved_at?: string | null;
   duplicate_resolved_by?: string | null;
   plaid_removed_at?: string | null;
+  journal_entries?: Array<{
+    id: string;
+    status: 'draft' | 'posted' | 'reversed' | string;
+    reversal_of_journal_entry_id?: string | null;
+  }> | null;
   canonical_category?: {
     id: string;
     name: string;
@@ -110,10 +115,10 @@ interface DuplicateCandidate {
 interface ProviderTransactionException {
   id: string;
   transaction_id: string;
-  event_type: 'modified' | 'removed';
+  event_type: 'modified' | 'removed' | 'reappeared';
   current_values: Record<string, unknown>;
   proposed_values: Record<string, unknown>;
-  status: 'open' | 'resolved' | 'dismissed';
+  status: 'open' | 'resolved' | 'dismissed' | 'superseded';
   first_seen_at: string;
   last_seen_at: string;
 }
@@ -421,6 +426,11 @@ export default function DashboardPage() {
             canonical_category:categories!transactions_ai_category_id_fkey (
               id,
               name
+            ),
+            journal_entries!left (
+              id,
+              status,
+              reversal_of_journal_entry_id
             )
           `)
           .eq('client_id', selectedClientId)
@@ -607,6 +617,19 @@ export default function DashboardPage() {
     const transaction = transactions.find(
       (item) => item.id === exception.transaction_id,
     );
+
+    const activeJournal = transaction?.journal_entries?.find(
+      (journal) =>
+        journal.reversal_of_journal_entry_id == null &&
+        (journal.status === 'draft' || journal.status === 'posted'),
+    );
+
+    if (action === 'accept' && activeJournal?.status === 'draft') {
+      setErrorMessage(
+        'This provider change cannot be accepted while the transaction has an active draft journal. Resolve the draft journal first, or dismiss the provider change.',
+      );
+      return;
+    }
 
     const actionDescription =
       action === 'accept'
@@ -2576,6 +2599,12 @@ function handleAskQuestion() {
                                 (exception) => {
                                   const isResolving =
                                     resolvingProviderExceptionId === exception.id;
+                                  const activeJournal = transaction.journal_entries?.find(
+                                    (journal) =>
+                                      journal.reversal_of_journal_entry_id == null &&
+                                      (journal.status === 'draft' || journal.status === 'posted'),
+                                  );
+                                  const isDraftBlocked = activeJournal?.status === 'draft';
                                   const proposed = exception.proposed_values || {};
                                   const proposedAmount =
                                     typeof proposed.amount === 'number'
@@ -2600,11 +2629,15 @@ function handleAskQuestion() {
                                       </p>
                                       <p className="mt-1 text-slate-400">
                                         {exception.event_type === 'removed'
-                                          ? 'The bank reports that this posted transaction was removed.'
-                                          : `The bank changed this posted transaction${proposedMerchant ? ` to ${proposedMerchant}` : ''}${proposedDate ? ` · ${formatDate(proposedDate)}` : ''}${Number.isFinite(proposedAmount) ? ` · ${formatCurrency(proposedAmount)}` : ''}.`}
+                                          ? 'The bank reports that this transaction was removed.'
+                                          : exception.event_type === 'reappeared'
+                                            ? `The bank reports that this previously removed transaction has reappeared${proposedMerchant ? ` as ${proposedMerchant}` : ''}${proposedDate ? ` · ${formatDate(proposedDate)}` : ''}${Number.isFinite(proposedAmount) ? ` · ${formatCurrency(proposedAmount)}` : ''}.`
+                                            : `The bank changed this transaction${proposedMerchant ? ` to ${proposedMerchant}` : ''}${proposedDate ? ` · ${formatDate(proposedDate)}` : ''}${Number.isFinite(proposedAmount) ? ` · ${formatCurrency(proposedAmount)}` : ''}.`}
                                       </p>
                                       <p className="mt-1 text-slate-500">
-                                        LedgerAI preserved the posted accounting record until an authorized accounting user decides how to handle the provider change.
+                                        {isDraftBlocked
+                                          ? 'LedgerAI preserved the active draft journal. Resolve that draft before accepting the provider change; dismissing remains available.'
+                                          : 'LedgerAI preserved the posted accounting record until an authorized accounting user decides how to handle the provider change.'}
                                       </p>
                                       {canResolveProviderExceptions ? (
                                         <div className="mt-2 flex flex-wrap gap-x-3 gap-y-2">
@@ -2616,12 +2649,19 @@ function handleAskQuestion() {
                                                 'accept',
                                               )
                                             }
-                                            disabled={isResolving}
+                                            disabled={isResolving || isDraftBlocked}
+                                            title={
+                                              isDraftBlocked
+                                                ? 'Resolve the active draft journal before accepting this provider change.'
+                                                : undefined
+                                            }
                                             className="font-semibold text-violet-300 transition hover:text-white disabled:opacity-50"
                                           >
                                             {isResolving
                                               ? 'Resolving...'
-                                              : 'Accept provider change'}
+                                              : isDraftBlocked
+                                                ? 'Resolve draft first'
+                                                : 'Accept provider change'}
                                           </button>
                                           <button
                                             type="button"
