@@ -107,6 +107,17 @@ interface DuplicateCandidate {
   detected_at: string;
 }
 
+interface ProviderTransactionException {
+  id: string;
+  transaction_id: string;
+  event_type: 'modified' | 'removed';
+  current_values: Record<string, unknown>;
+  proposed_values: Record<string, unknown>;
+  status: 'open' | 'resolved' | 'dismissed';
+  first_seen_at: string;
+  last_seen_at: string;
+}
+
 interface GroupedMerchant {
   merchant: string;
   total: number;
@@ -222,6 +233,8 @@ export default function DashboardPage() {
   const [duplicateCandidates, setDuplicateCandidates] = useState<DuplicateCandidate[]>([]);
   const [dismissingDuplicateId, setDismissingDuplicateId] = useState<string | null>(null);
   const [resolvingDuplicateKey, setResolvingDuplicateKey] = useState<string | null>(null);
+  const [providerExceptions, setProviderExceptions] = useState<ProviderTransactionException[]>([]);
+  const [resolvingProviderExceptionId, setResolvingProviderExceptionId] = useState<string | null>(null);
 
   const [financeQuestion, setFinanceQuestion] = useState('');
   const [askAnswer, setAskAnswer] = useState('');
@@ -454,6 +467,20 @@ export default function DashboardPage() {
         if (duplicateError) throw duplicateError;
 
         setDuplicateCandidates((duplicateData || []) as DuplicateCandidate[]);
+
+        const { data: providerExceptionData, error: providerExceptionError } =
+          await supabase
+            .from('provider_transaction_exceptions')
+            .select('id, transaction_id, event_type, current_values, proposed_values, status, first_seen_at, last_seen_at')
+            .eq('client_id', selectedClientId)
+            .eq('status', 'open')
+            .order('last_seen_at', { ascending: false });
+
+        if (providerExceptionError) throw providerExceptionError;
+
+        setProviderExceptions(
+          (providerExceptionData || []) as ProviderTransactionException[],
+        );
       } catch (error: any) {
         console.error(
           'Error loading selected client transactions:',
@@ -463,6 +490,7 @@ export default function DashboardPage() {
         setTransactions([]);
         setCorrectionCounts({});
         setDuplicateCandidates([]);
+        setProviderExceptions([]);
 
         setErrorMessage(
           error?.message ||
@@ -546,6 +574,102 @@ export default function DashboardPage() {
 
     return byTransactionId;
   }, [duplicateCandidates]);
+
+  const providerExceptionsByTransactionId = useMemo(() => {
+    const byTransactionId = new Map<string, ProviderTransactionException[]>();
+
+    for (const exception of providerExceptions) {
+      const current = byTransactionId.get(exception.transaction_id) || [];
+      current.push(exception);
+      byTransactionId.set(exception.transaction_id, current);
+    }
+
+    return byTransactionId;
+  }, [providerExceptions]);
+
+  const canResolveProviderExceptions = useMemo(() => {
+    const selectedClientFirmId = selectedClient?.firm_id;
+    if (!selectedClientFirmId) return false;
+
+    return memberships.some(
+      (membership) =>
+        membership.firm_id === selectedClientFirmId &&
+        ['owner', 'admin', 'bookkeeper'].includes(membership.role || ''),
+    );
+  }, [memberships, selectedClient]);
+
+  async function handleProviderExceptionResolution(
+    exception: ProviderTransactionException,
+    action: 'accept' | 'dismiss',
+  ) {
+    if (!selectedClientId || !canResolveProviderExceptions) return;
+
+    const transaction = transactions.find(
+      (item) => item.id === exception.transaction_id,
+    );
+
+    const actionDescription =
+      action === 'accept'
+        ? exception.event_type === 'removed'
+          ? 'reverse the posted journal and mark this bank transaction as provider-removed'
+          : 'reverse the current journal, apply the bank-provided change, and repost the transaction'
+        : 'keep the current transaction and journal unchanged and dismiss this provider change';
+
+    const confirmed = window.confirm(
+      `${action === 'accept' ? 'Accept' : 'Dismiss'} bank provider change?\n\n${transaction ? `${getMerchantName(transaction)} · ${formatDate(getTransactionDate(transaction))} · ${formatCurrency(Number(transaction.amount || 0))}` : exception.transaction_id}\n\nThis will ${actionDescription}. The decision will be retained in the audit history.`,
+    );
+
+    if (!confirmed) return;
+
+    try {
+      setResolvingProviderExceptionId(exception.id);
+      setErrorMessage('');
+      setSuccessMessage('');
+
+      const response = await fetch('/api/provider-exceptions/resolve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          exceptionId: exception.id,
+          clientId: selectedClientId,
+          action,
+        }),
+      });
+
+      const result = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(
+          result.error || 'Unable to resolve bank provider change.',
+        );
+      }
+
+      setProviderExceptions((current) =>
+        current.filter((item) => item.id !== exception.id),
+      );
+
+      if (action === 'accept') {
+        setTransactionsRefreshKey((current) => current + 1);
+      }
+
+      setSuccessMessage(
+        action === 'accept'
+          ? result.journalReposted
+            ? 'Bank provider change accepted. The prior journal was reversed and the updated transaction was reposted.'
+            : 'Bank provider removal accepted. The prior journal was reversed and the provider-removed transaction is excluded from active financial reporting.'
+          : 'Bank provider change dismissed. Transaction and journal data were not changed.',
+      );
+    } catch (error: unknown) {
+      console.error('Error resolving provider transaction exception:', error);
+      setErrorMessage(
+        error instanceof Error
+          ? error.message
+          : 'Unable to resolve bank provider change.',
+      );
+    } finally {
+      setResolvingProviderExceptionId(null);
+    }
+  }
 
   async function handleDismissDuplicate(candidateId: string) {
     if (!selectedClientId) return;
@@ -2447,6 +2571,80 @@ function handleAskQuestion() {
                                 <span className="mt-1 inline-flex rounded-full bg-amber-500/10 px-2 py-0.5 text-xs text-amber-300">
                                   Pending
                                 </span>
+                              )}
+                              {(providerExceptionsByTransactionId.get(transaction.id) || []).map(
+                                (exception) => {
+                                  const isResolving =
+                                    resolvingProviderExceptionId === exception.id;
+                                  const proposed = exception.proposed_values || {};
+                                  const proposedAmount =
+                                    typeof proposed.amount === 'number'
+                                      ? proposed.amount
+                                      : Number(proposed.amount);
+                                  const proposedDate =
+                                    typeof proposed.posted_date === 'string'
+                                      ? proposed.posted_date
+                                      : null;
+                                  const proposedMerchant =
+                                    typeof proposed.merchant_name === 'string'
+                                      ? proposed.merchant_name
+                                      : null;
+
+                                  return (
+                                    <div
+                                      key={exception.id}
+                                      className="mt-2 rounded-lg border border-violet-500/30 bg-violet-500/[0.06] p-2 text-xs"
+                                    >
+                                      <p className="font-semibold text-violet-300">
+                                        Bank provider change requires accounting review
+                                      </p>
+                                      <p className="mt-1 text-slate-400">
+                                        {exception.event_type === 'removed'
+                                          ? 'The bank reports that this posted transaction was removed.'
+                                          : `The bank changed this posted transaction${proposedMerchant ? ` to ${proposedMerchant}` : ''}${proposedDate ? ` · ${formatDate(proposedDate)}` : ''}${Number.isFinite(proposedAmount) ? ` · ${formatCurrency(proposedAmount)}` : ''}.`}
+                                      </p>
+                                      <p className="mt-1 text-slate-500">
+                                        LedgerAI preserved the posted accounting record until an authorized accounting user decides how to handle the provider change.
+                                      </p>
+                                      {canResolveProviderExceptions ? (
+                                        <div className="mt-2 flex flex-wrap gap-x-3 gap-y-2">
+                                          <button
+                                            type="button"
+                                            onClick={() =>
+                                              handleProviderExceptionResolution(
+                                                exception,
+                                                'accept',
+                                              )
+                                            }
+                                            disabled={isResolving}
+                                            className="font-semibold text-violet-300 transition hover:text-white disabled:opacity-50"
+                                          >
+                                            {isResolving
+                                              ? 'Resolving...'
+                                              : 'Accept provider change'}
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() =>
+                                              handleProviderExceptionResolution(
+                                                exception,
+                                                'dismiss',
+                                              )
+                                            }
+                                            disabled={isResolving}
+                                            className="font-semibold text-slate-300 transition hover:text-white disabled:opacity-50"
+                                          >
+                                            Dismiss
+                                          </button>
+                                        </div>
+                                      ) : (
+                                        <p className="mt-2 font-medium text-slate-400">
+                                          Owner, admin, or bookkeeper action required.
+                                        </p>
+                                      )}
+                                    </div>
+                                  );
+                                },
                               )}
                               {transaction.duplicate_of_transaction_id && (
                                 <div className="mt-2 rounded-lg border border-slate-600 bg-slate-800/70 p-2 text-xs">
