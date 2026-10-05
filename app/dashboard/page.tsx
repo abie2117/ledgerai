@@ -10,8 +10,6 @@ import { supabase } from '@/lib/supabase-browser';
 import { QueryBar } from '@/components/QueryBar';
 import PlaidLinkButton from '@/components/PlaidLinkButton';
 import ConnectedBanksPanel from '@/components/ConnectedBanksPanel';
-import ReconciliationPanel from '@/components/ReconciliationPanel';
-import AccountingSetupPanel from '@/components/AccountingSetupPanel';
 import {
   getCurrentMonthRange,
   getFoodDiningSpending,
@@ -1873,7 +1871,8 @@ function handleAskQuestion() {
               setReviewFilter('Needs Review');
               setConfidenceFilter('Active Exceptions');
             }} className="rounded-lg px-3 py-2 text-sm font-medium text-slate-400 transition hover:bg-slate-800 hover:text-white">Review</a>
-            <a href={selectedClientId ? `/dashboard/banks?clientId=${selectedClientId}` : '/dashboard/banks'} className="rounded-lg px-3 py-2 text-sm font-medium text-slate-400 transition hover:bg-slate-800 hover:text-white">Banks</a>
+            <a href={selectedClientId ? `/dashboard/banks?clientId=${selectedClientId}` : '/dashboard/banks'} className="rounded-lg px-3 py-2 text-sm font-medium text-slate-400 transition hover:bg-slate-800 hover:text-white">Banking</a>
+            <a href={selectedClientId ? `/dashboard/accounting?clientId=${selectedClientId}` : '/dashboard/accounting'} className="rounded-lg px-3 py-2 text-sm font-medium text-slate-400 transition hover:bg-slate-800 hover:text-white">Accounting</a>
             <span className="cursor-not-allowed rounded-lg px-3 py-2 text-sm font-medium text-slate-600" title="Coming later in the LedgerAI roadmap">Reports</span>
           </nav>
 
@@ -3010,16 +3009,6 @@ function handleAskQuestion() {
               </div>
             )}
           </div>
-
-          <AccountingSetupPanel
-            clientId={selectedClientId}
-            canManage={canResolveProviderExceptions}
-          />
-
-          <ReconciliationPanel
-            clientId={selectedClientId}
-            canManage={canResolveProviderExceptions}
-          />
 
           <div className="grid items-start gap-6 lg:grid-cols-2">
             <section className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
