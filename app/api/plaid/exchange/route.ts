@@ -304,6 +304,37 @@ export async function POST(req: Request) {
 
     const plaidItemDatabaseId = plaidItem;
 
+    // A newly created Plaid Item is not yet an approved financial source.
+    // Keep transaction history available for overlap review, but prevent
+    // ledger posting until an accounting role explicitly activates it.
+    const {
+      data: stagedPlaidItem,
+      error: stagePlaidItemError,
+    } = await db
+      .from('plaid_items')
+      .update({ financial_source_status: 'pending_review' })
+      .eq('id', plaidItemDatabaseId)
+      .eq('client_id', clientId)
+      .eq('financial_source_status', 'active')
+      .select('id')
+      .maybeSingle();
+
+    if (stagePlaidItemError || !stagedPlaidItem) {
+      console.error(
+        '[plaid/exchange] Failed to stage new financial source for review:',
+        stagePlaidItemError
+      );
+
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            'Bank connection was saved, but LedgerAI could not place the new financial source into review.',
+        },
+        { status: 500 }
+      );
+    }
+
     // ---------------------------------------------------------
     // 9. SAVE PLAID ACCOUNTS
     // ---------------------------------------------------------
