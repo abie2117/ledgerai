@@ -3,7 +3,7 @@
 -- PLAID FINANCIAL SOURCE CONTROL
 --
 -- Adds an explicit financial-source lifecycle for connected Plaid Items.
--- Existing Items remain financially active. Supersession is always an
+-- Existing Items remain financially active. New application connections can be staged as pending_review. Supersession is always an
 -- explicit accounting decision; this migration does not guess a canonical
 -- source, delete transactions, or rewrite historical financial data.
 -- ============================================================
@@ -17,7 +17,7 @@ alter table plaid_items
 
 alter table plaid_items
   add constraint plaid_items_financial_source_status_check
-  check (financial_source_status in ('active', 'superseded'));
+  check (financial_source_status in ('pending_review', 'active', 'superseded'));
 
 alter table plaid_items
   add column if not exists superseded_by_plaid_item_id uuid
@@ -31,10 +31,13 @@ alter table plaid_items
     references auth.users(id);
 
 alter table plaid_items
+  drop constraint if exists plaid_items_financial_source_supersession_metadata_check;
+
+alter table plaid_items
   add constraint plaid_items_financial_source_supersession_metadata_check
   check (
     (
-      financial_source_status = 'active'
+      financial_source_status in ('pending_review', 'active')
       and superseded_by_plaid_item_id is null
       and superseded_at is null
       and superseded_by is null
@@ -111,8 +114,8 @@ begin
     raise exception 'Retained Plaid financial source not found.';
   end if;
 
-  if v_retained.financial_source_status <> 'active' then
-    raise exception 'Retained Plaid financial source must be active.';
+  if v_retained.financial_source_status <> 'active' or v_retained.status <> 'active' then
+    raise exception 'Retained Plaid financial source must be financially active and provider-active.';
   end if;
 
   if v_source.financial_source_status = 'superseded' then
@@ -217,9 +220,9 @@ begin
     join plaid_items pi on pi.id = a.plaid_item_id
     where a.id = v_transaction.account_id
       and pi.client_id = p_client_id
-      and pi.financial_source_status <> 'active'
+      and (pi.financial_source_status <> 'active' or pi.status <> 'active')
   ) then
-    raise exception 'Transactions from a superseded Plaid financial source cannot be posted.';
+    raise exception 'Transactions from a non-active or provider-inactive Plaid financial source cannot be posted.';
   end if;
 
   if not exists (
@@ -229,6 +232,7 @@ begin
     where a.id = v_transaction.account_id
       and pi.client_id = p_client_id
       and pi.financial_source_status = 'active'
+      and pi.status = 'active'
   ) then
     raise exception 'Transaction is not attached to an active Plaid financial source.';
   end if;
@@ -261,7 +265,8 @@ begin
   join categories c on c.id = a.coa_category_id
   where a.id = v_transaction.account_id
     and pi.client_id = p_client_id
-    and pi.financial_source_status = 'active';
+    and pi.financial_source_status = 'active'
+      and pi.status = 'active';
 
   if not found
      or v_source_category.client_id is distinct from p_client_id
@@ -307,7 +312,7 @@ revoke all on function post_transaction_to_journal(uuid, uuid) from anon;
 grant execute on function post_transaction_to_journal(uuid, uuid) to authenticated;
 
 comment on column plaid_items.financial_source_status is
-  'Controls whether transactions from this Plaid Item are eligible to participate as a financial source. Superseded Items retain history but cannot feed new ledger postings.';
+  'Controls financial eligibility for this Plaid Item. pending_review is non-postable, active is eligible only while the provider Item is also active, and superseded retains history without feeding new ledger postings.';
 
 comment on function supersede_plaid_financial_source(uuid, uuid, uuid) is
   'Explicitly marks one client Plaid Item as superseded by another active Item after ensuring the source has no active journal entries.';
