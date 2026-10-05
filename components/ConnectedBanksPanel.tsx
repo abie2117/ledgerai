@@ -7,6 +7,8 @@ interface Connection {
   connectionRef: string;
   label: string;
   status: string;
+  financialSourceStatus: string;
+  supersededByConnectionRef: string | null;
   accountCount: number;
   connectedAt: string;
   lastSyncedAt: string | null;
@@ -45,6 +47,9 @@ function getStatusPresentation(status: string) {
 
 export default function ConnectedBanksPanel({ clientId, refreshKey, onTransactionsReload, mode = 'summary' }: ConnectedBanksPanelProps) {
   const [inventoryRevision, setInventoryRevision] = useState(0);
+  const [resolvingReference, setResolvingReference] = useState<string | null>(null);
+  const [retainedReferences, setRetainedReferences] = useState<Record<string, string>>({});
+  const [resolutionMessage, setResolutionMessage] = useState('');
   const [refreshStates, setRefreshStates] = useState<Record<string, RefreshState>>({});
   const [expandedClientId, setExpandedClientId] = useState<string | null>(null);
   const refreshingReferences = useRef(new Set<string>());
@@ -107,6 +112,34 @@ export default function ConnectedBanksPanel({ clientId, refreshKey, onTransactio
     }
   }
 
+
+  async function supersedeConnection(connection: Connection) {
+    const retainedConnectionRef = retainedReferences[connection.connectionRef];
+    if (!retainedConnectionRef || resolvingReference) return;
+    const retained = connections.find((item) => item.connectionRef === retainedConnectionRef);
+    if (!retained) return;
+    if (!window.confirm(`Exclude this bank source from financial activity and retain "${retained.label}" instead? Historical records remain available for audit. This cannot be treated as a simple display change.`)) return;
+    try {
+      setResolvingReference(connection.connectionRef);
+      setResolutionMessage('');
+      const response = await fetch('/api/plaid/source-resolution', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clientId, connectionRef: connection.connectionRef, retainedConnectionRef }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || 'Unable to supersede bank source.');
+      setResolutionMessage('Financial source superseded. Historical records were preserved and the retained source remains active.');
+      setInventoryRevision((revision) => revision + 1);
+      onTransactionsReload();
+    } catch (error) {
+      setResolutionMessage(error instanceof Error ? error.message : 'Unable to supersede bank source.');
+    } finally {
+      setResolvingReference(null);
+    }
+  }
+
   async function handleReconnected(connection: Connection) {
     setRefreshStates((s) => ({ ...s, [connection.connectionRef]: 'idle' }));
     await refreshConnection(connection);
@@ -141,6 +174,7 @@ export default function ConnectedBanksPanel({ clientId, refreshKey, onTransactio
             <p className="text-sm font-medium text-slate-200">Connections</p>
             <span className="text-xs text-slate-500">{connections.length} connection{connections.length === 1 ? '' : 's'}</span>
           </div>
+          {resolutionMessage && <p role="status" className="mt-4 text-sm text-slate-300">{resolutionMessage}</p>}
           <ul className="mt-4 grid min-w-0 gap-3 sm:grid-cols-2 2xl:grid-cols-3">
             {visibleConnections.map((connection) => {
               const status = getStatusPresentation(connection.status);
@@ -157,6 +191,7 @@ export default function ConnectedBanksPanel({ clientId, refreshKey, onTransactio
                   <div><dt className="text-slate-500">Connected</dt><dd className="mt-0.5 text-slate-300">{formatDate(connection.connectedAt)}</dd></div>
                   <div className="sm:col-span-2"><dt className="text-slate-500">Last synced</dt><dd className="mt-0.5 text-slate-300">{connection.lastSyncedAt ? formatDate(connection.lastSyncedAt) : 'Not synced yet'}</dd></div>
                 </dl>
+                <div className="mt-3 text-xs text-slate-400">Financial source: <span className="font-semibold text-slate-200">{connection.financialSourceStatus === 'active' ? 'Active' : connection.financialSourceStatus === 'pending_review' ? 'Review required' : 'Superseded'}</span></div>
                 <div className="mt-4 flex flex-wrap items-center gap-3">
                   {reconnectRequired && loadState.clientRef ? (
                     <PlaidLinkButton reconnectClientRef={loadState.clientRef} reconnectConnectionRef={connection.connectionRef} reconnectLabel="Reconnect" onReconnected={() => handleReconnected(connection)} />
@@ -169,6 +204,20 @@ export default function ConnectedBanksPanel({ clientId, refreshKey, onTransactio
                   {reconnectRequired && <p role="alert" className="text-xs text-amber-200">Reauthentication is required before this connection can refresh.</p>}
                   {refreshState === 'failed' && <p role="alert" className="text-xs text-red-300">Unable to refresh this connection. Try again.</p>}
                 </div>
+                {connection.financialSourceStatus !== 'superseded' && connections.filter((item) => item.connectionRef !== connection.connectionRef && item.status === 'active' && item.financialSourceStatus === 'active').length > 0 && (
+                  <div className="mt-4 border-t border-slate-800 pt-4">
+                    <p className="text-xs font-medium text-slate-300">Source resolution</p>
+                    <div className="mt-2 flex flex-col gap-2">
+                      <select value={retainedReferences[connection.connectionRef] || ''} onChange={(event) => setRetainedReferences((current) => ({ ...current, [connection.connectionRef]: event.target.value }))} className="min-w-0 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-200">
+                        <option value="">Choose source to retain</option>
+                        {connections.filter((item) => item.connectionRef !== connection.connectionRef && item.status === 'active' && item.financialSourceStatus === 'active').map((item) => <option key={item.connectionRef} value={item.connectionRef}>{item.label} · {item.accountCount} account{item.accountCount === 1 ? '' : 's'} · connected {formatDate(item.connectedAt)}</option>)}
+                      </select>
+                      <button type="button" disabled={!retainedReferences[connection.connectionRef] || !!resolvingReference} onClick={() => void supersedeConnection(connection)} className="self-start rounded-lg border border-amber-500/40 px-3 py-2 text-xs font-semibold text-amber-200 hover:border-amber-400 disabled:cursor-not-allowed disabled:opacity-50">
+                        {resolvingReference === connection.connectionRef ? 'Resolving...' : 'Supersede this source'}
+                      </button>
+                    </div>
+                  </div>
+                )}
               </li>;
             })}
           </ul>
