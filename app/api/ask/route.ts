@@ -154,11 +154,19 @@ export async function POST(request: Request) {
         raw_plaid_category,
         duplicate_of_transaction_id,
         plaid_removed_at,
+        accounts!inner (
+          plaid_items!inner (
+            financial_source_status,
+            status
+          )
+        ),
         canonical_category:categories!transactions_ai_category_id_fkey (
           name
         )
       `)
       .eq('client_id', selectedClientId)
+      .eq('accounts.plaid_items.financial_source_status', 'active')
+      .eq('accounts.plaid_items.status', 'active')
       .order('posted_date', { ascending: false });
 
     if (error) {

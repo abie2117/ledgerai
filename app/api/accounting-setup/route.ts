@@ -58,8 +58,10 @@ export async function GET(req: NextRequest) {
     await Promise.all([
       supabase
         .from('accounts')
-        .select('id, name, mask, type, subtype, coa_category_id, plaid_items!inner(client_id)')
+        .select('id, name, mask, type, subtype, coa_category_id, plaid_items!inner(client_id, status, financial_source_status)')
         .eq('plaid_items.client_id', clientId)
+        .eq('plaid_items.status', 'active')
+        .eq('plaid_items.financial_source_status', 'active')
         .order('name', { ascending: true }),
       supabase
         .from('categories')
