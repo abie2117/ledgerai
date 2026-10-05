@@ -110,6 +110,7 @@ export default function AccountingSetupPanel({ clientId, canManage }: Props) {
       await mutate({ action: 'map', accountId, categoryId });
       setMessage('Account mapping saved. Reconciliation eligibility has been updated.');
       await load();
+      window.dispatchEvent(new CustomEvent('ledgerai:accounting-setup-changed', { detail: { clientId } }));
     } catch (mutationError) {
       setError(mutationError instanceof Error ? mutationError.message : 'Unable to save mapping.');
     } finally {
