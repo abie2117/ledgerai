@@ -1873,7 +1873,7 @@ function handleAskQuestion() {
             }} className="rounded-lg px-3 py-2 text-sm font-medium text-slate-400 transition hover:bg-slate-800 hover:text-white">Review</a>
             <a href={selectedClientId ? `/dashboard/banks?clientId=${selectedClientId}` : '/dashboard/banks'} className="rounded-lg px-3 py-2 text-sm font-medium text-slate-400 transition hover:bg-slate-800 hover:text-white">Banking</a>
             <a href={selectedClientId ? `/dashboard/accounting?clientId=${selectedClientId}` : '/dashboard/accounting'} className="rounded-lg px-3 py-2 text-sm font-medium text-slate-400 transition hover:bg-slate-800 hover:text-white">Accounting</a>
-            <span className="cursor-not-allowed rounded-lg px-3 py-2 text-sm font-medium text-slate-600" title="Coming later in the LedgerAI roadmap">Reports</span>
+            <a href={selectedClientId ? `/dashboard/reports?clientId=${selectedClientId}` : '/dashboard/reports'} className="rounded-lg px-3 py-2 text-sm font-medium text-slate-400 transition hover:bg-slate-800 hover:text-white">Reports</a>
           </nav>
 
           <div className="grid gap-4 px-5 py-4 sm:px-6 xl:grid-cols-[minmax(260px,1.2fr)_minmax(190px,0.7fr)_auto] xl:items-end">
