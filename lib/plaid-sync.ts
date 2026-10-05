@@ -70,51 +70,52 @@ export function getPlaidSyncErrorMessage(error: any) {
 
 type ProviderExceptionEventType = 'modified' | 'removed' | 'reappeared';
 
-function providerCurrentValues(transaction: any) {
-  return {
-    account_id: transaction.account_id,
-    posted_date: transaction.posted_date,
-    amount: transaction.amount,
-    merchant_name: transaction.merchant_name,
-    raw_plaid_category: transaction.raw_plaid_category,
-    plaid_removed_at: transaction.plaid_removed_at,
-  };
-}
-
-async function captureActiveJournalProviderException({
+async function applyOrCaptureProviderChange({
   db,
   item,
   clientId,
-  transaction,
+  plaidTransactionId,
   eventType,
-  proposedValues,
+  accountId = null,
+  postedDate = null,
+  amount = null,
+  merchantName = null,
+  rawPlaidCategory = null,
 }: {
   db: any;
   item: PlaidItemForSync;
   clientId: string;
-  transaction: any;
+  plaidTransactionId: string;
   eventType: ProviderExceptionEventType;
-  proposedValues: Record<string, unknown>;
+  accountId?: string | null;
+  postedDate?: string | null;
+  amount?: number | null;
+  merchantName?: string | null;
+  rawPlaidCategory?: string | null;
 }) {
-  const { error } = await db.rpc(
-    'capture_provider_transaction_exception',
+  const { data, error } = await db.rpc(
+    'apply_or_capture_provider_transaction_change',
     {
       p_client_id: clientId,
       p_plaid_item_id: item.id,
-      p_transaction_id: transaction.id,
-      p_plaid_transaction_id: transaction.plaid_transaction_id,
+      p_plaid_transaction_id: plaidTransactionId,
       p_event_type: eventType,
-      p_current_values: providerCurrentValues(transaction),
-      p_proposed_values: proposedValues,
+      p_account_id: accountId,
+      p_posted_date: postedDate,
+      p_amount: amount,
+      p_merchant_name: merchantName,
+      p_raw_plaid_category: rawPlaidCategory,
     }
   );
 
   if (error) {
     throw new Error(
       error.message ||
-        `Failed to capture provider ${eventType} exception for transaction ${transaction.plaid_transaction_id}.`
+        `Failed to apply or capture provider ${eventType} event for transaction ${plaidTransactionId}.`
     );
   }
+
+  return Array.isArray(data) ? data[0] || null : data;
 }
 
 export async function syncPlaidItem({
@@ -331,10 +332,8 @@ export async function syncPlaidItem({
     // ---------------------------------------------------------
     // 4. APPLY ADDED TRANSACTIONS
     //
-    // New Plaid IDs are inserted normally. If a previously soft-removed
-    // transaction reappears, preserve LedgerAI bookkeeping ownership:
-    // active journals capture durable evidence; otherwise restore only
-    // provider-owned fields and clear the provider-removal marker.
+    // New Plaid IDs are inserted normally. Existing soft-removed IDs are
+    // reappearance events handled by the atomic database boundary.
     // ---------------------------------------------------------
 
     for (const addedRecord of addedRecords) {
@@ -343,9 +342,7 @@ export async function syncPlaidItem({
         error: existingTransactionError,
       } = await db
         .from('transactions')
-        .select(
-          'id, account_id, posted_date, amount, merchant_name, raw_plaid_category, plaid_removed_at, plaid_transaction_id, journal_entries!left(id, status, reversal_of_journal_entry_id)'
-        )
+        .select('id, plaid_removed_at')
         .eq(
           'plaid_transaction_id',
           addedRecord.plaid_transaction_id
@@ -379,81 +376,39 @@ export async function syncPlaidItem({
         continue;
       }
 
-      const hasActiveJournal =
-        (
-          existingTransaction.journal_entries ||
-          []
-        ).some(
-          (journal: any) =>
-            (journal.status === 'draft' || journal.status === 'posted') &&
-            journal.reversal_of_journal_entry_id === null
-        );
-
-      const proposedValues = {
-        account_id: addedRecord.account_id,
-        posted_date: addedRecord.posted_date,
+      await applyOrCaptureProviderChange({
+        db,
+        item,
+        clientId,
+        plaidTransactionId:
+          addedRecord.plaid_transaction_id,
+        eventType: 'reappeared',
+        accountId: addedRecord.account_id,
+        postedDate: addedRecord.posted_date,
         amount: addedRecord.amount,
-        merchant_name: addedRecord.merchant_name,
-        raw_plaid_category: addedRecord.raw_plaid_category,
-        plaid_removed_at: null,
-      };
-
-      if (hasActiveJournal) {
-        await captureActiveJournalProviderException({
-          db,
-          item,
-          clientId,
-          transaction: existingTransaction,
-          eventType: 'reappeared',
-          proposedValues,
-        });
-
-        continue;
-      }
-
-      const { error: reappearedError } = await db
-        .from('transactions')
-        .update({
-          account_id: addedRecord.account_id,
-          posted_date: addedRecord.posted_date,
-          amount: addedRecord.amount,
-          merchant_name: addedRecord.merchant_name,
-          raw_plaid_category: addedRecord.raw_plaid_category,
-          plaid_removed_at: null,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', existingTransaction.id)
-        .eq('client_id', clientId);
-
-      if (reappearedError) {
-        throw new Error(
-          reappearedError.message ||
-            `Failed to restore reappeared Plaid transaction ${addedRecord.plaid_transaction_id}.`
-        );
-      }
+        merchantName: addedRecord.merchant_name,
+        rawPlaidCategory:
+          addedRecord.raw_plaid_category,
+      });
     }
 
     // ---------------------------------------------------------
     // 5. APPLY MODIFIED TRANSACTIONS
     //
-    // Update only Plaid-owned fields.
-    // Do not touch categorization, confidence, or review state.
+    // The database locks the transaction and atomically chooses whether
+    // provider-owned state can be applied or must become review evidence.
     // ---------------------------------------------------------
 
     for (const tx of modifiedTransactions) {
       const localAccountId =
-        accountIdMap.get(
-          tx.account_id
-        );
+        accountIdMap.get(tx.account_id);
 
       if (!localAccountId) {
         console.warn(
           '[plaid-sync] Skipping modified transaction with unknown account:',
           {
-            transactionId:
-              tx.transaction_id,
-            plaidAccountId:
-              tx.account_id,
+            transactionId: tx.transaction_id,
+            plaidAccountId: tx.account_id,
           }
         );
 
@@ -461,27 +416,17 @@ export async function syncPlaidItem({
         continue;
       }
 
-      const {
-        data: existingTransaction,
-        error: existingTransactionError,
-      } = await db
-        .from('transactions')
-        .select(
-          'id, account_id, posted_date, amount, merchant_name, raw_plaid_category, plaid_removed_at, plaid_transaction_id, journal_entries!left(id, status, reversal_of_journal_entry_id)'
-        )
-        .eq(
-          'plaid_transaction_id',
-          tx.transaction_id
-        )
-        .eq(
-          'client_id',
-          clientId
-        )
-        .maybeSingle();
+      const { data: existingTransaction, error: lookupError } =
+        await db
+          .from('transactions')
+          .select('id')
+          .eq('plaid_transaction_id', tx.transaction_id)
+          .eq('client_id', clientId)
+          .maybeSingle();
 
-      if (existingTransactionError) {
+      if (lookupError) {
         throw new Error(
-          existingTransactionError.message ||
+          lookupError.message ||
             `Failed to inspect transaction ${tx.transaction_id} before applying its provider modification.`
         );
       }
@@ -491,166 +436,73 @@ export async function syncPlaidItem({
         continue;
       }
 
-      const hasActiveJournal =
-        (
-          existingTransaction.journal_entries ||
-          []
-        ).some(
-          (journal: any) =>
-            (journal.status === 'draft' || journal.status === 'posted') &&
-            journal.reversal_of_journal_entry_id === null
-        );
-
-      const proposedValues = {
-        account_id: localAccountId,
-        posted_date: tx.date,
+      await applyOrCaptureProviderChange({
+        db,
+        item,
+        clientId,
+        plaidTransactionId: tx.transaction_id,
+        eventType: 'modified',
+        accountId: localAccountId,
+        postedDate: tx.date,
         amount: tx.amount,
-        merchant_name:
+        merchantName:
           tx.merchant_name ||
           tx.name ||
           'Unknown Merchant',
-        raw_plaid_category:
+        rawPlaidCategory:
           Array.isArray(tx.category)
             ? tx.category.join(', ')
             : null,
-      };
-
-      if (hasActiveJournal) {
-        await captureActiveJournalProviderException({
-          db,
-          item,
-          clientId,
-          transaction: existingTransaction,
-          eventType: 'modified',
-          proposedValues,
-        });
-
-        continue;
-      }
-
-      const {
-        error: modifiedError,
-      } = await db
-        .from('transactions')
-        .update({
-          ...proposedValues,
-          updated_at:
-            new Date().toISOString(),
-        })
-        .eq(
-          'id',
-          existingTransaction.id
-        )
-        .eq(
-          'client_id',
-          clientId
-        );
-
-      if (modifiedError) {
-        throw new Error(
-          modifiedError.message ||
-            `Failed to update transaction ${tx.transaction_id}.`
-        );
-      }
+      });
     }
 
     // ---------------------------------------------------------
     // 6. APPLY REMOVED TRANSACTIONS
     //
-    // Preserve bank-feed history instead of deleting bookkeeping evidence.
-    // Shared financial logic excludes provider-removed rows.
+    // Preserve history. The atomic database boundary either soft-removes
+    // an unjournaled transaction or captures evidence for an active journal.
     // ---------------------------------------------------------
 
     const removedIds = Array.from(
       new Set(
         removedTransactions
-          .map(
-            (removed) =>
-              removed.transaction_id
-          )
+          .map((removed) => removed.transaction_id)
           .filter(
-            (
-              transactionId
-            ): transactionId is string =>
-              typeof transactionId ===
-                'string' &&
+            (transactionId): transactionId is string =>
+              typeof transactionId === 'string' &&
               transactionId.length > 0
           )
       )
     );
 
-    if (removedIds.length > 0) {
-      const {
-        data: transactionsToRemove,
-        error: transactionsToRemoveError,
-      } = await db
-        .from('transactions')
-        .select(
-          'id, account_id, posted_date, amount, merchant_name, raw_plaid_category, plaid_removed_at, plaid_transaction_id, journal_entries!left(id, status, reversal_of_journal_entry_id)'
-        )
-        .eq(
-          'client_id',
-          clientId
-        )
-        .in(
-          'plaid_transaction_id',
-          removedIds
-        );
-
-      if (transactionsToRemoveError) {
-        throw new Error(
-          transactionsToRemoveError.message ||
-            'Failed to inspect removed Plaid transactions.'
-        );
-      }
-
-      for (const transaction of transactionsToRemove || []) {
-        const hasActiveJournal =
-          (
-            transaction.journal_entries ||
-            []
-          ).some(
-            (journal: any) =>
-              (journal.status === 'draft' || journal.status === 'posted') &&
-              journal.reversal_of_journal_entry_id === null
-          );
-
-        if (hasActiveJournal) {
-          await captureActiveJournalProviderException({
-            db,
-            item,
-            clientId,
-            transaction,
-            eventType: 'removed',
-            proposedValues: {
-              plaid_removed_at:
-                new Date().toISOString(),
-            },
-          });
-
-          continue;
-        }
-
-        const {
-          error: removedError,
-        } = await db
+    for (const plaidTransactionId of removedIds) {
+      const { data: existingTransaction, error: lookupError } =
+        await db
           .from('transactions')
-          .update({
-            plaid_removed_at:
-              new Date().toISOString(),
-            updated_at:
-              new Date().toISOString(),
-          })
-          .eq('id', transaction.id)
-          .eq('client_id', clientId);
+          .select('id')
+          .eq('plaid_transaction_id', plaidTransactionId)
+          .eq('client_id', clientId)
+          .maybeSingle();
 
-        if (removedError) {
-          throw new Error(
-            removedError.message ||
-              `Failed to mark removed Plaid transaction ${transaction.plaid_transaction_id}.`
-          );
-        }
+      if (lookupError) {
+        throw new Error(
+          lookupError.message ||
+            `Failed to inspect removed Plaid transaction ${plaidTransactionId}.`
+        );
       }
+
+      if (!existingTransaction) {
+        skippedTransactions += 1;
+        continue;
+      }
+
+      await applyOrCaptureProviderChange({
+        db,
+        item,
+        clientId,
+        plaidTransactionId,
+        eventType: 'removed',
+      });
     }
 
     // ---------------------------------------------------------
