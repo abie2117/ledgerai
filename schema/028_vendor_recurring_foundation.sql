@@ -88,7 +88,7 @@ alter table recurring_transaction_candidates
   add constraint recurring_candidates_client_vendor_fk
   foreign key (client_id, vendor_id)
   references vendors(client_id, id)
-  on delete set null;
+  on delete restrict;
 
 create index if not exists recurring_candidates_client_status_idx
   on recurring_transaction_candidates (client_id, status);
