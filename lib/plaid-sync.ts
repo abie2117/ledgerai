@@ -68,7 +68,7 @@ export function getPlaidSyncErrorMessage(error: any) {
   );
 }
 
-type ProviderExceptionEventType = 'modified' | 'removed';
+type ProviderExceptionEventType = 'modified' | 'removed' | 'reappeared';
 
 function providerCurrentValues(transaction: any) {
   return {
@@ -81,7 +81,7 @@ function providerCurrentValues(transaction: any) {
   };
 }
 
-async function capturePostedProviderException({
+async function captureActiveJournalProviderException({
   db,
   item,
   clientId,
@@ -331,28 +331,104 @@ export async function syncPlaidItem({
     // ---------------------------------------------------------
     // 4. APPLY ADDED TRANSACTIONS
     //
-    // Existing transaction IDs are ignored so a Plaid "added"
-    // event cannot overwrite LedgerAI-owned bookkeeping fields.
+    // New Plaid IDs are inserted normally. If a previously soft-removed
+    // transaction reappears, preserve LedgerAI bookkeeping ownership:
+    // active journals capture durable evidence; otherwise restore only
+    // provider-owned fields and clear the provider-removal marker.
     // ---------------------------------------------------------
 
-    if (addedRecords.length > 0) {
+    for (const addedRecord of addedRecords) {
       const {
-        error: addedError,
+        data: existingTransaction,
+        error: existingTransactionError,
       } = await db
         .from('transactions')
-        .upsert(
-          addedRecords,
-          {
-            onConflict:
-              'plaid_transaction_id',
-            ignoreDuplicates: true,
-          }
+        .select(
+          'id, account_id, posted_date, amount, merchant_name, raw_plaid_category, plaid_removed_at, plaid_transaction_id, journal_entries!left(id, status, reversal_of_journal_entry_id)'
+        )
+        .eq(
+          'plaid_transaction_id',
+          addedRecord.plaid_transaction_id
+        )
+        .eq('client_id', clientId)
+        .maybeSingle();
+
+      if (existingTransactionError) {
+        throw new Error(
+          existingTransactionError.message ||
+            `Failed to inspect added transaction ${addedRecord.plaid_transaction_id}.`
+        );
+      }
+
+      if (!existingTransaction) {
+        const { error: addedError } = await db
+          .from('transactions')
+          .insert(addedRecord);
+
+        if (addedError) {
+          throw new Error(
+            addedError.message ||
+              `Failed to save added transaction ${addedRecord.plaid_transaction_id}.`
+          );
+        }
+
+        continue;
+      }
+
+      if (!existingTransaction.plaid_removed_at) {
+        continue;
+      }
+
+      const hasActiveJournal =
+        (
+          existingTransaction.journal_entries ||
+          []
+        ).some(
+          (journal: any) =>
+            (journal.status === 'draft' || journal.status === 'posted') &&
+            journal.reversal_of_journal_entry_id === null
         );
 
-      if (addedError) {
+      const proposedValues = {
+        account_id: addedRecord.account_id,
+        posted_date: addedRecord.posted_date,
+        amount: addedRecord.amount,
+        merchant_name: addedRecord.merchant_name,
+        raw_plaid_category: addedRecord.raw_plaid_category,
+        plaid_removed_at: null,
+      };
+
+      if (hasActiveJournal) {
+        await captureActiveJournalProviderException({
+          db,
+          item,
+          clientId,
+          transaction: existingTransaction,
+          eventType: 'reappeared',
+          proposedValues,
+        });
+
+        continue;
+      }
+
+      const { error: reappearedError } = await db
+        .from('transactions')
+        .update({
+          account_id: addedRecord.account_id,
+          posted_date: addedRecord.posted_date,
+          amount: addedRecord.amount,
+          merchant_name: addedRecord.merchant_name,
+          raw_plaid_category: addedRecord.raw_plaid_category,
+          plaid_removed_at: null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', existingTransaction.id)
+        .eq('client_id', clientId);
+
+      if (reappearedError) {
         throw new Error(
-          addedError.message ||
-            'Failed to save added transactions.'
+          reappearedError.message ||
+            `Failed to restore reappeared Plaid transaction ${addedRecord.plaid_transaction_id}.`
         );
       }
     }
@@ -415,13 +491,13 @@ export async function syncPlaidItem({
         continue;
       }
 
-      const hasActivePostedJournal =
+      const hasActiveJournal =
         (
           existingTransaction.journal_entries ||
           []
         ).some(
           (journal: any) =>
-            journal.status === 'posted' &&
+            (journal.status === 'draft' || journal.status === 'posted') &&
             journal.reversal_of_journal_entry_id === null
         );
 
@@ -439,8 +515,8 @@ export async function syncPlaidItem({
             : null,
       };
 
-      if (hasActivePostedJournal) {
-        await capturePostedProviderException({
+      if (hasActiveJournal) {
+        await captureActiveJournalProviderException({
           db,
           item,
           clientId,
@@ -529,7 +605,7 @@ export async function syncPlaidItem({
       }
 
       for (const transaction of transactionsToRemove || []) {
-        const hasActivePostedJournal =
+        const hasActiveJournal =
           (
             transaction.journal_entries ||
             []
@@ -539,8 +615,8 @@ export async function syncPlaidItem({
               journal.reversal_of_journal_entry_id === null
           );
 
-        if (hasActivePostedJournal) {
-          await capturePostedProviderException({
+        if (hasActiveJournal) {
+          await captureActiveJournalProviderException({
             db,
             item,
             clientId,
