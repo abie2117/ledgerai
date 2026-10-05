@@ -63,6 +63,8 @@ interface Transaction {
   account_name?: string | null;
   account_mask?: string | null;
   account_coa_category_id?: string | null;
+  financial_source_status?: 'pending_review' | 'active' | 'superseded' | string | null;
+  provider_source_status?: string | null;
   pending?: boolean | null;
   payment_channel?: string | null;
   iso_currency_code?: string | null;
@@ -429,7 +431,11 @@ export default function DashboardPage() {
               mask,
               type,
               subtype,
-              coa_category_id
+              coa_category_id,
+              plaid_items!inner (
+                financial_source_status,
+                status
+              )
             ),
             canonical_category:categories!transactions_ai_category_id_fkey (
               id,
@@ -461,6 +467,8 @@ export default function DashboardPage() {
             account_name: transaction.accounts?.name || null,
             account_mask: transaction.accounts?.mask || null,
             account_coa_category_id: transaction.accounts?.coa_category_id || null,
+            financial_source_status: transaction.accounts?.plaid_items?.financial_source_status || null,
+            provider_source_status: transaction.accounts?.plaid_items?.status || null,
           }),
         );
 
@@ -956,7 +964,12 @@ export default function DashboardPage() {
       const matchesEndDate =
         !endDate || getTransactionDate(transaction) <= endDate;
 
+      const isActiveFinancialSource =
+        transaction.financial_source_status === 'active' &&
+        transaction.provider_source_status === 'active';
+
       return (
+        isActiveFinancialSource &&
         matchesSearch &&
         matchesCategory &&
         matchesAccount &&
@@ -1830,7 +1843,10 @@ function handleAskQuestion() {
   function exportTransactionsToCsv() {
     const accountingTransactions = filteredTransactions.filter(
       (transaction) =>
-        !transaction.duplicate_of_transaction_id && !transaction.plaid_removed_at,
+        transaction.financial_source_status === 'active' &&
+        transaction.provider_source_status === 'active' &&
+        !transaction.duplicate_of_transaction_id &&
+        !transaction.plaid_removed_at,
     );
 
     if (accountingTransactions.length === 0) {
@@ -3047,7 +3063,12 @@ function handleAskQuestion() {
                                 transaction.canonical_category
                                   ?.is_posting_account === true;
 
+                              const sourcePostingReady =
+                                transaction.financial_source_status === 'active' &&
+                                transaction.provider_source_status === 'active';
+
                               const postingReady =
+                                sourcePostingReady &&
                                 !transaction.duplicate_of_transaction_id &&
                                 !transaction.plaid_removed_at &&
                                 !!transaction.account_coa_category_id &&
@@ -3085,7 +3106,13 @@ function handleAskQuestion() {
                                     <span className="text-xs font-medium text-slate-400">
                                       {!canResolveProviderExceptions
                                         ? 'Accounting role required'
-                                        : transaction.duplicate_of_transaction_id
+                                        : !sourcePostingReady
+                                          ? transaction.financial_source_status === 'superseded'
+                                            ? 'Superseded source'
+                                            : transaction.financial_source_status === 'pending_review'
+                                              ? 'Source review required'
+                                              : 'Inactive bank source'
+                                          : transaction.duplicate_of_transaction_id
                                           ? 'Duplicate excluded'
                                           : transaction.plaid_removed_at
                                             ? 'Provider-removed'
