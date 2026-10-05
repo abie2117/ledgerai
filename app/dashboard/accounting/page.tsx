@@ -17,6 +17,7 @@ function AccountingWorkspaceContent() {
   const [accessLoading, setAccessLoading] = useState(Boolean(clientId));
   const dashboardHref = clientId ? `/dashboard?clientId=${encodeURIComponent(clientId)}` : '/dashboard';
   const banksHref = clientId ? `/dashboard/banks?clientId=${encodeURIComponent(clientId)}` : '/dashboard/banks';
+  const reportsHref = clientId ? `/dashboard/reports?clientId=${encodeURIComponent(clientId)}` : '/dashboard/reports';
 
   useEffect(() => {
     let cancelled = false;
@@ -90,7 +91,7 @@ function AccountingWorkspaceContent() {
             <a href={`${dashboardHref}#transactions`} className="rounded-lg px-3 py-2 text-sm font-medium text-slate-400 transition hover:bg-slate-800 hover:text-white">Transactions</a>
             <a href={banksHref} className="rounded-lg px-3 py-2 text-sm font-medium text-slate-400 transition hover:bg-slate-800 hover:text-white">Banking</a>
             <span className="rounded-lg bg-cyan-500/10 px-3 py-2 text-sm font-semibold text-cyan-300">Accounting</span>
-            <span className="cursor-not-allowed rounded-lg px-3 py-2 text-sm font-medium text-slate-600" title="Coming later in the LedgerAI roadmap">Reports</span>
+            <a href={reportsHref} className="rounded-lg px-3 py-2 text-sm font-medium text-slate-400 transition hover:bg-slate-800 hover:text-white">Reports</a>
           </nav>
         </header>
 
