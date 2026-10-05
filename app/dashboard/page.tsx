@@ -1971,25 +1971,6 @@ function handleAskQuestion() {
           </div>
         </header>
 
-        {selectedClientId && (
-          <details className="group rounded-2xl border border-slate-800 bg-slate-900/70">
-            <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-5 py-4 text-sm font-semibold text-slate-200 sm:px-6">
-              <span>Bank connections</span>
-              <span className="text-xs font-medium text-slate-500 group-open:hidden">Show details</span>
-              <span className="hidden text-xs font-medium text-slate-500 group-open:inline">Hide details</span>
-            </summary>
-            <div className="border-t border-slate-800 p-3">
-              <ConnectedBanksPanel
-                clientId={selectedClientId}
-                refreshKey={connectionsRefreshKey}
-                onTransactionsReload={() =>
-                  setTransactionsRefreshKey((currentKey) => currentKey + 1)
-                }
-              />
-            </div>
-          </details>
-        )}
-
         {errorMessage && (
           <div className="rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-300">
             {errorMessage}
@@ -2125,9 +2106,12 @@ function handleAskQuestion() {
               )}
             </div>
             <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
-              <p className="text-sm font-semibold text-white">Bank workspace</p>
-              <p className="mt-2 text-sm leading-6 text-slate-400">Connection management now has its own focused workspace.</p>
-              <a href={selectedClientId ? `/dashboard/banks?clientId=${selectedClientId}` : '/dashboard/banks'} className="mt-3 inline-flex text-sm font-semibold text-cyan-400 transition hover:text-cyan-300">Manage banks →</a>
+              <p className="text-sm font-semibold text-white">Workspace shortcuts</p>
+              <p className="mt-2 text-sm leading-6 text-slate-400">Keep operational setup out of the financial overview.</p>
+              <div className="mt-3 flex flex-wrap gap-3">
+                <a href={selectedClientId ? `/dashboard/banks?clientId=${selectedClientId}` : '/dashboard/banks'} className="text-sm font-semibold text-cyan-400 transition hover:text-cyan-300">Banking →</a>
+                <a href={selectedClientId ? `/dashboard/accounting?clientId=${selectedClientId}` : '/dashboard/accounting'} className="text-sm font-semibold text-cyan-400 transition hover:text-cyan-300">Accounting →</a>
+              </div>
             </div>
           </div>
 
