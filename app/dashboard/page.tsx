@@ -10,6 +10,7 @@ import { supabase } from '@/lib/supabase-browser';
 import { QueryBar } from '@/components/QueryBar';
 import PlaidLinkButton from '@/components/PlaidLinkButton';
 import ConnectedBanksPanel from '@/components/ConnectedBanksPanel';
+import ReconciliationPanel from '@/components/ReconciliationPanel';
 import {
   getCurrentMonthRange,
   getFoodDiningSpending,
@@ -3008,6 +3009,11 @@ function handleAskQuestion() {
               </div>
             )}
           </div>
+
+          <ReconciliationPanel
+            clientId={selectedClientId}
+            canManage={canResolveProviderExceptions}
+          />
 
           <div className="grid items-start gap-6 lg:grid-cols-2">
             <section className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
