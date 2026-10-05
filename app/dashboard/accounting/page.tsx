@@ -4,6 +4,7 @@ import { Suspense, useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import AccountingSetupPanel from '@/components/AccountingSetupPanel';
 import ReconciliationPanel from '@/components/ReconciliationPanel';
+import JournalActivityPanel from '@/components/JournalActivityPanel';
 import { supabase } from '@/lib/supabase-browser';
 
 const ACCOUNTING_ROLES = new Set(['owner', 'admin', 'bookkeeper']);
@@ -103,6 +104,7 @@ function AccountingWorkspaceContent() {
         ) : (
           <>
             <AccountingSetupPanel clientId={clientId} canManage={canManage} />
+            <JournalActivityPanel clientId={clientId} />
             <ReconciliationPanel clientId={clientId} canManage={canManage} />
           </>
         )}
