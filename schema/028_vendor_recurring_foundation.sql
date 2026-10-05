@@ -22,6 +22,13 @@ create table if not exists vendors (
 create index if not exists vendors_client_status_idx
   on vendors (client_id, status);
 
+alter table vendors
+  drop constraint if exists vendors_client_id_id_unique;
+
+alter table vendors
+  add constraint vendors_client_id_id_unique
+  unique (client_id, id);
+
 create table if not exists vendor_aliases (
   id uuid primary key default uuid_generate_v4(),
   client_id uuid not null references clients(id) on delete cascade,
@@ -31,6 +38,15 @@ create table if not exists vendor_aliases (
   created_at timestamptz not null default now(),
   unique (client_id, merchant_pattern)
 );
+
+alter table vendor_aliases
+  drop constraint if exists vendor_aliases_client_vendor_fk;
+
+alter table vendor_aliases
+  add constraint vendor_aliases_client_vendor_fk
+  foreign key (client_id, vendor_id)
+  references vendors(client_id, id)
+  on delete cascade;
 
 create index if not exists vendor_aliases_vendor_idx
   on vendor_aliases (vendor_id);
@@ -64,6 +80,15 @@ create table if not exists recurring_transaction_candidates (
     check (first_occurrence_date <= last_occurrence_date),
   unique (client_id, account_id, merchant_pattern, cadence)
 );
+
+alter table recurring_transaction_candidates
+  drop constraint if exists recurring_candidates_client_vendor_fk;
+
+alter table recurring_transaction_candidates
+  add constraint recurring_candidates_client_vendor_fk
+  foreign key (client_id, vendor_id)
+  references vendors(client_id, id)
+  on delete set null;
 
 create index if not exists recurring_candidates_client_status_idx
   on recurring_transaction_candidates (client_id, status);
