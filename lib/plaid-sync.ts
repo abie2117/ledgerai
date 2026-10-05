@@ -8,6 +8,7 @@ import {
 import { readPlaidAccessToken } from './plaid-token-storage';
 import { categorizeWithLocalRules } from './categorization';
 import { detectDuplicateCandidates } from './duplicate-detection';
+import { detectRecurringTransactionCandidates } from './recurring-detection';
 
 const plaidEnv =
   (process.env.PLAID_ENV as keyof typeof PlaidEnvironments) ||
@@ -619,6 +620,41 @@ export async function syncPlaidItem({
         '[plaid-sync] Bank sync succeeded, but duplicate candidate detection could not complete:',
         duplicateError?.message ||
           duplicateError
+      );
+    }
+
+    // ---------------------------------------------------------
+    // 10. DETECT RECURRING VENDOR-SPEND EVIDENCE
+    //
+    // Evidence only: never creates bills, payments, journals, or
+    // transaction confirmations. A detector failure cannot make a
+    // successful bank sync fail.
+    // ---------------------------------------------------------
+
+    try {
+      const recurringResult =
+        await detectRecurringTransactionCandidates(
+          db,
+          clientId
+        );
+
+      console.log(
+        '[plaid-sync] Recurring candidate detection complete:',
+        {
+          clientId,
+          scanned:
+            recurringResult.scanned,
+          eligible:
+            recurringResult.eligible,
+          candidates:
+            recurringResult.candidates,
+        }
+      );
+    } catch (recurringError: any) {
+      console.warn(
+        '[plaid-sync] Bank sync succeeded, but recurring candidate detection could not complete:',
+        recurringError?.message ||
+          recurringError
       );
     }
 
