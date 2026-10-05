@@ -18,6 +18,8 @@ interface PlaidItemConnectionRow {
   id: string;
   institution_name: string | null;
   status: string;
+  financial_source_status: string;
+  superseded_by_plaid_item_id: string | null;
   created_at: string;
   last_synced_at: string | null;
   accounts: AccountCountRelation[] | AccountCountRelation | null;
@@ -145,6 +147,8 @@ export async function GET(request: Request) {
         id,
         institution_name,
         status,
+        financial_source_status,
+        superseded_by_plaid_item_id,
         created_at,
         last_synced_at,
         accounts(count)
@@ -185,6 +189,10 @@ export async function GET(request: Request) {
         ),
         label: institutionName || `Bank connection ${index + 1}`,
         status: item.status,
+        financialSourceStatus: item.financial_source_status,
+        supersededByConnectionRef: item.superseded_by_plaid_item_id
+          ? createPlaidConnectionReference(authorizedClient.id, item.superseded_by_plaid_item_id)
+          : null,
         accountCount,
         connectedAt: item.created_at,
         lastSyncedAt: item.last_synced_at,
