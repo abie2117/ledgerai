@@ -11,6 +11,7 @@ import { QueryBar } from '@/components/QueryBar';
 import PlaidLinkButton from '@/components/PlaidLinkButton';
 import ConnectedBanksPanel from '@/components/ConnectedBanksPanel';
 import ReconciliationPanel from '@/components/ReconciliationPanel';
+import AccountingSetupPanel from '@/components/AccountingSetupPanel';
 import {
   getCurrentMonthRange,
   getFoodDiningSpending,
@@ -3009,6 +3010,11 @@ function handleAskQuestion() {
               </div>
             )}
           </div>
+
+          <AccountingSetupPanel
+            clientId={selectedClientId}
+            canManage={canResolveProviderExceptions}
+          />
 
           <ReconciliationPanel
             clientId={selectedClientId}
