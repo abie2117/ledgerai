@@ -99,100 +99,48 @@ export async function POST(request: Request) {
 
     const context = await getContext(clientId);
     if ('error' in context) return context.error;
-
     const { supabase, canManage } = context;
 
     if (!canManage) {
-      return NextResponse.json(
-        { error: 'Owner, admin, or bookkeeper access is required to change accounting setup.' },
-        { status: 403 },
-      );
+      return NextResponse.json({ error: 'Owner, admin, or bookkeeper access is required to change accounting setup.' }, { status: 403 });
     }
 
-    const { data: account, error: accountError } = await supabase
-      .from('accounts')
-      .select('id, coa_category_id, plaid_items!inner(client_id)')
-      .eq('id', accountId)
-      .eq('plaid_items.client_id', clientId)
-      .single();
+    const categoryId = action === 'map' && typeof body?.categoryId === 'string' ? body.categoryId.trim() : null;
+    const name = action === 'create_and_map' && typeof body?.name === 'string' ? body.name.trim() : null;
+    const coaCode = action === 'create_and_map' && typeof body?.coaCode === 'string' ? body.coaCode.trim() : null;
+    const accountType = action === 'create_and_map' && ['asset', 'liability'].includes(body?.accountType) ? body.accountType : null;
 
-    if (accountError || !account) {
-      return NextResponse.json({ error: 'Connected account not found for this client.' }, { status: 404 });
+    if (action === 'map' && !categoryId) {
+      return NextResponse.json({ error: 'categoryId is required.' }, { status: 400 });
+    }
+    if (action === 'create_and_map' && (!name || !accountType)) {
+      return NextResponse.json({ error: 'A ledger account name and Asset or Liability type are required.' }, { status: 400 });
     }
 
-    let categoryId: string | null = null;
+    const { data, error } = await supabase.rpc('mutate_accounting_setup', {
+      p_client_id: clientId,
+      p_account_id: accountId,
+      p_action: action,
+      p_category_id: categoryId || null,
+      p_name: name || null,
+      p_coa_code: coaCode || null,
+      p_account_type: accountType || null,
+    });
 
-    if (action === 'map') {
-      categoryId = typeof body?.categoryId === 'string' ? body.categoryId.trim() : '';
-      if (!categoryId) {
-        return NextResponse.json({ error: 'categoryId is required.' }, { status: 400 });
-      }
-
-      const { data: category, error: categoryError } = await supabase
-        .from('categories')
-        .select('id')
-        .eq('id', categoryId)
-        .eq('client_id', clientId)
-        .in('account_type', ['asset', 'liability'])
-        .eq('is_active', true)
-        .eq('is_posting_account', true)
-        .single();
-
-      if (categoryError || !category) {
-        return NextResponse.json({ error: 'Selected ledger account is not eligible for this client.' }, { status: 409 });
-      }
+    if (error) {
+      console.error('[accounting-setup] Atomic mutation failed:', { clientId, accountId, action, code: error.code, message: error.message });
+      return NextResponse.json({ error: error.message || 'Unable to update accounting setup.' }, { status: 409 });
     }
 
-    if (action === 'create_and_map') {
-      const name = typeof body?.name === 'string' ? body.name.trim() : '';
-      const coaCode = typeof body?.coaCode === 'string' ? body.coaCode.trim() : '';
-      const accountType = body?.accountType;
-
-      if (!name || !['asset', 'liability'].includes(accountType)) {
-        return NextResponse.json(
-          { error: 'A ledger account name and Asset or Liability type are required.' },
-          { status: 400 },
-        );
-      }
-
-      const { data: created, error: createError } = await supabase
-        .from('categories')
-        .insert({
-          client_id: clientId,
-          name,
-          coa_code: coaCode || null,
-          account_type: accountType,
-          normal_balance: accountType === 'asset' ? 'debit' : 'credit',
-          is_posting_account: true,
-          is_active: true,
-          is_default: false,
-        })
-        .select('id')
-        .single();
-
-      if (createError || !created) {
-        return NextResponse.json(
-          { error: createError?.message || 'Unable to create the ledger account.' },
-          { status: 409 },
-        );
-      }
-
-      categoryId = created.id;
-    }
-
-    const { error: updateError } = await supabase
-      .from('accounts')
-      .update({ coa_category_id: action === 'unmap' ? null : categoryId })
-      .eq('id', accountId);
-
-    if (updateError) {
-      return NextResponse.json({ error: updateError.message }, { status: 409 });
+    const result = Array.isArray(data) ? data[0] : null;
+    if (!result?.account_id) {
+      return NextResponse.json({ error: 'Accounting setup mutation did not return a result.' }, { status: 500 });
     }
 
     return NextResponse.json({
       success: true,
-      accountId,
-      coaCategoryId: action === 'unmap' ? null : categoryId,
+      accountId: result.account_id,
+      coaCategoryId: result.coa_category_id ?? null,
     });
   } catch (error) {
     console.error('[accounting-setup] Unexpected error:', error);
