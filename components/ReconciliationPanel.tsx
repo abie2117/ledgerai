@@ -108,6 +108,16 @@ export default function ReconciliationPanel({ clientId, canManage }: Props) {
     void load();
   }, [clientId]);
 
+  useEffect(() => {
+    function handleAccountingSetupChanged(event: Event) {
+      const detail = (event as CustomEvent<{ clientId?: string }>).detail;
+      if (detail?.clientId === clientId) void load();
+    }
+
+    window.addEventListener('ledgerai:accounting-setup-changed', handleAccountingSetupChanged);
+    return () => window.removeEventListener('ledgerai:accounting-setup-changed', handleAccountingSetupChanged);
+  }, [clientId]);
+
   const accountById = useMemo(
     () => new Map(accounts.map((account) => [account.id, account])),
     [accounts],
