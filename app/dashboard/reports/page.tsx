@@ -30,6 +30,17 @@ interface JournalEntry {
   journal_lines?: JournalLine[];
 }
 
+interface CashFlowReport {
+  beginning_cash: number | string;
+  operating_cash_flow: number | string;
+  investing_cash_flow: number | string;
+  financing_cash_flow: number | string;
+  unclassified_cash_flow: number | string;
+  net_cash_change: number | string;
+  ending_cash: number | string;
+  reconciliation_difference: number | string;
+}
+
 interface AccountBalance {
 
   id: string;
@@ -56,6 +67,7 @@ function ReportsContent() {
   const [startDate, setStartDate] = useState(`${now.getFullYear()}-01-01`);
   const [endDate, setEndDate] = useState(now.toISOString().slice(0, 10));
   const [entries, setEntries] = useState<JournalEntry[]>([]);
+  const [cashFlow, setCashFlow] = useState<CashFlowReport | null>(null);
   const [loading, setLoading] = useState(Boolean(clientId));
   const [error, setError] = useState('');
 
@@ -80,7 +92,20 @@ function ReportsContent() {
           .order('entry_date', { ascending: true });
 
         if (queryError) throw queryError;
-        if (!cancelled) setEntries((data || []) as unknown as JournalEntry[]);
+
+        const { data: cashFlowData, error: cashFlowError } = await supabase.rpc('get_cash_flow_report', {
+          p_client_id: clientId,
+          p_start_date: startDate,
+          p_end_date: endDate,
+        });
+
+        if (cashFlowError) throw cashFlowError;
+
+        if (!cancelled) {
+          setEntries((data || []) as unknown as JournalEntry[]);
+          const cashFlowRows = (cashFlowData || []) as CashFlowReport[];
+          setCashFlow(cashFlowRows[0] || null);
+        }
       } catch (loadError) {
         if (!cancelled) setError(loadError instanceof Error ? loadError.message : 'Unable to load ledger reports.');
       } finally {
@@ -90,7 +115,7 @@ function ReportsContent() {
 
     void load();
     return () => { cancelled = true; };
-  }, [clientId, endDate]);
+  }, [clientId, startDate, endDate]);
 
   function balancesFor(source: JournalEntry[]) {
     const balances = new Map<string, AccountBalance>();
@@ -256,6 +281,42 @@ function ReportsContent() {
                     <div className="mt-2 flex justify-between rounded-xl bg-slate-950/60 p-4 text-sm font-semibold"><span>Accounting equation difference</span><span>{money(balanceDifference)}</span></div>
                   </section>
                 </div>
+
+                <section className="rounded-2xl border border-slate-800 bg-slate-900 p-6">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <h2 className="text-xl font-semibold">Cash Flow Statement</h2>
+                      <p className="mt-1 text-xs text-slate-500">{startDate} → {endDate} · direct method · explicitly classified ledger accounts</p>
+                    </div>
+                    {cashFlow && Math.abs(Number(cashFlow.reconciliation_difference || 0)) < 0.01 && (
+                      <span className="rounded-full border border-emerald-800 bg-emerald-950/40 px-3 py-1 text-xs font-semibold text-emerald-300">Reconciled</span>
+                    )}
+                  </div>
+                  {!cashFlow ? (
+                    <p className="mt-4 text-sm text-slate-500">No cash-flow report data is available for this period.</p>
+                  ) : (
+                    <div className="mt-5 space-y-2">
+                      <div className="flex justify-between border-b border-slate-800 py-2 text-sm"><span className="text-slate-400">Beginning cash</span><span className="font-medium">{money(Number(cashFlow.beginning_cash || 0))}</span></div>
+                      <div className="flex justify-between py-2 text-sm"><span className="text-slate-300">Operating activities</span><span>{money(Number(cashFlow.operating_cash_flow || 0))}</span></div>
+                      <div className="flex justify-between py-2 text-sm"><span className="text-slate-300">Investing activities</span><span>{money(Number(cashFlow.investing_cash_flow || 0))}</span></div>
+                      <div className="flex justify-between py-2 text-sm"><span className="text-slate-300">Financing activities</span><span>{money(Number(cashFlow.financing_cash_flow || 0))}</span></div>
+                      {Math.abs(Number(cashFlow.unclassified_cash_flow || 0)) >= 0.01 && (
+                        <div className="flex justify-between rounded-lg border border-amber-900/60 bg-amber-950/20 px-3 py-2 text-sm">
+                          <span className="text-amber-300">Unclassified cash movement</span>
+                          <span className="font-medium text-amber-200">{money(Number(cashFlow.unclassified_cash_flow || 0))}</span>
+                        </div>
+                      )}
+                      <div className="flex justify-between border-t border-slate-700 py-3 font-semibold"><span>Net change in cash</span><span>{money(Number(cashFlow.net_cash_change || 0))}</span></div>
+                      <div className="flex justify-between rounded-xl bg-slate-950/60 p-4 text-lg font-bold"><span>Ending cash</span><span>{money(Number(cashFlow.ending_cash || 0))}</span></div>
+                      {Math.abs(Number(cashFlow.reconciliation_difference || 0)) >= 0.01 && (
+                        <div className="mt-3 rounded-xl border border-red-900/60 bg-red-950/30 p-4 text-sm text-red-300">
+                          Cash-flow reconciliation difference: {money(Number(cashFlow.reconciliation_difference || 0))}. Review cash-flow classifications before relying on this statement.
+                        </div>
+                      )}
+                      <p className="pt-2 text-xs text-slate-500">Unclassified movements remain visible rather than being guessed into operating, investing, or financing activities.</p>
+                    </div>
+                  )}
+                </section>
 
                 <section className="rounded-2xl border border-slate-800 bg-slate-900 p-6">
                   <h2 className="text-xl font-semibold">General Ledger</h2>
