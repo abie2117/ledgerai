@@ -54,9 +54,15 @@ interface Transaction {
   canonical_category?: {
     id: string;
     name: string;
+    client_id?: string | null;
+    account_type?: string | null;
+    normal_balance?: string | null;
+    is_active?: boolean | null;
+    is_posting_account?: boolean | null;
   } | null;
   account_name?: string | null;
   account_mask?: string | null;
+  account_coa_category_id?: string | null;
   pending?: boolean | null;
   payment_channel?: string | null;
   iso_currency_code?: string | null;
@@ -240,6 +246,7 @@ export default function DashboardPage() {
   const [resolvingDuplicateKey, setResolvingDuplicateKey] = useState<string | null>(null);
   const [providerExceptions, setProviderExceptions] = useState<ProviderTransactionException[]>([]);
   const [resolvingProviderExceptionId, setResolvingProviderExceptionId] = useState<string | null>(null);
+  const [postingTransactionId, setPostingTransactionId] = useState<string | null>(null);
 
   const [financeQuestion, setFinanceQuestion] = useState('');
   const [askAnswer, setAskAnswer] = useState('');
@@ -421,11 +428,17 @@ export default function DashboardPage() {
               name,
               mask,
               type,
-              subtype
+              subtype,
+              coa_category_id
             ),
             canonical_category:categories!transactions_ai_category_id_fkey (
               id,
-              name
+              name,
+              client_id,
+              account_type,
+              normal_balance,
+              is_active,
+              is_posting_account
             ),
             journal_entries!left (
               id,
@@ -447,6 +460,7 @@ export default function DashboardPage() {
             ...transaction,
             account_name: transaction.accounts?.name || null,
             account_mask: transaction.accounts?.mask || null,
+            account_coa_category_id: transaction.accounts?.coa_category_id || null,
           }),
         );
 
@@ -1126,11 +1140,22 @@ export default function DashboardPage() {
             name,
             mask,
             type,
-            subtype
+            subtype,
+            coa_category_id
           ),
           canonical_category:categories!transactions_ai_category_id_fkey (
             id,
-            name
+            name,
+            client_id,
+            account_type,
+            normal_balance,
+            is_active,
+            is_posting_account
+          ),
+          journal_entries!left (
+            id,
+            status,
+            reversal_of_journal_entry_id
           )
         `)
         .eq('client_id', selectedClientId)
@@ -1147,6 +1172,7 @@ export default function DashboardPage() {
           ...transaction,
           account_name: transaction.accounts?.name || null,
           account_mask: transaction.accounts?.mask || null,
+          account_coa_category_id: transaction.accounts?.coa_category_id || null,
         }),
       );
 
@@ -1303,6 +1329,93 @@ export default function DashboardPage() {
       );
     } finally {
       setSavingCategoryId(null);
+    }
+  }
+
+  async function handlePostTransaction(transaction: Transaction) {
+    if (
+      !selectedClientId ||
+      !canResolveProviderExceptions ||
+      postingTransactionId
+    ) {
+      return;
+    }
+
+    const activeJournal = transaction.journal_entries?.find(
+      (journal) =>
+        journal.reversal_of_journal_entry_id == null &&
+        (journal.status === 'draft' || journal.status === 'posted'),
+    );
+
+    if (activeJournal) {
+      setErrorMessage(
+        activeJournal.status === 'posted'
+          ? 'This transaction is already posted to the ledger.'
+          : 'This transaction has an active draft journal that must be resolved first.',
+      );
+      return;
+    }
+
+    const confirmed = window.confirm(
+      'Post this confirmed transaction to the ledger? This creates a balanced journal entry and affects financial statements.',
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      setPostingTransactionId(transaction.id);
+      setErrorMessage('');
+      setSuccessMessage('');
+
+      const response = await fetch('/api/journal/post-transaction', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          transactionId: transaction.id,
+          clientId: selectedClientId,
+        }),
+      });
+
+      const result = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(
+          result.error || 'Unable to post transaction to the ledger.',
+        );
+      }
+
+      setTransactions((currentTransactions) =>
+        currentTransactions.map((currentTransaction) =>
+          currentTransaction.id === transaction.id
+            ? {
+                ...currentTransaction,
+                journal_entries: [
+                  ...(currentTransaction.journal_entries || []),
+                  {
+                    id: result.journalEntryId,
+                    status: 'posted',
+                    reversal_of_journal_entry_id: null,
+                  },
+                ],
+              }
+            : currentTransaction,
+        ),
+      );
+
+      setSuccessMessage(
+        'Transaction posted to the ledger. Journal Activity and financial reports now include this posting.',
+      );
+    } catch (error: unknown) {
+      console.error('Error posting transaction to ledger:', error);
+      setErrorMessage(
+        error instanceof Error
+          ? error.message
+          : 'Unable to post transaction to the ledger.',
+      );
+    } finally {
+      setPostingTransactionId(null);
     }
   }
 
@@ -1470,11 +1583,22 @@ export default function DashboardPage() {
             name,
             mask,
             type,
-            subtype
+            subtype,
+            coa_category_id
           ),
           canonical_category:categories!transactions_ai_category_id_fkey (
             id,
-            name
+            name,
+            client_id,
+            account_type,
+            normal_balance,
+            is_active,
+            is_posting_account
+          ),
+          journal_entries!left (
+            id,
+            status,
+            reversal_of_journal_entry_id
           )
         `)
         .eq('client_id', selectedClientId)
@@ -1491,6 +1615,7 @@ export default function DashboardPage() {
           ...transaction,
           account_name: transaction.accounts?.name || null,
           account_mask: transaction.accounts?.mask || null,
+          account_coa_category_id: transaction.accounts?.coa_category_id || null,
         }),
       );
 
@@ -2904,11 +3029,76 @@ function handleAskQuestion() {
                           </td>
 
                           <td className="whitespace-nowrap px-5 py-4">
-                            {transaction.status === 'confirmed' ? (
-                              <span className="text-xs font-medium text-emerald-300">
-                                Confirmed
-                              </span>
-                            ) : (() => {
+                            {transaction.status === 'confirmed' ? (() => {
+                              const activeJournal =
+                                transaction.journal_entries?.find(
+                                  (journal) =>
+                                    journal.reversal_of_journal_entry_id == null &&
+                                    (journal.status === 'draft' ||
+                                      journal.status === 'posted'),
+                                );
+
+                              const categoryPostingReady =
+                                transaction.canonical_category?.client_id ===
+                                  selectedClientId &&
+                                !!transaction.canonical_category?.account_type &&
+                                !!transaction.canonical_category?.normal_balance &&
+                                transaction.canonical_category?.is_active === true &&
+                                transaction.canonical_category
+                                  ?.is_posting_account === true;
+
+                              const postingReady =
+                                !transaction.duplicate_of_transaction_id &&
+                                !transaction.plaid_removed_at &&
+                                !!transaction.account_coa_category_id &&
+                                categoryPostingReady &&
+                                !activeJournal;
+
+                              const isPosting =
+                                postingTransactionId === transaction.id;
+
+                              return (
+                                <div className="flex flex-col items-start gap-1.5">
+                                  {activeJournal?.status === 'posted' ? (
+                                    <span className="text-xs font-semibold text-cyan-300">
+                                      Posted to ledger
+                                    </span>
+                                  ) : activeJournal?.status === 'draft' ? (
+                                    <span className="text-xs font-medium text-amber-300">
+                                      Draft journal requires resolution
+                                    </span>
+                                  ) : postingReady &&
+                                    canResolveProviderExceptions ? (
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        void handlePostTransaction(transaction)
+                                      }
+                                      disabled={!!postingTransactionId}
+                                      className="rounded-lg border border-cyan-500/50 px-3 py-1.5 text-xs font-semibold text-cyan-300 transition hover:bg-cyan-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+                                    >
+                                      {isPosting
+                                        ? 'Posting...'
+                                        : 'Post to ledger'}
+                                    </button>
+                                  ) : (
+                                    <span className="text-xs font-medium text-slate-400">
+                                      {!canResolveProviderExceptions
+                                        ? 'Accounting role required'
+                                        : transaction.duplicate_of_transaction_id
+                                          ? 'Duplicate excluded'
+                                          : transaction.plaid_removed_at
+                                            ? 'Provider-removed'
+                                            : !transaction.account_coa_category_id
+                                              ? 'Map bank account first'
+                                              : !categoryPostingReady
+                                                ? 'Posting category required'
+                                                : 'Not ready to post'}
+                                    </span>
+                                  )}
+                                </div>
+                              );
+                            })() : (() => {
                               const decision = getReviewDecision(transaction);
 
                               return (
