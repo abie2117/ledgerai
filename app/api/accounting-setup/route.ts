@@ -119,15 +119,24 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'A ledger account name and Asset or Liability type are required.' }, { status: 400 });
     }
 
-    const { data, error } = await supabase.rpc('mutate_accounting_setup', {
-      p_client_id: clientId,
-      p_account_id: accountId,
-      p_action: action,
-      p_category_id: categoryId || null,
-      p_name: name || null,
-      p_coa_code: coaCode || null,
-      p_account_type: accountType || null,
-    });
+    const mutation =
+      action === 'map'
+        ? await supabase.rpc('map_connected_account_to_coa', {
+            p_client_id: clientId,
+            p_target_account_id: accountId,
+            p_category_id: categoryId,
+          })
+        : await supabase.rpc('mutate_accounting_setup', {
+            p_client_id: clientId,
+            p_account_id: accountId,
+            p_action: action,
+            p_category_id: null,
+            p_name: name || null,
+            p_coa_code: coaCode || null,
+            p_account_type: accountType || null,
+          });
+
+    const { data, error } = mutation;
 
     if (error) {
       console.error('[accounting-setup] Atomic mutation failed:', { clientId, accountId, action, code: error.code, message: error.message });
