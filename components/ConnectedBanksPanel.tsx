@@ -3,6 +3,13 @@
 import { useEffect, useRef, useState } from 'react';
 import PlaidLinkButton from '@/components/PlaidLinkButton';
 
+interface ConnectionAccount {
+  name: string | null;
+  mask: string | null;
+  type: string | null;
+  subtype: string | null;
+}
+
 interface Connection {
   connectionRef: string;
   label: string;
@@ -10,6 +17,7 @@ interface Connection {
   financialSourceStatus: string;
   supersededByConnectionRef: string | null;
   accountCount: number;
+  accounts: ConnectionAccount[];
   connectedAt: string;
   lastSyncedAt: string | null;
 }
@@ -186,6 +194,20 @@ export default function ConnectedBanksPanel({ clientId, refreshKey, onTransactio
                   <h3 className="min-w-0 break-words text-sm font-semibold text-white">{connection.label}</h3>
                   <span className={`shrink-0 rounded-full border px-2.5 py-1 text-xs font-medium ${status.className}`}>{status.label}</span>
                 </div>
+                {connection.accounts.length > 0 && (
+                  <div className="mt-4 rounded-lg border border-slate-800 bg-slate-900/70 p-3">
+                    <p className="text-xs font-medium text-slate-300">Accounts in this source</p>
+                    <ul className="mt-2 space-y-1.5">
+                      {connection.accounts.map((account, accountIndex) => (
+                        <li key={`${account.name || 'Account'}-${account.mask || accountIndex}`} className="text-xs text-slate-400">
+                          <span className="font-medium text-slate-200">{account.name || 'Account'}</span>
+                          {account.mask ? ` ••••${account.mask}` : ''}
+                          {(account.subtype || account.type) ? <span className="text-slate-500"> · {account.subtype || account.type}</span> : null}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
                 <dl className="mt-4 grid min-w-0 grid-cols-1 gap-x-4 gap-y-2 text-xs sm:grid-cols-2">
                   <div><dt className="text-slate-500">Accounts</dt><dd className="mt-0.5 text-slate-300">{connection.accountCount} {connection.accountCount === 1 ? 'account' : 'accounts'}</dd></div>
                   <div><dt className="text-slate-500">Connected</dt><dd className="mt-0.5 text-slate-300">{formatDate(connection.connectedAt)}</dd></div>
