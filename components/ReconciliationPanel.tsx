@@ -131,6 +131,12 @@ export default function ReconciliationPanel({ clientId, canManage }: Props) {
   const mappedAccounts = accounts.filter((account) => account.coa_category_id);
   const unmappedAccounts = accounts.filter((account) => !account.coa_category_id);
 
+  function validateBalances() {
+    const valid = [openingStatementBalance, openingBookBalance, closingStatementBalance]
+      .every(value => /^-?(?:\d+(?:\.\d{0,2})?|\.\d{1,2})$/.test(value.trim()) && Number.isFinite(Number(value)));
+    if (!valid) throw new Error('Enter all three balances as amounts with up to two decimal places. Negative balances are allowed, for example -6.33.');
+  }
+
   async function callAction(body: Record<string, unknown>) {
     const response = await fetch('/api/reconciliations', {
       method: 'POST',
@@ -165,6 +171,7 @@ export default function ReconciliationPanel({ clientId, canManage }: Props) {
       setError('');
       setMessage('');
 
+      validateBalances();
       await callAction({
         action: 'start',
         accountId,
@@ -202,6 +209,7 @@ export default function ReconciliationPanel({ clientId, canManage }: Props) {
       setError('');
       setMessage('');
 
+      validateBalances();
       await callAction({
         action: 'update_balances',
         reconciliationId,
@@ -314,15 +322,15 @@ export default function ReconciliationPanel({ clientId, canManage }: Props) {
               </label>
               <label className="text-xs font-medium text-slate-400">
                 Statement opening balance
-                <input type="number" step="0.01" value={openingStatementBalance} onChange={(event) => setOpeningStatementBalance(event.target.value)} required className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white" />
+                <input type="text" inputMode="decimal" value={openingStatementBalance} onChange={(event) => setOpeningStatementBalance(event.target.value)} required className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white" />
               </label>
               <label className="text-xs font-medium text-slate-400">
                 Book opening balance
-                <input type="number" step="0.01" value={openingBookBalance} onChange={(event) => setOpeningBookBalance(event.target.value)} required className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white" />
+                <input type="text" inputMode="decimal" value={openingBookBalance} onChange={(event) => setOpeningBookBalance(event.target.value)} required className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white" />
               </label>
               <label className="text-xs font-medium text-slate-400">
                 Statement closing balance
-                <input type="number" step="0.01" value={closingStatementBalance} onChange={(event) => setClosingStatementBalance(event.target.value)} required className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white" />
+                <input type="text" inputMode="decimal" value={closingStatementBalance} onChange={(event) => setClosingStatementBalance(event.target.value)} required className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white" />
               </label>
               <div className="flex items-end">
                 <button type="submit" disabled={acting || mappedAccounts.length === 0} className="w-full rounded-lg bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-40">
@@ -373,9 +381,9 @@ export default function ReconciliationPanel({ clientId, canManage }: Props) {
 
                   {editing ? (
                     <div className="mt-4 grid gap-3 md:grid-cols-4">
-                      <input aria-label="Statement opening balance" type="number" step="0.01" value={openingStatementBalance} onChange={(event) => setOpeningStatementBalance(event.target.value)} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white" />
-                      <input aria-label="Book opening balance" type="number" step="0.01" value={openingBookBalance} onChange={(event) => setOpeningBookBalance(event.target.value)} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white" />
-                      <input aria-label="Statement closing balance" type="number" step="0.01" value={closingStatementBalance} onChange={(event) => setClosingStatementBalance(event.target.value)} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white" />
+                      <input aria-label="Statement opening balance" type="text" inputMode="decimal" value={openingStatementBalance} onChange={(event) => setOpeningStatementBalance(event.target.value)} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white" />
+                      <input aria-label="Book opening balance" type="text" inputMode="decimal" value={openingBookBalance} onChange={(event) => setOpeningBookBalance(event.target.value)} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white" />
+                      <input aria-label="Statement closing balance" type="text" inputMode="decimal" value={closingStatementBalance} onChange={(event) => setClosingStatementBalance(event.target.value)} className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white" />
                       <div className="flex gap-2">
                         <button type="button" disabled={acting} onClick={() => saveBalances(reconciliation.id)} className="rounded-lg bg-cyan-500 px-3 py-2 text-xs font-semibold text-slate-950 disabled:opacity-40">Save</button>
                         <button type="button" disabled={acting} onClick={clearForm} className="rounded-lg border border-slate-700 px-3 py-2 text-xs font-semibold text-slate-300 disabled:opacity-40">Cancel</button>
