@@ -3,6 +3,7 @@
 import { Suspense, useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import AccountingSetupPanel from '@/components/AccountingSetupPanel';
+import ChartOfAccountsPanel from '@/components/ChartOfAccountsPanel';
 import CashFlowClassificationPanel from '@/components/CashFlowClassificationPanel';
 import ReconciliationPanel from '@/components/ReconciliationPanel';
 import JournalActivityPanel from '@/components/JournalActivityPanel';
@@ -107,6 +108,7 @@ function AccountingWorkspaceContent() {
         ) : (
           <>
             <AccountingSetupPanel clientId={clientId} canManage={canManage} />
+            <ChartOfAccountsPanel key={clientId} clientId={clientId} canManage={canManage} />
             <CashFlowClassificationPanel clientId={clientId} canManage={canManage} />
             <JournalActivityPanel clientId={clientId} />
             <VendorRecurringPanel clientId={clientId} canManage={canManage} />
