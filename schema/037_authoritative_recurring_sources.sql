@@ -161,6 +161,8 @@ declare
   v_normalized_name text;
   v_merchant_pattern text;
   v_vendor_id uuid;
+  v_source_ids uuid[];
+  v_account_ids uuid[];
 begin
   if v_user_id is null then
     raise exception 'Authentication required.';
@@ -185,20 +187,25 @@ begin
   end if;
 
   -- Lock providers first, then accounts, before selecting actionable evidence.
-  perform pi.id from plaid_items pi where pi.client_id = p_client_id and pi.id in (
+  select array_agg(locked.id) into v_source_ids from (
+  select pi.id from plaid_items pi where pi.client_id = p_client_id and pi.id in (
     select a.plaid_item_id from accounts a join recurring_transaction_candidates r on r.account_id = a.id
     where r.client_id = p_client_id and r.merchant_pattern = v_merchant_pattern and r.status <> 'dismissed'
-  ) order by pi.id for update;
-  perform a.id from accounts a join plaid_items pi on pi.id = a.plaid_item_id
-    where pi.client_id = p_client_id and a.id in (
+  ) order by pi.id for update
+  ) locked;
+  select array_agg(locked.id) into v_account_ids from (
+  select a.id from accounts a join plaid_items pi on pi.id = a.plaid_item_id
+    where pi.client_id = p_client_id and pi.id = any(v_source_ids) and a.id in (
       select r.account_id from recurring_transaction_candidates r where r.client_id = p_client_id
         and r.merchant_pattern = v_merchant_pattern and r.status <> 'dismissed'
-    ) order by a.id for update of a;
+    ) order by a.id for update of a
+  ) locked;
   if not exists (
     select 1 from recurring_transaction_candidates r join accounts a on a.id = r.account_id
     join plaid_items pi on pi.id = a.plaid_item_id
     where r.client_id = p_client_id and pi.client_id = p_client_id
       and r.merchant_pattern = v_merchant_pattern and r.status <> 'dismissed'
+      and a.id = any(v_account_ids)
       and pi.status = 'active' and pi.financial_source_status = 'active'
   ) then raise exception 'An active-source recurring candidate is required to link this merchant.'; end if;
 
@@ -243,6 +250,7 @@ begin
   where client_id = p_client_id
     and merchant_pattern = v_merchant_pattern
     and status <> 'dismissed'
+    and account_id = any(v_account_ids)
     and account_id in (
       select a.id from accounts a join plaid_items pi on pi.id = a.plaid_item_id
       where pi.client_id = p_client_id and pi.status = 'active'
@@ -284,7 +292,7 @@ begin
     raise exception 'Authentication required.';
   end if;
 
-  if p_action not in ('confirm', 'dismiss') then
+  if p_action is null or p_action not in ('confirm', 'dismiss') then
     raise exception 'Recurring review action must be confirm or dismiss.';
   end if;
 
@@ -369,4 +377,3 @@ revoke all on function review_recurring_transaction_candidate(uuid, uuid, text)
   from public, anon;
 grant execute on function review_recurring_transaction_candidate(uuid, uuid, text)
   to authenticated;
-
