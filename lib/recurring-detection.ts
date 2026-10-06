@@ -137,9 +137,12 @@ export async function detectRecurringTransactionCandidates(
   const { data, error } = await db
     .from('transactions')
     .select(
-      'id, account_id, posted_date, amount, merchant_name, duplicate_of_transaction_id, plaid_removed_at',
+      'id, account_id, posted_date, amount, merchant_name, duplicate_of_transaction_id, plaid_removed_at, accounts!inner(plaid_items!inner(client_id, status, financial_source_status))',
     )
     .eq('client_id', clientId)
+    .eq('accounts.plaid_items.client_id', clientId)
+    .eq('accounts.plaid_items.status', 'active')
+    .eq('accounts.plaid_items.financial_source_status', 'active')
     .is('plaid_removed_at', null)
     .is('duplicate_of_transaction_id', null)
     .order('posted_date', { ascending: true });
@@ -244,6 +247,7 @@ export async function detectRecurringTransactionCandidates(
           amount_samples: amounts,
           direction: 'outflow',
           active_provider_transactions_only: true,
+          authoritative_financial_sources_only: true,
           confirmed_duplicates_excluded: true,
         },
       },
