@@ -1,3 +1,4 @@
+import { asErrorDetails } from '@/lib/error-details';
 // app/api/plaid/create-link-token/route.ts
 
 import { NextResponse } from 'next/server';
@@ -5,6 +6,8 @@ import {
   Configuration,
   PlaidApi,
   PlaidEnvironments,
+  Products,
+  CountryCode,
 } from 'plaid';
 import { createRouteHandlerClient } from '@/lib/supabase-server';
 import { createClient } from '@supabase/supabase-js';
@@ -276,12 +279,12 @@ export async function POST(req: Request) {
         client_name: 'LedgerAI App',
 
         products: [
-          'transactions',
-        ] as any,
+          Products.Transactions,
+        ],
 
         country_codes: [
-          'US',
-        ] as any,
+          CountryCode.Us,
+        ],
 
         language: 'en',
 
@@ -314,11 +317,11 @@ export async function POST(req: Request) {
       },
       { status: 200 }
     );
-  } catch (error: any) {
+  } catch (error) {
     console.error(
       '[plaid/create-link-token] FAILED:',
-      error?.response?.data ||
-        error?.message ||
+      asErrorDetails(error).response?.data ||
+        asErrorDetails(error).message ||
         error
     );
 
@@ -326,8 +329,8 @@ export async function POST(req: Request) {
       {
         success: false,
         error:
-          error?.response?.data?.error_message ||
-          error?.message ||
+          asErrorDetails(error).response?.data?.error_message ||
+          asErrorDetails(error).message ||
           'Failed to create Plaid Link token.',
       },
       { status: 500 }

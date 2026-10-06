@@ -2,6 +2,7 @@
 // Server-side only. Never import this into a client component.
 
 import { Configuration, PlaidApi, PlaidEnvironments, Products, CountryCode } from "plaid";
+import type { Transaction, RemovedTransaction } from "plaid";
 import { createClient } from "@supabase/supabase-js";
 
 const config = new Configuration({
@@ -111,7 +112,7 @@ async function pullInitialTransactions(itemId: string, accessToken: string, clie
     .eq("plaid_item_id", itemId);
 }
 
-async function upsertTransactions(supabase: ReturnType<typeof supabaseAdmin>, txns: any[], clientId: string) {
+async function upsertTransactions(supabase: ReturnType<typeof supabaseAdmin>, txns: Transaction[], clientId: string) {
   const rows = txns.map((t) => ({
     plaid_transaction_id: t.transaction_id,
     posted_date: t.date,
@@ -127,7 +128,7 @@ async function upsertTransactions(supabase: ReturnType<typeof supabaseAdmin>, tx
   if (error) throw error;
 }
 
-async function markTransactionsRemoved(supabase: ReturnType<typeof supabaseAdmin>, removed: any[]) {
+async function markTransactionsRemoved(supabase: ReturnType<typeof supabaseAdmin>, removed: RemovedTransaction[]) {
   const ids = removed.map((r) => r.transaction_id);
   const { error } = await supabase
     .from("transactions")

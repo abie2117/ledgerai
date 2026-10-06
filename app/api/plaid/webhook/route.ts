@@ -1,3 +1,5 @@
+import { asErrorDetails } from '@/lib/error-details';
+import type { JWK } from 'jose';
 // app/api/plaid/webhook/route.ts
 
 import { NextResponse } from 'next/server';
@@ -111,7 +113,7 @@ async function verifyPlaidWebhook(
   }
 
   const publicKey = await importJWK(
-    jwk as any,
+    jwk as unknown as JWK,
     'ES256'
   );
 
@@ -207,10 +209,10 @@ export async function POST(req: Request) {
         rawBody,
         verificationToken
       );
-    } catch (verificationError: any) {
+    } catch (verificationError) {
       console.error(
         '[plaid/webhook] Verification failed:',
-        verificationError?.message ||
+        asErrorDetails(verificationError).message ||
           verificationError
       );
 
@@ -228,7 +230,7 @@ export async function POST(req: Request) {
     // 3. PARSE BODY ONLY AFTER VERIFICATION
     // ---------------------------------------------------------
 
-    let body: any;
+    let body: { webhook_type?: unknown; webhook_code?: unknown; item_id?: unknown } | null;
 
     try {
       body = JSON.parse(rawBody);
@@ -418,11 +420,11 @@ export async function POST(req: Request) {
       },
       { status: 200 }
     );
-  } catch (error: any) {
+  } catch (error) {
     console.error(
       '[plaid/webhook] FAILED:',
-      error?.response?.data ||
-        error?.message ||
+      asErrorDetails(error).response?.data ||
+        asErrorDetails(error).message ||
         error
     );
 

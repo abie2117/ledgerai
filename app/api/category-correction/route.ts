@@ -1,3 +1,4 @@
+import { asErrorDetails } from '@/lib/error-details';
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { createServerSupabaseClient } from '../../../lib/supabase-server';
@@ -77,14 +78,14 @@ export async function POST(request: Request) {
     }
 
     const accountingMemberships = (memberships || []).filter(
-      (membership: any) =>
+      (membership) =>
         ['owner', 'admin', 'bookkeeper'].includes(
           membership.role,
         ),
     );
 
     const firmIds = accountingMemberships
-      .map((membership: any) => membership.firm_id)
+      .map((membership) => membership.firm_id)
       .filter(Boolean);
 
     if (firmIds.length === 0) {
@@ -256,7 +257,7 @@ export async function POST(request: Request) {
         name: category.name,
       },
     });
-  } catch (error: any) {
+  } catch (error) {
     console.error(
       '[category-correction] Unexpected error:',
       error,
@@ -265,7 +266,7 @@ export async function POST(request: Request) {
     return NextResponse.json(
       {
         error:
-          error?.message ||
+          asErrorDetails(error).message ||
           'Unable to save category correction.',
       },
       { status: 500 },

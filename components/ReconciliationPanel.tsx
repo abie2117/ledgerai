@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 import { supabase } from '@/lib/supabase-browser';
 
 interface ConnectedAccount {
@@ -63,7 +63,7 @@ export default function ReconciliationPanel({ clientId, canManage }: Props) {
   const [closingStatementBalance, setClosingStatementBalance] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
 
-  async function load() {
+  const load = useCallback(async () => {
     if (!clientId) return;
 
     setLoading(true);
@@ -98,15 +98,20 @@ export default function ReconciliationPanel({ clientId, canManage }: Props) {
     } finally {
       setLoading(false);
     }
-  }
+  }, [clientId]);
 
   useEffect(() => {
-    setAccountId('');
-    setEditingId(null);
-    setMessage('');
-    setError('');
-    void load();
-  }, [clientId]);
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      setAccountId('');
+      setEditingId(null);
+      setMessage('');
+      setError('');
+      void load();
+    });
+    return () => { cancelled = true; };
+  }, [load]);
 
   useEffect(() => {
     function handleAccountingSetupChanged(event: Event) {
@@ -116,7 +121,7 @@ export default function ReconciliationPanel({ clientId, canManage }: Props) {
 
     window.addEventListener('ledgerai:accounting-setup-changed', handleAccountingSetupChanged);
     return () => window.removeEventListener('ledgerai:accounting-setup-changed', handleAccountingSetupChanged);
-  }, [clientId]);
+  }, [clientId, load]);
 
   const accountById = useMemo(
     () => new Map(accounts.map((account) => [account.id, account])),

@@ -1,3 +1,4 @@
+import { asErrorDetails } from '@/lib/error-details';
 import Anthropic from '@anthropic-ai/sdk';
 import { createClient } from '@supabase/supabase-js';
 
@@ -253,7 +254,7 @@ export async function categorizePendingTransactions(
   }
 
   const ruleMap = new Map<string, MappingRule>(
-    (rules ?? []).map((rule: any) => [
+    (rules ?? []).map((rule) => [
       normalizeMerchant(rule.merchant_pattern),
       {
         merchant_pattern: rule.merchant_pattern,
@@ -372,7 +373,7 @@ async function categorizeBatchWithClaude(
     });
 
   const textBlock = response.content.find(
-    (block: any) => block.type === 'text',
+    (block) => block.type === 'text',
   );
 
   if (
@@ -384,7 +385,7 @@ async function categorizeBatchWithClaude(
     );
   }
 
-  const results: any[] = JSON.parse(
+  const results: { index: number; category_id?: string; confidence?: number }[] = JSON.parse(
     textBlock.text,
   );
 
@@ -713,7 +714,7 @@ export async function categorizeWithLocalRules(
     MappingRule
   >(
     (mappingRules || []).map(
-      (rule: any) => [
+      (rule) => [
         normalizeMerchant(
           rule.merchant_pattern,
         ),
@@ -937,7 +938,7 @@ export async function categorizeWithLocalRules(
         needsClaude,
         categories,
       );
-    } catch (error: any) {
+    } catch (error) {
       /*
        * Claude is an optional fallback.
        *
@@ -949,7 +950,7 @@ export async function categorizeWithLocalRules(
        */
       console.warn(
         '[categorization] AI fallback unavailable. Remaining transactions were left for review:',
-        error?.message || error,
+        asErrorDetails(error).message || error,
       );
     }
   }

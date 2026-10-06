@@ -1,3 +1,4 @@
+import { asErrorDetails } from '@/lib/error-details';
 import { NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '../../../../lib/supabase-server';
 
@@ -119,7 +120,7 @@ export async function POST(req: Request) {
     }
 
     const formattedTransactions = (transactions || []).map(
-      (transaction: any) => ({
+      (transaction) => ({
         ...transaction,
 
         account_name:
@@ -142,7 +143,7 @@ export async function POST(req: Request) {
       },
       { status: 200 }
     );
-  } catch (err: any) {
+  } catch (err) {
     console.error(
       'Error in transactions route:',
       err

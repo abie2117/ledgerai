@@ -4,6 +4,7 @@
 
 'use client';
 
+import { asErrorDetails } from '@/lib/error-details';
 import { useState, type ChangeEvent, type KeyboardEvent } from 'react';
 
 interface QueryBarProps {
@@ -14,7 +15,7 @@ interface QueryBarProps {
 }
 
 interface QueryResult {
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 const EXAMPLE_QUERIES = [
@@ -100,8 +101,8 @@ export function QueryBar({
       if (query) {
         setQuestion(query);
       }
-    } catch (err: any) {
-      setError(err?.message || 'Unable to process query.');
+    } catch (err) {
+      setError(asErrorDetails(err).message || 'Unable to process query.');
     } finally {
       setLoading(false);
     }

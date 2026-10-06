@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase-browser';
 
 interface Vendor {
@@ -45,7 +45,7 @@ export default function VendorRecurringPanel({ clientId, canManage }: Props) {
   const [message, setMessage] = useState('');
   const [vendorNames, setVendorNames] = useState<Record<string, string>>({});
 
-  async function load() {
+  const load = useCallback(async () => {
     if (!clientId) return;
     setLoading(true);
     setError('');
@@ -70,13 +70,18 @@ export default function VendorRecurringPanel({ clientId, canManage }: Props) {
     } finally {
       setLoading(false);
     }
-  }
+  }, [clientId]);
 
   useEffect(() => {
-    setMessage('');
-    setError('');
-    void load();
-  }, [clientId]);
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      setMessage('');
+      setError('');
+      void load();
+    });
+    return () => { cancelled = true; };
+  }, [load]);
 
   const vendorById = useMemo(() => new Map(vendors.map((vendor) => [vendor.id, vendor])), [vendors]);
   const detectedCount = candidates.filter((candidate) => candidate.status === 'detected').length;

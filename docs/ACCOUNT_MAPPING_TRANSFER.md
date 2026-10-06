@@ -56,14 +56,32 @@ occupied destination, category eligibility, journal and reconciliation blockers,
 audit-insert rollback, anonymous privileges, balanced posting after succession,
 and revoked-source/completed-period posting rejection.
 
-PGlite runs one database session, so simultaneous multi-session race/deadlock
-tests still need a disposable PostgreSQL staging environment. Live ACME records,
-UI interactions against Supabase, and production transfer remain unverified.
+Six multi-session tests also passed against a disposable PostgreSQL 16 CI
+service. They verify actual lock waits and revalidation for posting, competing
+transfers, provider revocation, reconciliation in both operation orders, and
+ordinary mapping competing for the unique ledger account. Five Chromium tests
+passed against the real Accounting Setup component with synthetic API responses:
+transfer confirmation and refreshed mapping, cancellation, read-only controls,
+server rejection, and unrelated successors. These are functional component tests,
+not live Supabase/API integration or visual-layout checks. The CI production build
+also passed. No production database or provider connection is involved in CI.
+
+Live ACME records, UI/API interactions against Supabase, and production transfer
+remain unverified.
 The supplied retained source ID is not hardcoded; account IDs and the current
 mapping must be freshly checked before a later authorized runtime transfer.
 
-Local TypeScript checking passed. The production build compiled, then the
-sandbox prevented spawning the TypeScript worker (`EPERM`); the complete build
-is therefore unverified. Repository-wide lint currently reports 57 errors and
-14 warnings, including the pre-existing Accounting Setup effect rule violation.
-The proposed change does not resolve those unrelated baseline issues.
+Local TypeScript checking and repository-wide lint passed after a separate lint
+cleanup commit. Existing non-blocking warnings remain. Lint rules and CI checks
+were not relaxed. Cleanup removes redundant loose callback annotations, uses
+Plaid/Supabase SDK types and an object-shaped catch-error helper, and stabilizes
+load callbacks and asynchronously schedules effect resets. This touches existing
+API, dashboard, and accounting components and should be reviewed separately from
+the mapping migration. The JWK import retains the complete original provider key
+object with a JOSE type assertion; algorithm, key ID, signature, age, and
+payload-hash verification are unchanged.
+
+Commands: `npm run test:account-mapping`, `npm run test:account-mapping-ui`, and
+`npm run test:account-mapping-concurrency`. The concurrency command refuses
+non-loopback URLs and requires a database named `ledgerai_*_test`; it creates
+temporary databases from the fixture and opens independent client connections.
