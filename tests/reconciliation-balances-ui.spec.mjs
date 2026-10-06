@@ -23,7 +23,7 @@ test.beforeAll(async () => {
 test.afterAll(async()=>{await new Promise(resolve=>server.close(resolve))});
 async function setup(page){const posts=[];await page.route('**/api/reconciliations',route=>{posts.push(route.request().postDataJSON());return route.fulfill({json:{success:true}})});await page.goto(url);await page.getByRole('button',{name:'Edit balances'}).click();return posts;}
 test('typing minus first preserves it and submits negative closing balance',async({page})=>{
-  const posts=await setup(page);const field=page.getByRole('textbox',{name:'Statement closing balance'});
+  const posts=await setup(page);const field=page.locator('input[aria-label="Statement closing balance"]');
   await field.fill('');await field.pressSequentially('-');await expect(field).toHaveValue('-');
   await field.pressSequentially('6.33');await expect(field).toHaveValue('-6.33');
   await page.getByRole('button',{name:'Save',exact:true}).click();
@@ -31,11 +31,11 @@ test('typing minus first preserves it and submits negative closing balance',asyn
   expect(posts).toEqual([{clientId:'client',action:'update_balances',reconciliationId:'reconciliation',openingStatementBalance:'0',openingBookBalance:'0',closingStatementBalance:'-6.33'}]);
 });
 test('inserting complete negative value is preserved',async({page})=>{
-  await setup(page);const field=page.getByRole('textbox',{name:'Statement closing balance'});
+  await setup(page);const field=page.locator('input[aria-label="Statement closing balance"]');
   await field.selectText();await page.keyboard.insertText('-6.33');await expect(field).toHaveValue('-6.33');
 });
 test('invalid balances are blocked before mutation',async({page})=>{
-  const posts=await setup(page);await page.getByRole('textbox',{name:'Statement closing balance'}).fill('-');
+  const posts=await setup(page);await page.locator('input[aria-label="Statement closing balance"]').fill('-');
   await page.getByRole('button',{name:'Save',exact:true}).click();
   await expect(page.getByText(/Enter all three balances as amounts/)).toBeVisible();expect(posts).toHaveLength(0);
 });
