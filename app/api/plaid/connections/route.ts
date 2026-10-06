@@ -10,8 +10,11 @@ const CLIENT_ID_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 
 export const dynamic = 'force-dynamic';
 
-interface AccountCountRelation {
-  count?: number;
+interface PlaidConnectionAccount {
+  name: string | null;
+  mask: string | null;
+  type: string | null;
+  subtype: string | null;
 }
 
 interface PlaidItemConnectionRow {
@@ -22,7 +25,7 @@ interface PlaidItemConnectionRow {
   superseded_by_plaid_item_id: string | null;
   created_at: string;
   last_synced_at: string | null;
-  accounts: AccountCountRelation[] | AccountCountRelation | null;
+  accounts: PlaidConnectionAccount[] | null;
 }
 
 function createServiceRoleClient() {
@@ -151,7 +154,7 @@ export async function GET(request: Request) {
         superseded_by_plaid_item_id,
         created_at,
         last_synced_at,
-        accounts(count)
+        accounts(name, mask, type, subtype)
       `)
       .eq('client_id', authorizedClient.id)
       .order('created_at', { ascending: true })
@@ -174,13 +177,17 @@ export async function GET(request: Request) {
         typeof item.institution_name === 'string'
           ? item.institution_name.trim()
           : '';
-      const accountCountRelation = Array.isArray(item.accounts)
-        ? item.accounts[0]
-        : item.accounts;
-      const accountCount =
-        typeof accountCountRelation?.count === 'number'
-          ? accountCountRelation.count
-          : 0;
+      const accounts = Array.isArray(item.accounts)
+        ? item.accounts
+            .map((account) => ({
+              name: typeof account.name === 'string' ? account.name : null,
+              mask: typeof account.mask === 'string' ? account.mask : null,
+              type: typeof account.type === 'string' ? account.type : null,
+              subtype: typeof account.subtype === 'string' ? account.subtype : null,
+            }))
+            .sort((a, b) => `${a.name || ''}:${a.mask || ''}`.localeCompare(`${b.name || ''}:${b.mask || ''}`))
+        : [];
+      const accountCount = accounts.length;
 
       return {
         connectionRef: createPlaidConnectionReference(
@@ -194,6 +201,7 @@ export async function GET(request: Request) {
           ? createPlaidConnectionReference(authorizedClient.id, item.superseded_by_plaid_item_id)
           : null,
         accountCount,
+        accounts,
         connectedAt: item.created_at,
         lastSyncedAt: item.last_synced_at,
       };
