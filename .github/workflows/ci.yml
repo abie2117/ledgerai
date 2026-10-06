@@ -32,6 +32,10 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      - name: Account mapping transfer tests
+        if: success() || failure()
+        run: npm run test:account-mapping
+
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 15

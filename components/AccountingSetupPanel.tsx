@@ -4,11 +4,16 @@ import { useEffect, useMemo, useState } from 'react';
 
 interface ConnectedAccount {
   id: string;
+  plaid_item_id?: string;
   name: string;
   mask?: string | null;
   type?: string | null;
   subtype?: string | null;
   coa_category_id?: string | null;
+}
+
+interface TransferSource extends ConnectedAccount {
+  plaid_items: { superseded_by_plaid_item_id: string };
 }
 
 interface LedgerAccount {
@@ -36,6 +41,7 @@ function ledgerLabel(category: LedgerAccount) {
 export default function AccountingSetupPanel({ clientId, canManage }: Props) {
   const [accounts, setAccounts] = useState<ConnectedAccount[]>([]);
   const [categories, setCategories] = useState<LedgerAccount[]>([]);
+  const [transferSources, setTransferSources] = useState<TransferSource[]>([]);
   const [loading, setLoading] = useState(true);
   const [actingId, setActingId] = useState<string | null>(null);
   const [error, setError] = useState('');
@@ -64,6 +70,7 @@ export default function AccountingSetupPanel({ clientId, canManage }: Props) {
 
       setAccounts(result.accounts || []);
       setCategories(result.categories || []);
+      setTransferSources(result.transferSources || []);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : 'Unable to load accounting setup.');
     } finally {
@@ -131,6 +138,27 @@ export default function AccountingSetupPanel({ clientId, canManage }: Props) {
       await load();
     } catch (mutationError) {
       setError(mutationError instanceof Error ? mutationError.message : 'Unable to remove mapping.');
+    } finally {
+      setActingId(null);
+    }
+  }
+
+  async function transferMapping(source: TransferSource, destination: ConnectedAccount) {
+    if (!canManage || actingId || !source.coa_category_id) return;
+    const category = categoryById.get(source.coa_category_id);
+    if (!category || !window.confirm(
+      `Transfer ${ledgerLabel(category)} from ${connectedLabel(source)} to ${connectedLabel(destination)}? Historical transactions stay with their original accounts. Both accounts must have zero active journals and zero reconciliations.`,
+    )) return;
+    try {
+      setActingId(destination.id);
+      setError('');
+      setMessage('');
+      await mutate({ action: 'transfer', accountId: destination.id,
+        fromAccountId: source.id, categoryId: source.coa_category_id });
+      setMessage('Ledger mapping transferred. Historical transactions and source statuses are preserved.');
+      await load();
+    } catch (mutationError) {
+      setError(mutationError instanceof Error ? mutationError.message : 'Unable to transfer mapping.');
     } finally {
       setActingId(null);
     }
@@ -216,13 +244,15 @@ export default function AccountingSetupPanel({ clientId, canManage }: Props) {
 
                   <select
                     value={account.coa_category_id || ''}
-                    disabled={!canManage || actingId === account.id}
+                    disabled={!canManage || !!actingId}
                     onChange={(event) => void mapAccount(account.id, event.target.value)}
                     className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200 disabled:opacity-50"
                   >
                     <option value="">Select ledger account</option>
                     {categories.map((category) => (
-                      <option key={category.id} value={category.id}>
+                      <option key={category.id} value={category.id}
+                        disabled={accounts.some((owner) => owner.id !== account.id && owner.coa_category_id === category.id)
+                          || transferSources.some((owner) => owner.coa_category_id === category.id)}>
                         {ledgerLabel(category)}
                       </option>
                     ))}
@@ -254,6 +284,20 @@ export default function AccountingSetupPanel({ clientId, canManage }: Props) {
                     )}
                   </div>
                 </div>
+
+                {!account.coa_category_id && transferSources
+                  .filter((source) => source.plaid_items.superseded_by_plaid_item_id === account.plaid_item_id
+                    && source.coa_category_id && categoryById.has(source.coa_category_id))
+                  .map((source) => (
+                    <div key={source.id} className="mt-3 rounded-lg border border-amber-800/50 p-3 text-sm text-slate-300">
+                      <p>{ledgerLabel(categoryById.get(source.coa_category_id!)!)} is currently mapped to superseded account {connectedLabel(source)}.</p>
+                      <button type="button" disabled={!canManage || !!actingId}
+                        onClick={() => void transferMapping(source, account)}
+                        className="mt-2 rounded-lg border border-cyan-700 px-3 py-2 text-xs font-semibold text-cyan-300 disabled:opacity-50">
+                        Transfer existing ledger mapping
+                      </button>
+                    </div>
+                  ))}
 
                 {isCreating && (
                   <div className="mt-4 grid gap-3 border-t border-slate-800 pt-4 md:grid-cols-[minmax(0,1fr)_150px_160px_auto]">
