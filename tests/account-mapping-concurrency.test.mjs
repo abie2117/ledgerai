@@ -114,3 +114,16 @@ test('ordinary mapping cannot steal the transferred unique ledger account', asyn
   await runBlocked(a,b,observer,transfer,client => client.query("select mutate_accounting_setup($1,$2,'map',$3)",[3,11,6].map(id)),/duplicate key/);
   await assertMapping(observer);
 }));
+
+const detectRecurring = client => client.query(`select upsert_detected_recurring_candidate($1,$2,'fun','monthly',89.4,0,3,'2026-07-09','2026-09-07','2026-10-07',0.7,'{}') as id`,[3,8].map(id));
+test('recurring detection waits for revocation and rejects the now-inactive source',async()=>sessions(async(a,b,observer)=>{
+  await runBlocked(a,b,observer,c=>c.query("update plaid_items set status='revoked' where id=$1",[id(5)]),detectRecurring,/financially active/);
+  assert.equal((await observer.query('select count(*)::int n from recurring_transaction_candidates')).rows[0].n,0);
+}));
+test('recurring review waits for supersession and preserves candidate history',async()=>sessions(async(a,b,observer)=>{
+  const candidate=(await detectRecurring(observer)).rows[0].id;
+  await runBlocked(a,b,observer,c=>c.query(`update plaid_items set financial_source_status='superseded',superseded_by_plaid_item_id=$1,superseded_by=$2,superseded_at=now() where id=$3`,[4,1,5].map(id)),
+    c=>c.query(`select review_recurring_transaction_candidate($1,$2,'confirm')`,[candidate,id(3)]),/financially active/);
+  assert.equal((await observer.query('select status from recurring_transaction_candidates where id=$1',[candidate])).rows[0].status,'detected');
+  assert.equal((await observer.query("select count(*)::int n from audit_log where action='recurring_candidate_confirmed'")).rows[0].n,0);
+}));

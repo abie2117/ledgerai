@@ -22,7 +22,8 @@ interface RecurringCandidate {
   next_expected_date?: string | null;
   confidence_score: number | string;
   status: 'detected' | 'confirmed' | 'dismissed' | string;
-  accounts?: { name?: string | null; mask?: string | null } | null;
+  accounts?: { name?: string | null; mask?: string | null;
+    plaid_items?: { client_id?: string; status?: string; financial_source_status?: string } | null } | null;
 }
 
 interface Props { clientId: string; canManage: boolean; }
@@ -55,7 +56,7 @@ export default function VendorRecurringPanel({ clientId, canManage }: Props) {
         supabase.from('vendors').select('id, display_name, status').eq('client_id', clientId).order('display_name'),
         supabase
           .from('recurring_transaction_candidates')
-          .select('id, vendor_id, merchant_pattern, cadence, expected_amount, amount_tolerance, occurrence_count, first_occurrence_date, last_occurrence_date, next_expected_date, confidence_score, status, accounts(name, mask)')
+          .select('id, vendor_id, merchant_pattern, cadence, expected_amount, amount_tolerance, occurrence_count, first_occurrence_date, last_occurrence_date, next_expected_date, confidence_score, status, accounts(name, mask, plaid_items(client_id, status, financial_source_status))')
           .eq('client_id', clientId)
           .neq('status', 'dismissed')
           .order('next_expected_date', { ascending: true, nullsFirst: false }),
@@ -84,11 +85,17 @@ export default function VendorRecurringPanel({ clientId, canManage }: Props) {
   }, [load]);
 
   const vendorById = useMemo(() => new Map(vendors.map((vendor) => [vendor.id, vendor])), [vendors]);
-  const detectedCount = candidates.filter((candidate) => candidate.status === 'detected').length;
-  const confirmedCount = candidates.filter((candidate) => candidate.status === 'confirmed').length;
+  function authoritative(candidate: RecurringCandidate) {
+    const source = candidate.accounts?.plaid_items;
+    return source?.client_id === clientId && source.status === 'active' && source.financial_source_status === 'active';
+  }
+  const activeCandidates = candidates.filter(authoritative);
+  const historicalCandidates = candidates.filter(candidate => !authoritative(candidate));
+  const detectedCount = activeCandidates.filter((candidate) => candidate.status === 'detected').length;
+  const confirmedCount = activeCandidates.filter((candidate) => candidate.status === 'confirmed').length;
 
   async function review(candidate: RecurringCandidate, action: 'confirm' | 'dismiss') {
-    if (!canManage || actingId || candidate.status !== 'detected') return;
+    if (!canManage || actingId || !authoritative(candidate) || candidate.status !== 'detected') return;
 
     try {
       setActingId(candidate.id);
@@ -110,7 +117,7 @@ export default function VendorRecurringPanel({ clientId, canManage }: Props) {
   }
 
   async function linkVendor(candidate: RecurringCandidate) {
-    if (!canManage || actingId) return;
+    if (!canManage || actingId || !authoritative(candidate)) return;
     const displayName = (vendorNames[candidate.id] || titleCase(candidate.merchant_pattern)).trim();
     if (!displayName) return;
 
@@ -158,11 +165,11 @@ export default function VendorRecurringPanel({ clientId, canManage }: Props) {
 
       {loading ? (
         <p className="mt-5 text-sm text-slate-500">Loading recurring activity…</p>
-      ) : candidates.length === 0 ? (
+      ) : activeCandidates.length === 0 ? (
         <p className="mt-5 text-sm text-slate-500">No active recurring transaction evidence has been detected for this client yet.</p>
       ) : (
         <div className="mt-5 space-y-3">
-          {candidates.map((candidate) => {
+          {activeCandidates.map((candidate) => {
             const vendor = candidate.vendor_id ? vendorById.get(candidate.vendor_id) : null;
             const confidence = Math.round(Number(candidate.confidence_score) * 100);
             const account = candidate.accounts?.name
@@ -220,6 +227,14 @@ export default function VendorRecurringPanel({ clientId, canManage }: Props) {
         </div>
       )}
 
+      {!loading && historicalCandidates.length > 0 && <details className="mt-5 rounded-xl border border-slate-800 p-4">
+        <summary className="cursor-pointer text-sm text-slate-400">Historical source evidence · {historicalCandidates.length} preserved candidates</summary>
+        <p className="mt-3 text-xs text-slate-500">These sources are not currently authoritative. Their evidence is preserved and cannot be reviewed or linked here.</p>
+        <div className="mt-3 space-y-2">{historicalCandidates.map(candidate => <div key={candidate.id} className="rounded-lg bg-slate-950/50 p-3 text-sm text-slate-400">
+          {titleCase(candidate.merchant_pattern)} · {candidate.accounts?.name || 'Connected account'} · {candidate.cadence} · {money(candidate.expected_amount)} · {candidate.status}
+          <p className="mt-1 text-xs">Provider: {candidate.accounts?.plaid_items?.status || 'Unavailable'} · Financial source: {candidate.accounts?.plaid_items?.financial_source_status || 'Unavailable'} · Observed {candidate.first_occurrence_date} → {candidate.last_occurrence_date}</p>
+        </div>)}</div>
+      </details>}
       {!canManage && <p className="mt-4 text-xs text-amber-300">Owner, admin, or bookkeeper access is required to link vendors or review recurring evidence.</p>}
     </section>
   );
