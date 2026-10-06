@@ -390,7 +390,21 @@ export async function syncPlaidItem({
       }
 
       if (!existingTransaction.plaid_removed_at) {
-        continue;
+        // Posted removals are captured as evidence without changing the source
+        // row. A reappearance must supersede that open removal too.
+        const { data: pendingRemoval, error: pendingRemovalError } = await db
+          .from('provider_transaction_exceptions')
+          .select('id')
+          .eq('client_id', clientId)
+          .eq('plaid_item_id', item.id)
+          .eq('transaction_id', existingTransaction.id)
+          .eq('event_type', 'removed')
+          .eq('status', 'open')
+          .maybeSingle();
+        if (pendingRemovalError) {
+          throw new Error(pendingRemovalError.message || 'Failed to inspect pending provider removal.');
+        }
+        if (!pendingRemoval) continue;
       }
 
       await applyOrCaptureProviderChange({

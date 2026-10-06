@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
-    "test:account-mapping": "node --test --experimental-test-isolation=none tests/account-mapping-transfer.test.mjs tests/chart-of-accounts.test.mjs tests/recurring-sources.test.mjs",
+    "test:account-mapping": "node --test --experimental-test-isolation=none tests/account-mapping-transfer.test.mjs tests/chart-of-accounts.test.mjs tests/recurring-sources.test.mjs tests/provider-lifecycle.test.mjs tests/plaid-sync.test.mjs",
     "test:account-mapping-concurrency": "node --test --experimental-test-isolation=none tests/account-mapping-concurrency.test.mjs",
     "test:account-mapping-ui": "playwright test"
   },

@@ -127,3 +127,27 @@ test('recurring review waits for supersession and preserves candidate history',a
   assert.equal((await observer.query('select status from recurring_transaction_candidates where id=$1',[candidate])).rows[0].status,'detected');
   assert.equal((await observer.query("select count(*)::int n from audit_log where action='recurring_candidate_confirmed'")).rows[0].n,0);
 }));
+
+const providerChange = (client,event='modified') => client.query(`select * from apply_or_capture_provider_transaction_change($1,$2,'canonical-tx',$3,$4,'2026-01-02',30,'Updated merchant','Provider label')`,[id(3),id(5),event,id(8)]);
+test('provider ingestion can supersede evidence while review waits without a lock cycle',async()=>sessions(async(a,b,observer)=>{
+  await transfer(observer); await post(observer);
+  const exception=(await providerChange(observer,'removed')).rows[0].provider_exception_id;
+  await a.query('begin'); await a.query('select id from transactions where id=$1 for update',[id(10)]);
+  const { rows:[{pid}] }=await b.query('select pg_backend_pid() pid');
+  const result=pending(b.query(`select * from resolve_provider_transaction_exception($1,$2,'accept','fixture')`,[exception,id(3)]));
+  await waitForLock(observer,pid);
+  await providerChange(a,'modified'); await a.query('commit');
+  const settled=await result; assert.ok(settled.error); assert.notEqual(settled.error.code,'40P01'); assert.match(settled.error.message,/no longer open/);
+  assert.equal((await observer.query('select status from provider_transaction_exceptions where id=$1',[exception])).rows[0].status,'superseded');
+  assert.equal((await observer.query('select count(*)::int n from journal_entries')).rows[0].n,1);
+}));
+test('posting waits for provider modification and journals the committed amount',async()=>sessions(async(a,b,observer)=>{
+  await transfer(observer); await runBlocked(a,b,observer,c=>providerChange(c),post);
+  assert.equal(Number((await observer.query('select sum(debit) amount from journal_lines')).rows[0].amount),30);
+}));
+test('provider removal arriving after posting captures evidence without changing the transaction',async()=>sessions(async(a,b,observer)=>{
+  await transfer(observer); const result=await runBlocked(a,b,observer,post,c=>providerChange(c,'removed'));
+  assert.equal(result.rows[0].outcome,'captured');
+  assert.equal((await observer.query('select plaid_removed_at from transactions where id=$1',[id(10)])).rows[0].plaid_removed_at,null);
+  assert.equal((await observer.query('select count(*)::int n from journal_entries')).rows[0].n,1);
+}));
