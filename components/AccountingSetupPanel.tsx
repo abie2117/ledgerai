@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
 interface ConnectedAccount {
   id: string;
@@ -51,7 +51,7 @@ export default function AccountingSetupPanel({ clientId, canManage }: Props) {
   const [newCode, setNewCode] = useState('');
   const [newType, setNewType] = useState<'asset' | 'liability'>('asset');
 
-  async function load() {
+  const load = useCallback(async () => {
     if (!clientId) return;
 
     setLoading(true);
@@ -76,14 +76,19 @@ export default function AccountingSetupPanel({ clientId, canManage }: Props) {
     } finally {
       setLoading(false);
     }
-  }
+  }, [clientId]);
 
   useEffect(() => {
-    setCreatingFor(null);
-    setMessage('');
-    setError('');
-    void load();
-  }, [clientId]);
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      setCreatingFor(null);
+      setMessage('');
+      setError('');
+      void load();
+    });
+    return () => { cancelled = true; };
+  }, [load]);
 
   const categoryById = useMemo(
     () => new Map(categories.map((category) => [category.id, category])),
