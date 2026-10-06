@@ -68,7 +68,7 @@ export default function ChartOfAccountsPanel({ clientId, canManage }: { clientId
       <label className="text-sm">Account name<input className={inputClass} value={name} onChange={e => setName(e.target.value)} required maxLength={120} disabled={!editable} /></label>
       <label className="text-sm">Account code<input className={inputClass} value={code} onChange={e => setCode(e.target.value)} required maxLength={30} disabled={!editable} /></label>
       <label className="text-sm">Account type<select className={inputClass} value={type} onChange={e => setType(e.target.value)} disabled={!editable}>{types.map(t => <option key={t} value={t}>{t[0].toUpperCase() + t.slice(1)}</option>)}</select></label>
-      <div className="text-sm text-slate-400">Normal balance: {balance}<p className="mt-2">New accounts are active and accept journal postings.</p></div>
+      <div className="text-sm text-slate-400"><p>Normal balance: {balance}</p><p className="mt-2">New accounts are active and accept journal postings.</p></div>
       <button disabled={!editable} className="rounded-lg border border-cyan-500/40 px-4 py-3 text-sm font-semibold text-cyan-300 disabled:opacity-50">{saving ? 'Creating…' : 'Create ledger account'}</button>
     </form>
     {!loading && !(canManage && allowed) && <p className="mt-3 text-sm text-amber-300">Owner, admin, or bookkeeper access is required to create accounts.</p>}
