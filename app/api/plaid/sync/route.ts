@@ -1,3 +1,4 @@
+import { asErrorDetails } from '@/lib/error-details';
 // app/api/plaid/sync/route.ts
 
 import { NextResponse } from 'next/server';
@@ -370,11 +371,11 @@ export async function POST(req: Request) {
             : 207,
       }
     );
-  } catch (error: any) {
+  } catch (error) {
     console.error(
       '[plaid/sync] FAILED:',
-      error?.response?.data ||
-        error?.message ||
+      asErrorDetails(error).response?.data ||
+        asErrorDetails(error).message ||
         error
     );
 

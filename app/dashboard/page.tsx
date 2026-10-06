@@ -1,5 +1,7 @@
 'use client';
 
+import { asErrorDetails } from '@/lib/error-details';
+
 import {
   useEffect,
   useMemo,
@@ -352,11 +354,11 @@ export default function DashboardPage() {
           requestedClient || acmeClient || loadedClients[0];
 
         setSelectedClientId(initialClient.id);
-      } catch (error: any) {
+      } catch (error) {
         console.error('Error loading dashboard:', error);
 
         setErrorMessage(
-          error?.message || 'Unable to load dashboard data.',
+          asErrorDetails(error).message || 'Unable to load dashboard data.',
         );
       } finally {
         setLoading(false);
@@ -398,11 +400,11 @@ export default function DashboardPage() {
             a.name.localeCompare(b.name),
           ),
         );
-      } catch (error: any) {
+      } catch (error) {
         console.error('Error loading categories:', error);
         setCategories([]);
         setErrorMessage(
-          error?.message || 'Unable to load categories for this client.',
+          asErrorDetails(error).message || 'Unable to load categories for this client.',
         );
       }
     }
@@ -462,7 +464,7 @@ export default function DashboardPage() {
         }
 
         const formattedTransactions = (data || []).map(
-          (transaction: any) => ({
+          (transaction) => ({
             ...transaction,
             account_name: transaction.accounts?.name || null,
             account_mask: transaction.accounts?.mask || null,
@@ -513,7 +515,7 @@ export default function DashboardPage() {
         setProviderExceptions(
           (providerExceptionData || []) as ProviderTransactionException[],
         );
-      } catch (error: any) {
+      } catch (error) {
         console.error(
           'Error loading selected client transactions:',
           error,
@@ -525,7 +527,7 @@ export default function DashboardPage() {
         setProviderExceptions([]);
 
         setErrorMessage(
-          error?.message ||
+          asErrorDetails(error).message ||
             'Unable to load transactions for this client.',
         );
       } finally {
@@ -708,7 +710,7 @@ export default function DashboardPage() {
       console.error('Error resolving provider transaction exception:', error);
       setErrorMessage(
         error instanceof Error
-          ? error.message
+          ? asErrorDetails(error).message
           : 'Unable to resolve bank provider change.',
       );
     } finally {
@@ -747,7 +749,7 @@ export default function DashboardPage() {
       console.error('Error dismissing duplicate candidate:', error);
       setErrorMessage(
         error instanceof Error
-          ? error.message
+          ? asErrorDetails(error).message
           : 'Unable to dismiss duplicate candidate.',
       );
     } finally {
@@ -823,7 +825,7 @@ export default function DashboardPage() {
       console.error('Error resolving duplicate candidate:', error);
       setErrorMessage(
         error instanceof Error
-          ? error.message
+          ? asErrorDetails(error).message
           : 'Unable to confirm duplicate.',
       );
     } finally {
@@ -923,8 +925,13 @@ export default function DashboardPage() {
     pageReviewTransactionIds.every((id) => selectedTransactionIdSet.has(id));
 
   useEffect(() => {
-    setTransactionPage(1);
-    setSelectedTransactionIds([]);
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      setTransactionPage(1);
+      setSelectedTransactionIds([]);
+    });
+    return () => { cancelled = true; };
   }, [
     selectedClientId,
     searchTerm,
@@ -1181,7 +1188,7 @@ export default function DashboardPage() {
       }
 
       const formattedTransactions = (data || []).map(
-        (transaction: any) => ({
+        (transaction) => ({
           ...transaction,
           account_name: transaction.accounts?.name || null,
           account_mask: transaction.accounts?.mask || null,
@@ -1210,11 +1217,11 @@ export default function DashboardPage() {
       } else if (itemFailures.length === 0) {
         setSuccessMessage('Bank transactions synchronized and refreshed successfully.');
       }
-    } catch (error: any) {
+    } catch (error) {
       console.error('Error refreshing transactions:', error);
 
       setErrorMessage(
-        error?.message || 'Unable to refresh transactions.',
+        asErrorDetails(error).message || 'Unable to refresh transactions.',
       );
     } finally {
       setTransactionsLoading(false);
@@ -1266,9 +1273,9 @@ export default function DashboardPage() {
 
       setCorrectionHistory((data || []) as unknown as CategoryCorrection[]);
       setHistoryTransactionId(transactionId);
-    } catch (error: any) {
+    } catch (error) {
       console.error('Error loading correction history:', error);
-      setErrorMessage(error?.message || 'Unable to load correction history.');
+      setErrorMessage(asErrorDetails(error).message || 'Unable to load correction history.');
     } finally {
       setHistoryLoading(false);
     }
@@ -1335,10 +1342,10 @@ export default function DashboardPage() {
           ? 'Category is already up to date.'
           : 'Category updated and learning saved successfully.',
       );
-    } catch (error: any) {
+    } catch (error) {
       console.error('Error updating transaction category:', error);
       setErrorMessage(
-        error?.message || 'Unable to update transaction category.',
+        asErrorDetails(error).message || 'Unable to update transaction category.',
       );
     } finally {
       setSavingCategoryId(null);
@@ -1424,7 +1431,7 @@ export default function DashboardPage() {
       console.error('Error posting transaction to ledger:', error);
       setErrorMessage(
         error instanceof Error
-          ? error.message
+          ? asErrorDetails(error).message
           : 'Unable to post transaction to the ledger.',
       );
     } finally {
@@ -1471,7 +1478,7 @@ export default function DashboardPage() {
       console.error('Error approving transaction:', error);
       setErrorMessage(
         error instanceof Error
-          ? error.message
+          ? asErrorDetails(error).message
           : 'Unable to approve transaction.',
       );
     } finally {
@@ -1550,7 +1557,7 @@ export default function DashboardPage() {
       console.error('Error bulk approving transactions:', error);
       setErrorMessage(
         error instanceof Error
-          ? error.message
+          ? asErrorDetails(error).message
           : 'Unable to approve selected transactions.',
       );
     } finally {
@@ -1624,7 +1631,7 @@ export default function DashboardPage() {
       }
 
       const formattedTransactions = (data || []).map(
-        (transaction: any) => ({
+        (transaction) => ({
           ...transaction,
           account_name: transaction.accounts?.name || null,
           account_mask: transaction.accounts?.mask || null,
@@ -1651,11 +1658,11 @@ export default function DashboardPage() {
             : 'There are no transactions waiting for local categorization.',
         );
       }
-    } catch (error: any) {
+    } catch (error) {
       console.error('Error categorizing transactions:', error);
 
       setErrorMessage(
-        error?.message || 'Unable to categorize transactions.',
+        asErrorDetails(error).message || 'Unable to categorize transactions.',
       );
     } finally {
       setTransactionsLoading(false);

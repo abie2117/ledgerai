@@ -1,10 +1,15 @@
+import { asErrorDetails } from '@/lib/error-details';
 // lib/plaid-sync.ts
 
 import {
   Configuration,
   PlaidApi,
   PlaidEnvironments,
+  type Transaction,
+  type RemovedTransaction,
+  type TransactionsSyncRequest,
 } from 'plaid';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { readPlaidAccessToken } from './plaid-token-storage';
 import { categorizeWithLocalRules } from './categorization';
 import { detectDuplicateCandidates } from './duplicate-detection';
@@ -52,19 +57,21 @@ export type PlaidItemSyncResult = {
   error?: string;
 };
 
-function getPlaidErrorCode(error: any) {
+function getPlaidErrorCode(error: unknown) {
+  const details = asErrorDetails(error);
   return (
-    error?.response?.data?.error_code ||
-    error?.error_code ||
+    details.response?.data?.error_code ||
+    details.error_code ||
     null
   );
 }
 
-export function getPlaidSyncErrorMessage(error: any) {
+export function getPlaidSyncErrorMessage(error: unknown) {
+  const details = asErrorDetails(error);
   return (
-    error?.response?.data?.error_message ||
-    error?.response?.data?.error_code ||
-    error?.message ||
+    details.response?.data?.error_message ||
+    details.response?.data?.error_code ||
+    details.message ||
     'Unknown Plaid synchronization error.'
   );
 }
@@ -83,7 +90,7 @@ async function applyOrCaptureProviderChange({
   merchantName = null,
   rawPlaidCategory = null,
 }: {
-  db: any;
+  db: SupabaseClient;
   item: PlaidItemForSync;
   clientId: string;
   plaidTransactionId: string;
@@ -123,7 +130,7 @@ export async function syncPlaidItem({
   db,
   item,
 }: {
-  db: any;
+  db: SupabaseClient;
   item: PlaidItemForSync;
 }): Promise<PlaidItemSyncResult> {
   const clientId = item.client_id;
@@ -186,9 +193,9 @@ export async function syncPlaidItem({
         ? item.cursor
         : null;
 
-    let addedTransactions: any[] = [];
-    let modifiedTransactions: any[] = [];
-    let removedTransactions: any[] = [];
+    let addedTransactions: Transaction[] = [];
+    let modifiedTransactions: Transaction[] = [];
+    let removedTransactions: RemovedTransaction[] = [];
     let finalCursor = originalCursor || '';
 
     const maxPaginationRestarts = 3;
@@ -207,7 +214,7 @@ export async function syncPlaidItem({
 
       try {
         while (hasMore) {
-          const syncRequest: any = {
+          const syncRequest: TransactionsSyncRequest = {
             access_token: accessToken,
             count: 500,
           };
@@ -243,7 +250,7 @@ export async function syncPlaidItem({
         }
 
         break;
-      } catch (paginationError: any) {
+      } catch (paginationError) {
         const errorCode =
           getPlaidErrorCode(
             paginationError
@@ -287,7 +294,16 @@ export async function syncPlaidItem({
     // populated or overwritten here.
     // ---------------------------------------------------------
 
-    const addedRecords: any[] = [];
+    const addedRecords: {
+      account_id: string;
+      client_id: string;
+      plaid_transaction_id: string;
+      posted_date: string;
+      amount: number;
+      merchant_name: string;
+      raw_plaid_category: string | null;
+      status: string;
+    }[] = [];
     let skippedTransactions = 0;
 
     for (const tx of addedTransactions) {
@@ -583,10 +599,10 @@ export async function syncPlaidItem({
             categorizationResult.skipped,
         }
       );
-    } catch (categorizationError: any) {
+    } catch (categorizationError) {
       console.warn(
         '[plaid-sync] Bank sync succeeded, but automatic categorization could not complete:',
-        categorizationError?.message ||
+        asErrorDetails(categorizationError).message ||
           categorizationError
       );
     }
@@ -615,10 +631,10 @@ export async function syncPlaidItem({
             duplicateResult.candidates,
         }
       );
-    } catch (duplicateError: any) {
+    } catch (duplicateError) {
       console.warn(
         '[plaid-sync] Bank sync succeeded, but duplicate candidate detection could not complete:',
-        duplicateError?.message ||
+        asErrorDetails(duplicateError).message ||
           duplicateError
       );
     }
@@ -650,10 +666,10 @@ export async function syncPlaidItem({
             recurringResult.candidates,
         }
       );
-    } catch (recurringError: any) {
+    } catch (recurringError) {
       console.warn(
         '[plaid-sync] Bank sync succeeded, but recurring candidate detection could not complete:',
-        recurringError?.message ||
+        asErrorDetails(recurringError).message ||
           recurringError
       );
     }
@@ -675,7 +691,7 @@ export async function syncPlaidItem({
       skipped:
         skippedTransactions,
     };
-  } catch (itemError: any) {
+  } catch (itemError) {
     const errorCode = getPlaidErrorCode(itemError);
     const errorMessage =
       getPlaidSyncErrorMessage(
@@ -706,7 +722,7 @@ export async function syncPlaidItem({
           item.plaid_item_id,
         clientId,
         error:
-          itemError?.response?.data ||
+          asErrorDetails(itemError).response?.data ||
           itemError,
       }
     );

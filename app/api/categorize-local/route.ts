@@ -1,3 +1,4 @@
+import { asErrorDetails } from '@/lib/error-details';
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { createServerSupabaseClient } from '../../../lib/supabase-server';
@@ -79,7 +80,7 @@ export async function POST(request: Request) {
     }
 
     const firmIds = (memberships || [])
-      .map((membership: any) => membership.firm_id)
+      .map((membership) => membership.firm_id)
       .filter(Boolean);
 
     if (firmIds.length === 0) {
@@ -142,7 +143,7 @@ export async function POST(request: Request) {
       categorized: result.categorized,
       skipped: result.skipped,
     });
-  } catch (error: any) {
+  } catch (error) {
     console.error(
       'Local categorization route error:',
       error,
@@ -151,7 +152,7 @@ export async function POST(request: Request) {
     return NextResponse.json(
       {
         error:
-          error?.message ||
+          asErrorDetails(error).message ||
           'Unable to categorize transactions.',
       },
       { status: 500 },

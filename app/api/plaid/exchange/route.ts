@@ -1,3 +1,4 @@
+import { asErrorDetails } from '@/lib/error-details';
 // app/api/plaid/exchange/route.ts
 
 import { NextResponse } from 'next/server';
@@ -555,11 +556,11 @@ export async function POST(req: Request) {
           ? 'Bank connected and transactions synchronized successfully.'
           : 'Bank connected successfully. Transaction history is still being prepared by Plaid.',
     });
-  } catch (error: any) {
+  } catch (error) {
     console.error(
       '[plaid/exchange] FAILED:',
-      error?.response?.data ||
-        error?.message ||
+      asErrorDetails(error).response?.data ||
+        asErrorDetails(error).message ||
         error
     );
 
@@ -567,8 +568,8 @@ export async function POST(req: Request) {
       {
         success: false,
         error:
-          error?.response?.data?.error_message ||
-          error?.message ||
+          asErrorDetails(error).response?.data?.error_message ||
+          asErrorDetails(error).message ||
           'Failed to connect bank account.',
       },
       { status: 500 }

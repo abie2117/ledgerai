@@ -1,3 +1,4 @@
+import { asErrorDetails } from '@/lib/error-details';
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { createServerSupabaseClient } from '../../../lib/supabase-server';
@@ -109,7 +110,7 @@ export async function POST(request: Request) {
     const firmIds = Array.from(
       new Set(
         (memberships || [])
-          .map((membership: any) => membership.firm_id)
+          .map((membership) => membership.firm_id)
           .filter(Boolean),
       ),
     );
@@ -181,7 +182,7 @@ export async function POST(request: Request) {
       },
       { status: 201 },
     );
-  } catch (error: any) {
+  } catch (error) {
     console.error(
       '[clients] Unexpected error:',
       error,
@@ -190,7 +191,7 @@ export async function POST(request: Request) {
     return NextResponse.json(
       {
         error:
-          error?.message ||
+          asErrorDetails(error).message ||
           'Unable to create client.',
       },
       { status: 500 },

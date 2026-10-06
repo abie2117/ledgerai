@@ -54,14 +54,21 @@ export async function GET(req: NextRequest) {
 
   const { supabase, canManage } = context;
 
-  const [{ data: accounts, error: accountError }, { data: categories, error: categoryError }] =
+  const [{ data: accounts, error: accountError }, { data: transferSources, error: transferError }, { data: categories, error: categoryError }] =
     await Promise.all([
       supabase
         .from('accounts')
-        .select('id, name, mask, type, subtype, coa_category_id, plaid_items!inner(client_id, status, financial_source_status)')
+        .select('id, plaid_item_id, name, mask, type, subtype, coa_category_id, plaid_items!inner(client_id, status, financial_source_status)')
         .eq('plaid_items.client_id', clientId)
         .eq('plaid_items.status', 'active')
         .eq('plaid_items.financial_source_status', 'active')
+        .order('name', { ascending: true }),
+      supabase
+        .from('accounts')
+        .select('id, name, mask, type, subtype, coa_category_id, plaid_items!inner(client_id, financial_source_status, superseded_by_plaid_item_id)')
+        .eq('plaid_items.client_id', clientId)
+        .eq('plaid_items.financial_source_status', 'superseded')
+        .not('coa_category_id', 'is', null)
         .order('name', { ascending: true }),
       supabase
         .from('categories')
@@ -74,9 +81,9 @@ export async function GET(req: NextRequest) {
         .order('name', { ascending: true }),
     ]);
 
-  if (accountError || categoryError) {
+  if (accountError || categoryError || transferError) {
     return NextResponse.json(
-      { error: accountError?.message || categoryError?.message || 'Unable to load accounting setup.' },
+      { error: accountError?.message || categoryError?.message || transferError?.message || 'Unable to load accounting setup.' },
       { status: 500 },
     );
   }
@@ -84,6 +91,7 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     accounts: accounts || [],
     categories: categories || [],
+    transferSources: transferSources || [],
     canManage,
   });
 }
@@ -95,7 +103,7 @@ export async function POST(request: Request) {
     const accountId = typeof body?.accountId === 'string' ? body.accountId.trim() : '';
     const action = body?.action;
 
-    if (!clientId || !accountId || !['map', 'create_and_map', 'unmap'].includes(action)) {
+    if (!clientId || !accountId || !['map', 'create_and_map', 'unmap', 'transfer'].includes(action)) {
       return NextResponse.json({ error: 'Valid clientId, accountId, and action are required.' }, { status: 400 });
     }
 
@@ -107,19 +115,30 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Owner, admin, or bookkeeper access is required to change accounting setup.' }, { status: 403 });
     }
 
-    const categoryId = action === 'map' && typeof body?.categoryId === 'string' ? body.categoryId.trim() : null;
+    const categoryId = ['map', 'transfer'].includes(action) && typeof body?.categoryId === 'string' ? body.categoryId.trim() : null;
+    const fromAccountId = typeof body?.fromAccountId === 'string' ? body.fromAccountId.trim() : '';
     const name = action === 'create_and_map' && typeof body?.name === 'string' ? body.name.trim() : null;
     const coaCode = action === 'create_and_map' && typeof body?.coaCode === 'string' ? body.coaCode.trim() : null;
     const accountType = action === 'create_and_map' && ['asset', 'liability'].includes(body?.accountType) ? body.accountType : null;
 
-    if (action === 'map' && !categoryId) {
+    if (['map', 'transfer'].includes(action) && !categoryId) {
       return NextResponse.json({ error: 'categoryId is required.' }, { status: 400 });
+    }
+    if (action === 'transfer' && (!fromAccountId || fromAccountId === accountId)) {
+      return NextResponse.json({ error: 'A distinct fromAccountId is required.' }, { status: 400 });
     }
     if (action === 'create_and_map' && (!name || !accountType)) {
       return NextResponse.json({ error: 'A ledger account name and Asset or Liability type are required.' }, { status: 400 });
     }
 
-    const { data, error } = await supabase.rpc('mutate_accounting_setup', {
+    const { data, error } = action === 'transfer'
+      ? await supabase.rpc('transfer_account_coa_mapping', {
+        p_client_id: clientId,
+        p_from_account_id: fromAccountId,
+        p_to_account_id: accountId,
+        p_category_id: categoryId,
+      })
+      : await supabase.rpc('mutate_accounting_setup', {
       p_client_id: clientId,
       p_account_id: accountId,
       p_action: action,
