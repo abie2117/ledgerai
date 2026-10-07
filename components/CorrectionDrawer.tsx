@@ -1,3 +1,4 @@
+import { asErrorDetails } from '@/lib/error-details';
 import React, { useState } from 'react';
 
 interface Category {
@@ -53,8 +54,8 @@ export const CorrectionDrawer: React.FC<CorrectionDrawerProps> = ({
       setError(null);
       await onSave(transaction.id, selectedCategoryId);
       onClose();
-    } catch (err: any) {
-      setError(err.message || 'Failed to save correction');
+    } catch (err) {
+      setError(asErrorDetails(err).message || 'Failed to save correction');
     } finally {
       setIsSubmitting(false);
     }

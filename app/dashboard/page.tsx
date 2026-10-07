@@ -1,702 +1,3327 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
-import { useRouter } from 'next/navigation';
-import { createBrowserSupabaseClient } from '@/lib/supabase-browser';
+import { asErrorDetails } from '@/lib/error-details';
+
+import {
+  useEffect,
+  useMemo,
+  useState,
+  type ChangeEvent,
+} from 'react';
+import { supabase } from '@/lib/supabase-browser';
 import { QueryBar } from '@/components/QueryBar';
+import PlaidLinkButton from '@/components/PlaidLinkButton';
+import ConnectedBanksPanel from '@/components/ConnectedBanksPanel';
+import {
+  getCurrentMonthRange,
+  getFoodDiningSpending,
+  getMerchantName,
+  getPreviousMonthRange,
+  getQualifyingSpendingTransactions,
+  getTopMerchantSpending,
+  getTransactionCategory,
+  getTransactionDate,
+  getTransactionsOverAmount,
+  isQualifyingSpending,
+  sumTransactionAmounts,
+} from '@/lib/financial-queries';
+import {
+  getReviewDecision,
+  getReviewDecisionMessage,
+} from '@/lib/review-policy';
 
 interface Transaction {
   id: string;
-  name?: string;
-  merchant_name?: string;
-  amount: number;
+  user_id?: string | null;
+  client_id?: string | null;
   date: string;
-  category: string;
-  account_id: string;
+  posted_date?: string | null;
+  merchant_name?: string | null;
+  name?: string | null;
+  amount: number;
+  category?: string | null;
+  ai_category_id?: string | null;
+  status?: 'pending_review' | 'confirmed' | string | null;
+  ai_confidence?: number | null;
+  categorization_source?: 'ai' | 'learned_rule' | 'local_rule' | 'manual' | null;
+  duplicate_of_transaction_id?: string | null;
+  duplicate_resolved_at?: string | null;
+  duplicate_resolved_by?: string | null;
+  plaid_removed_at?: string | null;
+  journal_entries?: Array<{
+    id: string;
+    status: 'draft' | 'posted' | 'reversed' | string;
+    reversal_of_journal_entry_id?: string | null;
+  }> | null;
+  canonical_category?: {
+    id: string;
+    name: string;
+    client_id?: string | null;
+    account_type?: string | null;
+    normal_balance?: string | null;
+    is_active?: boolean | null;
+    is_posting_account?: boolean | null;
+  } | null;
+  account_name?: string | null;
+  account_mask?: string | null;
+  account_coa_category_id?: string | null;
+  financial_source_status?: 'pending_review' | 'active' | 'superseded' | string | null;
+  provider_source_status?: string | null;
+  pending?: boolean | null;
+  payment_channel?: string | null;
+  iso_currency_code?: string | null;
+  personal_finance_category?: {
+    primary?: string | null;
+    detailed?: string | null;
+  } | null;
 }
 
-type DateFilterType = 'this_month' | 'last_30_days' | 'all_time' | 'custom';
+interface Client {
+  id: string;
+  name: string;
+  firm_id?: string | null;
+}
+
+interface Category {
+  id: string;
+  name: string;
+  client_id?: string | null;
+  coa_code?: string | null;
+}
+
+interface FirmMembership {
+  firm_id: string;
+  user_id: string;
+  role?: string | null;
+}
+
+interface CategoryCorrection {
+  id: string;
+  transaction_id: string;
+  from_category_id?: string | null;
+  to_category_id: string;
+  corrected_by: string;
+  corrected_at: string;
+  from_category?: { name: string } | null;
+  to_category?: { name: string } | null;
+}
+
+interface DuplicateCandidate {
+  id: string;
+  transaction_a_id: string;
+  transaction_b_id: string;
+  severity: 'low' | 'medium' | 'high';
+  evidence?: {
+    detector_version?: string;
+    same_account?: boolean;
+    exact_amount?: boolean;
+    normalized_merchant_match?: boolean;
+    date_distance_days?: number;
+  } | null;
+  status: 'open' | 'dismissed' | 'resolved';
+  detected_at: string;
+}
+
+interface ProviderTransactionException {
+  id: string;
+  transaction_id: string;
+  event_type: 'modified' | 'removed' | 'reappeared';
+  current_values: Record<string, unknown>;
+  proposed_values: Record<string, unknown>;
+  status: 'open' | 'resolved' | 'dismissed' | 'superseded';
+  first_seen_at: string;
+  last_seen_at: string;
+}
+
+interface GroupedMerchant {
+  merchant: string;
+  total: number;
+  count: number;
+}
+
+interface SupabaseClientRecord {
+  id: string;
+  firm_id: string;
+  business_name: string;
+}
+
+interface ReauthenticationRequiredItem {
+  plaid_item_database_id: string;
+  plaid_item_id: string;
+  institution_name?: string | null;
+}
+
+const SUGGESTED_QUESTIONS = [
+  'How much did I spend on Meals & Entertainment last month?',
+  'Show me all transactions over $50',
+  'What are my top 5 merchants by total spend?',
+  'How much did I spend in total this month?',
+];
+
+function formatCurrency(amount: number) {
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+  }).format(amount);
+}
+
+function formatDate(date: string) {
+  if (!date) return '—';
+
+  const parsedDate = new Date(`${date}T00:00:00`);
+
+  if (Number.isNaN(parsedDate.getTime())) {
+    return date;
+  }
+
+  return parsedDate.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  });
+}
+
+function escapeCsvValue(
+  value: string | number | boolean | null | undefined,
+) {
+  const stringValue = String(value ?? '');
+
+  return `"${stringValue.replace(/"/g, '""')}"`;
+}
+
+function normalizeClients(
+  data: SupabaseClientRecord[] | null,
+): Client[] {
+  return (data ?? [])
+    .map((client) => ({
+      id: client.id,
+      name: client.business_name,
+      firm_id: client.firm_id,
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
 
 export default function DashboardPage() {
+  const [userId, setUserId] = useState<string | null>(null);
+  const [userEmail, setUserEmail] = useState<string | null>(null);
+
+  const [clients, setClients] = useState<Client[]>([]);
+  const [memberships, setMemberships] = useState<FirmMembership[]>([]);
+
+  const [selectedClientId, setSelectedClientId] = useState<string>('');
   const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [connectionsRefreshKey, setConnectionsRefreshKey] = useState(0);
+  const [transactionsRefreshKey, setTransactionsRefreshKey] = useState(0);
+
   const [loading, setLoading] = useState(true);
-  const [userId, setUserId] = useState<string>('6961bb92-6276-4fbc-adb5-97dab7cfe245');
+  const [transactionsLoading, setTransactionsLoading] = useState(false);
+  const [errorMessage, setErrorMessage] = useState('');
+  const [successMessage, setSuccessMessage] = useState('');
+  const [reauthenticationRequired, setReauthenticationRequired] = useState<
+    ReauthenticationRequiredItem[]
+  >([]);
 
-  // Date Range State
-  const [dateFilter, setDateFilter] = useState<DateFilterType>('all_time');
-  const [customStartDate, setCustomStartDate] = useState<string>('');
-  const [customEndDate, setCustomEndDate] = useState<string>('');
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
+  const [timeframe, setTimeframe] = useState('all');
 
-  const router = useRouter();
-  const supabase = createBrowserSupabaseClient();
+  const [searchTerm, setSearchTerm] = useState('');
+  const [categoryFilter, setCategoryFilter] = useState('All Categories');
+  const [accountFilter, setAccountFilter] = useState('All Accounts');
+  const [reviewFilter, setReviewFilter] = useState('Needs Review');
+  const [confidenceFilter, setConfidenceFilter] = useState('Active Exceptions');
+  const [transactionPage, setTransactionPage] = useState(1);
+
+  const [editingCategoryId, setEditingCategoryId] = useState<string | null>(
+    null,
+  );
+  const [savingCategoryId, setSavingCategoryId] = useState<string | null>(
+    null,
+  );
+  const [selectedTransactionIds, setSelectedTransactionIds] = useState<string[]>([]);
+  const [bulkApproving, setBulkApproving] = useState(false);
+  const [historyTransactionId, setHistoryTransactionId] = useState<string | null>(null);
+  const [correctionHistory, setCorrectionHistory] = useState<CategoryCorrection[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [correctionCounts, setCorrectionCounts] = useState<Record<string, number>>({});
+  const [duplicateCandidates, setDuplicateCandidates] = useState<DuplicateCandidate[]>([]);
+  const [dismissingDuplicateId, setDismissingDuplicateId] = useState<string | null>(null);
+  const [resolvingDuplicateKey, setResolvingDuplicateKey] = useState<string | null>(null);
+  const [providerExceptions, setProviderExceptions] = useState<ProviderTransactionException[]>([]);
+  const [resolvingProviderExceptionId, setResolvingProviderExceptionId] = useState<string | null>(null);
+  const [postingTransactionId, setPostingTransactionId] = useState<string | null>(null);
+
+  const [financeQuestion, setFinanceQuestion] = useState('');
+  const [askAnswer, setAskAnswer] = useState('');
+  const [isAsking, setIsAsking] = useState(false);
 
   useEffect(() => {
-    async function checkAuthAndFetchData() {
-      setLoading(true);
+    async function loadDashboard() {
+      try {
+        setLoading(true);
+        setErrorMessage('');
 
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
+        const {
+          data: { user },
+          error: userError,
+        } = await supabase.auth.getUser();
 
-      const activeUserId = user?.id || '6961bb92-6276-4fbc-adb5-97dab7cfe245';
-      setUserId(activeUserId);
+        if (userError) {
+          throw userError;
+        }
 
-      const { data, error } = await supabase
-        .from('transactions')
-        .select('*')
-        .eq('user_id', activeUserId)
-        .order('date', { ascending: false });
+        if (!user) {
+          window.location.href = '/login';
+          return;
+        }
 
-      if (!error && data) {
-        setTransactions(data);
+        setUserId(user.id);
+        setUserEmail(user.email ?? null);
+
+        const { data: membershipData, error: membershipError } =
+          await supabase
+            .from('firm_users')
+            .select('firm_id, user_id, role')
+            .eq('user_id', user.id);
+
+        if (membershipError) {
+          throw membershipError;
+        }
+
+        const loadedMemberships = (membershipData ||
+          []) as FirmMembership[];
+
+        setMemberships(loadedMemberships);
+
+        const firmIds = loadedMemberships
+          .map((membership) => membership.firm_id)
+          .filter(Boolean);
+
+        let loadedClients: Client[] = [];
+
+        if (firmIds.length > 0) {
+          const { data: clientData, error: clientError } = await supabase
+            .from('clients')
+            .select('id, firm_id, business_name')
+            .in('firm_id', firmIds);
+
+          if (clientError) {
+            throw clientError;
+          }
+
+          loadedClients = normalizeClients(
+            (clientData || []) as SupabaseClientRecord[],
+          );
+        } else {
+          const { data: clientData, error: clientError } = await supabase
+            .from('clients')
+            .select('id, firm_id, business_name');
+
+          if (clientError) {
+            throw clientError;
+          }
+
+          loadedClients = normalizeClients(
+            (clientData || []) as SupabaseClientRecord[],
+          );
+        }
+
+        setClients(loadedClients);
+
+        if (loadedClients.length === 0) {
+          setSelectedClientId('');
+          setTransactions([]);
+          return;
+        }
+
+        const requestedClientId = new URLSearchParams(
+          window.location.search,
+        ).get('clientId');
+
+        const requestedClient = requestedClientId
+          ? loadedClients.find(
+              (client) => client.id === requestedClientId,
+            )
+          : null;
+
+        const acmeClient = loadedClients.find(
+          (client) =>
+            client.name.toLowerCase().trim() === 'acme corp',
+        );
+
+        const initialClient =
+          requestedClient || acmeClient || loadedClients[0];
+
+        setSelectedClientId(initialClient.id);
+      } catch (error) {
+        console.error('Error loading dashboard:', error);
+
+        setErrorMessage(
+          asErrorDetails(error).message || 'Unable to load dashboard data.',
+        );
+      } finally {
+        setLoading(false);
       }
-      setLoading(false);
     }
 
-    checkAuthAndFetchData();
-  }, [supabase]);
+    loadDashboard();
+  }, []);
 
-  async function handleCategoryChange(
-    txId: string,
-    merchantName: string,
-    newCategory: string
+  useEffect(() => {
+    async function loadAvailableCategories() {
+      if (!selectedClientId) {
+        setCategories([]);
+        return;
+      }
+
+      try {
+        const { data, error } = await supabase
+          .from('categories')
+          .select('id, name, client_id, coa_code')
+          .or(`client_id.eq.${selectedClientId},client_id.is.null`)
+          .order('name', { ascending: true });
+
+        if (error) throw error;
+
+        const byName = new Map<string, Category>();
+
+        for (const category of (data || []) as Category[]) {
+          const key = category.name.toLowerCase().trim();
+          const existing = byName.get(key);
+
+          if (!existing || category.client_id === selectedClientId) {
+            byName.set(key, category);
+          }
+        }
+
+        setCategories(
+          Array.from(byName.values()).sort((a, b) =>
+            a.name.localeCompare(b.name),
+          ),
+        );
+      } catch (error) {
+        console.error('Error loading categories:', error);
+        setCategories([]);
+        setErrorMessage(
+          asErrorDetails(error).message || 'Unable to load categories for this client.',
+        );
+      }
+    }
+
+    loadAvailableCategories();
+  }, [selectedClientId]);
+
+  useEffect(() => {
+    async function loadSelectedClientTransactions() {
+      if (!selectedClientId) {
+        setTransactions([]);
+        return;
+      }
+
+      try {
+        setTransactionsLoading(true);
+        setErrorMessage('');
+
+        const { data, error } = await supabase
+          .from('transactions')
+          .select(`
+            *,
+            accounts (
+              id,
+              name,
+              mask,
+              type,
+              subtype,
+              coa_category_id,
+              plaid_items!inner (
+                financial_source_status,
+                status
+              )
+            ),
+            canonical_category:categories!transactions_ai_category_id_fkey (
+              id,
+              name,
+              client_id,
+              account_type,
+              normal_balance,
+              is_active,
+              is_posting_account
+            ),
+            journal_entries!left (
+              id,
+              status,
+              reversal_of_journal_entry_id
+            )
+          `)
+          .eq('client_id', selectedClientId)
+          .order('posted_date', {
+            ascending: false,
+          });
+
+        if (error) {
+          throw error;
+        }
+
+        const formattedTransactions = (data || []).map(
+          (transaction) => ({
+            ...transaction,
+            account_name: transaction.accounts?.name || null,
+            account_mask: transaction.accounts?.mask || null,
+            account_coa_category_id: transaction.accounts?.coa_category_id || null,
+            financial_source_status: transaction.accounts?.plaid_items?.financial_source_status || null,
+            provider_source_status: transaction.accounts?.plaid_items?.status || null,
+          }),
+        );
+
+        setTransactions(formattedTransactions as Transaction[]);
+
+        const { data: correctionData, error: correctionError } = await supabase
+          .from('category_corrections')
+          .select('transaction_id')
+          .eq('client_id', selectedClientId);
+
+        if (correctionError) throw correctionError;
+
+        const nextCorrectionCounts: Record<string, number> = {};
+        for (const correction of correctionData || []) {
+          if (!correction.transaction_id) continue;
+          nextCorrectionCounts[correction.transaction_id] =
+            (nextCorrectionCounts[correction.transaction_id] || 0) + 1;
+        }
+        setCorrectionCounts(nextCorrectionCounts);
+
+        const { data: duplicateData, error: duplicateError } = await supabase
+          .from('duplicate_candidates')
+          .select('id, transaction_a_id, transaction_b_id, severity, evidence, status, detected_at')
+          .eq('client_id', selectedClientId)
+          .eq('status', 'open')
+          .order('detected_at', { ascending: false });
+
+        if (duplicateError) throw duplicateError;
+
+        setDuplicateCandidates((duplicateData || []) as DuplicateCandidate[]);
+
+        const { data: providerExceptionData, error: providerExceptionError } =
+          await supabase
+            .from('provider_transaction_exceptions')
+            .select('id, transaction_id, event_type, current_values, proposed_values, status, first_seen_at, last_seen_at')
+            .eq('client_id', selectedClientId)
+            .eq('status', 'open')
+            .order('last_seen_at', { ascending: false });
+
+        if (providerExceptionError) throw providerExceptionError;
+
+        setProviderExceptions(
+          (providerExceptionData || []) as ProviderTransactionException[],
+        );
+      } catch (error) {
+        console.error(
+          'Error loading selected client transactions:',
+          error,
+        );
+
+        setTransactions([]);
+        setCorrectionCounts({});
+        setDuplicateCandidates([]);
+        setProviderExceptions([]);
+
+        setErrorMessage(
+          asErrorDetails(error).message ||
+            'Unable to load transactions for this client.',
+        );
+      } finally {
+        setTransactionsLoading(false);
+      }
+    }
+
+    loadSelectedClientTransactions();
+  }, [selectedClientId, transactionsRefreshKey]);
+
+  const selectedClient = useMemo(() => {
+    return (
+      clients.find((client) => client.id === selectedClientId) || null
+    );
+  }, [clients, selectedClientId]);
+
+  const accountOptions = useMemo(() => {
+    const accounts = transactions
+      .map((transaction) => transaction.account_name || 'Unknown account')
+      .filter(Boolean);
+
+    return ['All Accounts', ...Array.from(new Set(accounts)).sort()];
+  }, [transactions]);
+
+  const categoryOptions = useMemo(() => {
+    const categoryNames = [
+      ...categories.map((category) => category.name),
+      ...transactions.map((transaction) =>
+        getTransactionCategory(transaction),
+      ),
+    ];
+
+    return [
+      'All Categories',
+      ...Array.from(new Set(categoryNames)).sort(),
+    ];
+  }, [categories, transactions]);
+
+  const reviewSummary = useMemo(() => {
+    let activeExceptions = 0;
+    let legacyReview = 0;
+    let routineAwaitingSignoff = 0;
+
+    for (const transaction of transactions) {
+      if (transaction.status !== 'pending_review') continue;
+
+      const decision = getReviewDecision(transaction);
+
+      if (decision.reason === 'unknown_provenance') {
+        legacyReview += 1;
+      } else if (decision.state === 'needs_attention') {
+        activeExceptions += 1;
+      } else {
+        routineAwaitingSignoff += 1;
+      }
+    }
+
+    return {
+      activeExceptions,
+      legacyReview,
+      routineAwaitingSignoff,
+    };
+  }, [transactions]);
+
+  const duplicateCandidatesByTransactionId = useMemo(() => {
+    const byTransactionId = new Map<string, DuplicateCandidate[]>();
+
+    for (const candidate of duplicateCandidates) {
+      for (const transactionId of [
+        candidate.transaction_a_id,
+        candidate.transaction_b_id,
+      ]) {
+        const current = byTransactionId.get(transactionId) || [];
+        current.push(candidate);
+        byTransactionId.set(transactionId, current);
+      }
+    }
+
+    return byTransactionId;
+  }, [duplicateCandidates]);
+
+  const providerExceptionsByTransactionId = useMemo(() => {
+    const byTransactionId = new Map<string, ProviderTransactionException[]>();
+
+    for (const exception of providerExceptions) {
+      const current = byTransactionId.get(exception.transaction_id) || [];
+      current.push(exception);
+      byTransactionId.set(exception.transaction_id, current);
+    }
+
+    return byTransactionId;
+  }, [providerExceptions]);
+
+  const canResolveProviderExceptions = useMemo(() => {
+    const selectedClientFirmId = selectedClient?.firm_id;
+    if (!selectedClientFirmId) return false;
+
+    return memberships.some(
+      (membership) =>
+        membership.firm_id === selectedClientFirmId &&
+        ['owner', 'admin', 'bookkeeper'].includes(membership.role || ''),
+    );
+  }, [memberships, selectedClient]);
+
+  async function handleProviderExceptionResolution(
+    exception: ProviderTransactionException,
+    action: 'accept' | 'dismiss',
   ) {
-    setTransactions((prev) =>
-      prev.map((tx) => (tx.id === txId ? { ...tx, category: newCategory } : tx))
+    if (!selectedClientId || !canResolveProviderExceptions) return;
+
+    const transaction = transactions.find(
+      (item) => item.id === exception.transaction_id,
     );
 
-    const { error: txError } = await supabase
-      .from('transactions')
-      .update({ category: newCategory })
-      .eq('id', txId);
+    const activeJournal = transaction?.journal_entries?.find(
+      (journal) =>
+        journal.reversal_of_journal_entry_id == null &&
+        (journal.status === 'draft' || journal.status === 'posted'),
+    );
 
-    if (txError) {
-      console.error('Transaction category update failed:', txError);
+    if (action === 'accept' && activeJournal?.status === 'draft') {
+      setErrorMessage(
+        'This provider change cannot be accepted while the transaction has an active draft journal. Resolve the draft journal first, or dismiss the provider change.',
+      );
+      return;
     }
 
-    if (userId && merchantName) {
-      const { error: ruleError } = await supabase
-        .from('category_rules')
-        .upsert({
-          user_id: userId,
-          merchant_pattern: merchantName.toLowerCase().trim(),
-          category: newCategory,
-        });
+    const actionDescription =
+      action === 'accept'
+        ? exception.event_type === 'removed'
+          ? 'reverse the posted journal and mark this bank transaction as provider-removed'
+          : 'reverse the current journal, apply the bank-provided change, and repost the transaction'
+        : 'keep the current transaction and journal unchanged and dismiss this provider change';
 
-      if (ruleError) {
-        console.error('Category rule upsert failed:', ruleError);
+    const confirmed = window.confirm(
+      `${action === 'accept' ? 'Accept' : 'Dismiss'} bank provider change?\n\n${transaction ? `${getMerchantName(transaction)} · ${formatDate(getTransactionDate(transaction))} · ${formatCurrency(Number(transaction.amount || 0))}` : exception.transaction_id}\n\nThis will ${actionDescription}. The decision will be retained in the audit history.`,
+    );
+
+    if (!confirmed) return;
+
+    try {
+      setResolvingProviderExceptionId(exception.id);
+      setErrorMessage('');
+      setSuccessMessage('');
+
+      const response = await fetch('/api/provider-exceptions/resolve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          exceptionId: exception.id,
+          clientId: selectedClientId,
+          action,
+        }),
+      });
+
+      const result = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(
+          result.error || 'Unable to resolve bank provider change.',
+        );
       }
+
+      setProviderExceptions((current) =>
+        current.filter((item) => item.id !== exception.id),
+      );
+
+      if (action === 'accept') {
+        setTransactionsRefreshKey((current) => current + 1);
+      }
+
+      setSuccessMessage(
+        action === 'accept'
+          ? result.journalReposted
+            ? 'Bank provider change accepted. The prior journal was reversed and the updated transaction was reposted.'
+            : 'Bank provider removal accepted. The prior journal was reversed and the provider-removed transaction is excluded from active financial reporting.'
+          : 'Bank provider change dismissed. Transaction and journal data were not changed.',
+      );
+    } catch (error: unknown) {
+      console.error('Error resolving provider transaction exception:', error);
+      setErrorMessage(
+        error instanceof Error
+          ? asErrorDetails(error).message
+          : 'Unable to resolve bank provider change.',
+      );
+    } finally {
+      setResolvingProviderExceptionId(null);
+    }
+  }
+
+  async function handleDismissDuplicate(candidateId: string) {
+    if (!selectedClientId) return;
+
+    try {
+      setDismissingDuplicateId(candidateId);
+      setErrorMessage('');
+      setSuccessMessage('');
+
+      const response = await fetch('/api/duplicates/dismiss', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          candidateId,
+          clientId: selectedClientId,
+        }),
+      });
+
+      const result = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(result.error || 'Unable to dismiss duplicate candidate.');
+      }
+
+      setDuplicateCandidates((currentCandidates) =>
+        currentCandidates.filter((candidate) => candidate.id !== candidateId),
+      );
+      setSuccessMessage('Duplicate warning dismissed. No transaction data was changed.');
+    } catch (error: unknown) {
+      console.error('Error dismissing duplicate candidate:', error);
+      setErrorMessage(
+        error instanceof Error
+          ? asErrorDetails(error).message
+          : 'Unable to dismiss duplicate candidate.',
+      );
+    } finally {
+      setDismissingDuplicateId(null);
+    }
+  }
+
+  async function handleResolveDuplicate(
+    candidate: DuplicateCandidate,
+    duplicateTransactionId: string,
+  ) {
+    if (!selectedClientId) return;
+
+    const retainedTransactionId =
+      candidate.transaction_a_id === duplicateTransactionId
+        ? candidate.transaction_b_id
+        : candidate.transaction_a_id;
+    const duplicateTransaction = transactions.find(
+      (transaction) => transaction.id === duplicateTransactionId,
+    );
+    const retainedTransaction = transactions.find(
+      (transaction) => transaction.id === retainedTransactionId,
+    );
+
+    const confirmed = window.confirm(
+      `Confirm duplicate bookkeeping treatment?\n\nExclude: ${duplicateTransaction ? `${getMerchantName(duplicateTransaction)} · ${formatDate(getTransactionDate(duplicateTransaction))} · ${formatCurrency(Number(duplicateTransaction.amount || 0))}` : duplicateTransactionId}\nKeep: ${retainedTransaction ? `${getMerchantName(retainedTransaction)} · ${formatDate(getTransactionDate(retainedTransaction))} · ${formatCurrency(Number(retainedTransaction.amount || 0))}` : retainedTransactionId}\n\nThe excluded bank-feed record will remain visible for audit history but will no longer count in financial totals or accounting exports.`,
+    );
+
+    if (!confirmed) return;
+
+    const resolutionKey = `${candidate.id}:${duplicateTransactionId}`;
+
+    try {
+      setResolvingDuplicateKey(resolutionKey);
+      setErrorMessage('');
+      setSuccessMessage('');
+
+      const response = await fetch('/api/duplicates/resolve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          candidateId: candidate.id,
+          clientId: selectedClientId,
+          duplicateTransactionId,
+        }),
+      });
+
+      const result = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(result.error || 'Unable to confirm duplicate.');
+      }
+
+      setTransactions((currentTransactions) =>
+        currentTransactions.map((transaction) =>
+          transaction.id === result.duplicateTransactionId
+            ? {
+                ...transaction,
+                duplicate_of_transaction_id: result.retainedTransactionId,
+                duplicate_resolved_at: new Date().toISOString(),
+                duplicate_resolved_by: userId,
+              }
+            : transaction,
+        ),
+      );
+      setDuplicateCandidates((currentCandidates) =>
+        currentCandidates.filter((item) => item.id !== candidate.id),
+      );
+      setSuccessMessage(
+        'Duplicate confirmed. The bank record was preserved and the duplicate copy is excluded from financial totals and accounting exports.',
+      );
+    } catch (error: unknown) {
+      console.error('Error resolving duplicate candidate:', error);
+      setErrorMessage(
+        error instanceof Error
+          ? asErrorDetails(error).message
+          : 'Unable to confirm duplicate.',
+      );
+    } finally {
+      setResolvingDuplicateKey(null);
     }
   }
 
   const filteredTransactions = useMemo(() => {
-    if (dateFilter === 'all_time') return transactions;
+    return transactions.filter((transaction) => {
+      const merchant = getMerchantName(transaction).toLowerCase();
+      const category = getTransactionCategory(transaction);
+      const account = transaction.account_name || 'Unknown account';
 
-    const now = new Date();
+      const normalizedSearchTerm = searchTerm.toLowerCase().trim();
 
-    return transactions.filter((tx) => {
-      const txDate = new Date(tx.date);
+      const matchesSearch =
+        !normalizedSearchTerm ||
+        merchant.includes(normalizedSearchTerm) ||
+        category.toLowerCase().includes(normalizedSearchTerm) ||
+        account.toLowerCase().includes(normalizedSearchTerm);
 
-      if (dateFilter === 'this_month') {
-        return (
-          txDate.getMonth() === now.getMonth() &&
-          txDate.getFullYear() === now.getFullYear()
+      const matchesCategory =
+        categoryFilter === 'All Categories' ||
+        category === categoryFilter;
+
+      const matchesAccount =
+        accountFilter === 'All Accounts' ||
+        account === accountFilter;
+
+      const matchesReview =
+        reviewFilter === 'All Transactions' ||
+        (reviewFilter === 'Needs Review' &&
+          transaction.status === 'pending_review') ||
+        (reviewFilter === 'Confirmed' &&
+          transaction.status === 'confirmed');
+
+      const reviewDecision =
+        getReviewDecision(transaction);
+      const matchesConfidence =
+        confidenceFilter === 'All Review Decisions' ||
+        (confidenceFilter === 'Active Exceptions' &&
+          reviewDecision.state === 'needs_attention' &&
+          reviewDecision.reason !== 'unknown_provenance') ||
+        (confidenceFilter === 'Legacy Review' &&
+          reviewDecision.reason === 'unknown_provenance') ||
+        (confidenceFilter === 'Routine' &&
+          reviewDecision.state === 'routine');
+
+      const matchesStartDate =
+        !startDate || getTransactionDate(transaction) >= startDate;
+
+      const matchesEndDate =
+        !endDate || getTransactionDate(transaction) <= endDate;
+
+      return (
+        matchesSearch &&
+        matchesCategory &&
+        matchesAccount &&
+        matchesReview &&
+        matchesConfidence &&
+        matchesStartDate &&
+        matchesEndDate
+      );
+    });
+  }, [
+    transactions,
+    searchTerm,
+    categoryFilter,
+    accountFilter,
+    reviewFilter,
+    confidenceFilter,
+    startDate,
+    endDate,
+  ]);
+
+  const transactionsPerPage = 10;
+  const transactionPageCount = Math.max(
+    1,
+    Math.ceil(filteredTransactions.length / transactionsPerPage),
+  );
+  const safeTransactionPage = Math.min(transactionPage, transactionPageCount);
+  const transactionPageStart = (safeTransactionPage - 1) * transactionsPerPage;
+  const dashboardTransactions = filteredTransactions.slice(
+    transactionPageStart,
+    transactionPageStart + transactionsPerPage,
+  );
+  const pageReviewTransactionIds = dashboardTransactions
+    .filter(
+      (transaction) =>
+        transaction.status === 'pending_review' &&
+        getReviewDecision(transaction).state === 'routine',
+    )
+    .map((transaction) => transaction.id);
+  const selectedTransactionIdSet = new Set(selectedTransactionIds);
+  const allPageReviewTransactionsSelected =
+    pageReviewTransactionIds.length > 0 &&
+    pageReviewTransactionIds.every((id) => selectedTransactionIdSet.has(id));
+
+  useEffect(() => {
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      setTransactionPage(1);
+      setSelectedTransactionIds([]);
+    });
+    return () => { cancelled = true; };
+  }, [
+    selectedClientId,
+    searchTerm,
+    categoryFilter,
+    accountFilter,
+    reviewFilter,
+    confidenceFilter,
+    startDate,
+    endDate,
+  ]);
+
+  const financialFilteredTransactions = useMemo(() => {
+    return transactions.filter((transaction) => {
+      const merchant = getMerchantName(transaction).toLowerCase();
+      const category = getTransactionCategory(transaction);
+      const account = transaction.account_name || 'Unknown account';
+
+      const normalizedSearchTerm = searchTerm.toLowerCase().trim();
+
+      const matchesSearch =
+        !normalizedSearchTerm ||
+        merchant.includes(normalizedSearchTerm) ||
+        category.toLowerCase().includes(normalizedSearchTerm) ||
+        account.toLowerCase().includes(normalizedSearchTerm);
+
+      const matchesCategory =
+        categoryFilter === 'All Categories' ||
+        category === categoryFilter;
+
+      const matchesAccount =
+        accountFilter === 'All Accounts' ||
+        account === accountFilter;
+
+      const matchesStartDate =
+        !startDate || getTransactionDate(transaction) >= startDate;
+
+      const matchesEndDate =
+        !endDate || getTransactionDate(transaction) <= endDate;
+
+      const isActiveFinancialSource =
+        transaction.financial_source_status === 'active' &&
+        transaction.provider_source_status === 'active';
+
+      return (
+        isActiveFinancialSource &&
+        matchesSearch &&
+        matchesCategory &&
+        matchesAccount &&
+        matchesStartDate &&
+        matchesEndDate
+      );
+    });
+  }, [
+    transactions,
+    searchTerm,
+    categoryFilter,
+    accountFilter,
+    startDate,
+    endDate,
+  ]);
+
+  const spendingTransactions = useMemo(() => {
+    return financialFilteredTransactions.filter(isQualifyingSpending);
+  }, [financialFilteredTransactions]);
+
+  const totalSpending = useMemo(() => {
+    return sumTransactionAmounts(spendingTransactions);
+  }, [spendingTransactions]);
+
+  const transactionCount = spendingTransactions.length;
+  const spendingTransactionCount = spendingTransactions.length;
+
+  const averageTransaction = useMemo(() => {
+    if (spendingTransactionCount === 0) {
+      return 0;
+    }
+
+    return totalSpending / spendingTransactionCount;
+  }, [totalSpending, spendingTransactionCount]);
+
+  const merchantSummary = useMemo<GroupedMerchant[]>(() => {
+    return getTopMerchantSpending(spendingTransactions, Number.MAX_SAFE_INTEGER);
+  }, [spendingTransactions]);
+
+  const categorySummary = useMemo(() => {
+    const categoryMap = new Map<string, number>();
+
+    spendingTransactions.forEach((transaction) => {
+      const category = getTransactionCategory(transaction);
+      const amount = Number(transaction.amount || 0);
+
+      categoryMap.set(
+        category,
+        (categoryMap.get(category) || 0) + amount,
+      );
+    });
+
+    return Array.from(categoryMap.entries())
+      .map(([category, total]) => ({
+        category,
+        total,
+      }))
+      .sort((a, b) => b.total - a.total);
+  }, [spendingTransactions]);
+
+  function handleClientChange(
+    event: ChangeEvent<HTMLSelectElement>,
+  ) {
+    setSelectedClientId(event.target.value);
+    setReauthenticationRequired([]);
+    setSearchTerm('');
+    setCategoryFilter('All Categories');
+    setAccountFilter('All Accounts');
+    setReviewFilter('Needs Review');
+    setConfidenceFilter('Active Exceptions');
+    setStartDate('');
+    setEndDate('');
+    setTimeframe('all');
+    setFinanceQuestion('');
+    setAskAnswer('');
+    setSuccessMessage('');
+    setErrorMessage('');
+  }
+
+  function handleTimeframeChange(
+    event: ChangeEvent<HTMLSelectElement>,
+  ) {
+    const nextTimeframe = event.target.value;
+    setTimeframe(nextTimeframe);
+
+    if (nextTimeframe === 'all') {
+      setStartDate('');
+      setEndDate('');
+      return;
+    }
+
+    const today = new Date();
+    const toDateInputValue = (date: Date) => {
+      const year = date.getFullYear();
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const day = String(date.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    };
+
+    if (nextTimeframe === 'this-month') {
+      const firstDay = new Date(today.getFullYear(), today.getMonth(), 1);
+      setStartDate(toDateInputValue(firstDay));
+      setEndDate(toDateInputValue(today));
+      return;
+    }
+
+    if (nextTimeframe === 'last-30-days') {
+      const firstDay = new Date(today);
+      firstDay.setDate(today.getDate() - 29);
+      setStartDate(toDateInputValue(firstDay));
+      setEndDate(toDateInputValue(today));
+      return;
+    }
+
+    if (nextTimeframe === 'custom') {
+      return;
+    }
+  }
+
+  function clearFilters() {
+    setSearchTerm('');
+    setCategoryFilter('All Categories');
+    setAccountFilter('All Accounts');
+    setReviewFilter('All Transactions');
+    setConfidenceFilter('All Review Decisions');
+    setStartDate('');
+    setEndDate('');
+    setTimeframe('all');
+  }
+
+  async function refreshTransactions() {
+    if (!selectedClientId) {
+      return;
+    }
+
+    try {
+      setTransactionsLoading(true);
+      setErrorMessage('');
+      setSuccessMessage('');
+      setReauthenticationRequired([]);
+
+      const syncResponse = await fetch('/api/plaid/sync', {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          client_id: selectedClientId,
+        }),
+      });
+
+      const syncResult = await syncResponse.json().catch(() => ({}));
+
+      if (!syncResponse.ok && syncResponse.status !== 207) {
+        throw new Error(
+          syncResult?.error || 'Unable to synchronize transactions with Plaid.',
         );
       }
 
-      if (dateFilter === 'last_30_days') {
-        const thirtyDaysAgo = new Date();
-        thirtyDaysAgo.setDate(now.getDate() - 30);
-        return txDate >= thirtyDaysAgo && txDate <= now;
+      setConnectionsRefreshKey((currentKey) => currentKey + 1);
+
+      const requiredItems = Array.isArray(
+        syncResult?.reauthentication_required,
+      )
+        ? (syncResult.reauthentication_required as ReauthenticationRequiredItem[])
+        : [];
+
+      const itemFailures = Array.isArray(syncResult?.item_failures)
+        ? syncResult.item_failures
+        : [];
+
+      setReauthenticationRequired(requiredItems);
+
+      const { data, error } = await supabase
+        .from('transactions')
+        .select(`
+          *,
+          accounts (
+            id,
+            name,
+            mask,
+            type,
+            subtype,
+            coa_category_id
+          ),
+          canonical_category:categories!transactions_ai_category_id_fkey (
+            id,
+            name,
+            client_id,
+            account_type,
+            normal_balance,
+            is_active,
+            is_posting_account
+          ),
+          journal_entries!left (
+            id,
+            status,
+            reversal_of_journal_entry_id
+          )
+        `)
+        .eq('client_id', selectedClientId)
+        .order('posted_date', {
+          ascending: false,
+        });
+
+      if (error) {
+        throw error;
       }
 
-      if (dateFilter === 'custom') {
-        if (!customStartDate && !customEndDate) return true;
-        const start = customStartDate
-          ? new Date(customStartDate)
-          : new Date('1970-01-01');
-        const end = customEndDate
-          ? new Date(customEndDate)
-          : new Date('2099-12-31');
-        return txDate >= start && txDate <= end;
+      const formattedTransactions = (data || []).map(
+        (transaction) => ({
+          ...transaction,
+          account_name: transaction.accounts?.name || null,
+          account_mask: transaction.accounts?.mask || null,
+          account_coa_category_id: transaction.accounts?.coa_category_id || null,
+        }),
+      );
+
+      setTransactions(formattedTransactions as Transaction[]);
+
+      if (itemFailures.length > 0) {
+        setErrorMessage(
+          `${itemFailures.length} bank connection${
+            itemFailures.length === 1 ? '' : 's'
+          } could not synchronize. Existing transaction data was preserved.`,
+        );
       }
 
-      return true;
+      if (requiredItems.length > 0) {
+        setSuccessMessage(
+          `${syncResult.successful_items || 0} bank connection${
+            syncResult.successful_items === 1 ? '' : 's'
+          } synchronized. ${requiredItems.length} require${
+            requiredItems.length === 1 ? 's' : ''
+          } reauthentication.`,
+        );
+      } else if (itemFailures.length === 0) {
+        setSuccessMessage('Bank transactions synchronized and refreshed successfully.');
+      }
+    } catch (error) {
+      console.error('Error refreshing transactions:', error);
+
+      setErrorMessage(
+        asErrorDetails(error).message || 'Unable to refresh transactions.',
+      );
+    } finally {
+      setTransactionsLoading(false);
+    }
+  }
+
+  async function handleBankConnected() {
+    await refreshTransactions();
+    setSuccessMessage('Bank connected and transactions refreshed successfully.');
+  }
+
+  async function handleBankReconnected() {
+    await refreshTransactions();
+    setSuccessMessage('Bank connection repaired and transactions refreshed successfully.');
+  }
+
+  async function loadCorrectionHistory(transactionId: string) {
+    if (historyTransactionId === transactionId) {
+      setHistoryTransactionId(null);
+      setCorrectionHistory([]);
+      return;
+    }
+
+    try {
+      setHistoryLoading(true);
+      setErrorMessage('');
+
+      const { data, error } = await supabase
+        .from('category_corrections')
+        .select(`
+          id,
+          transaction_id,
+          from_category_id,
+          to_category_id,
+          corrected_by,
+          corrected_at,
+          from_category:categories!category_corrections_from_category_id_fkey (
+            name
+          ),
+          to_category:categories!category_corrections_to_category_id_fkey (
+            name
+          )
+        `)
+        .eq('client_id', selectedClientId)
+        .eq('transaction_id', transactionId)
+        .order('corrected_at', { ascending: false });
+
+      if (error) throw error;
+
+      setCorrectionHistory((data || []) as unknown as CategoryCorrection[]);
+      setHistoryTransactionId(transactionId);
+    } catch (error) {
+      console.error('Error loading correction history:', error);
+      setErrorMessage(asErrorDetails(error).message || 'Unable to load correction history.');
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
+  async function handleCategoryChange(
+    transactionId: string,
+    categoryId: string,
+  ) {
+    if (!selectedClientId || !categoryId) return;
+
+    try {
+      setSavingCategoryId(transactionId);
+      setErrorMessage('');
+      setSuccessMessage('');
+
+      const response = await fetch('/api/category-correction', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          transactionId,
+          clientId: selectedClientId,
+          categoryId,
+        }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          result.error || 'Unable to update transaction category.',
+        );
+      }
+
+      setTransactions((currentTransactions) =>
+        currentTransactions.map((transaction) =>
+          transaction.id === transactionId
+            ? {
+                ...transaction,
+                ai_category_id: result.category.id,
+                category: result.category.name,
+                status: 'confirmed',
+                canonical_category: {
+                  id: result.category.id,
+                  name: result.category.name,
+                },
+              }
+            : transaction,
+        ),
+      );
+
+      setSelectedTransactionIds((currentIds) =>
+        currentIds.filter((id) => id !== transactionId),
+      );
+      if (result.changed !== false) {
+        setCorrectionCounts((currentCounts) => ({
+          ...currentCounts,
+          [transactionId]: (currentCounts[transactionId] || 0) + 1,
+        }));
+      }
+      setEditingCategoryId(null);
+      setSuccessMessage(
+        result.unchanged
+          ? 'Category is already up to date.'
+          : 'Category updated and learning saved successfully.',
+      );
+    } catch (error) {
+      console.error('Error updating transaction category:', error);
+      setErrorMessage(
+        asErrorDetails(error).message || 'Unable to update transaction category.',
+      );
+    } finally {
+      setSavingCategoryId(null);
+    }
+  }
+
+  async function handlePostTransaction(transaction: Transaction) {
+    if (
+      !selectedClientId ||
+      !canResolveProviderExceptions ||
+      postingTransactionId
+    ) {
+      return;
+    }
+
+    const activeJournal = transaction.journal_entries?.find(
+      (journal) =>
+        journal.reversal_of_journal_entry_id == null &&
+        (journal.status === 'draft' || journal.status === 'posted'),
+    );
+
+    if (activeJournal) {
+      setErrorMessage(
+        activeJournal.status === 'posted'
+          ? 'This transaction is already posted to the ledger.'
+          : 'This transaction has an active draft journal that must be resolved first.',
+      );
+      return;
+    }
+
+    const confirmed = window.confirm(
+      'Post this confirmed transaction to the ledger? This creates a balanced journal entry and affects financial statements.',
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      setPostingTransactionId(transaction.id);
+      setErrorMessage('');
+      setSuccessMessage('');
+
+      const response = await fetch('/api/journal/post-transaction', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          transactionId: transaction.id,
+          clientId: selectedClientId,
+        }),
+      });
+
+      const result = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(
+          result.error || 'Unable to post transaction to the ledger.',
+        );
+      }
+
+      setTransactions((currentTransactions) =>
+        currentTransactions.map((currentTransaction) =>
+          currentTransaction.id === transaction.id
+            ? {
+                ...currentTransaction,
+                journal_entries: [
+                  ...(currentTransaction.journal_entries || []),
+                  {
+                    id: result.journalEntryId,
+                    status: 'posted',
+                    reversal_of_journal_entry_id: null,
+                  },
+                ],
+              }
+            : currentTransaction,
+        ),
+      );
+
+      setSuccessMessage(
+        'Transaction posted to the ledger. Journal Activity and financial reports now include this posting.',
+      );
+    } catch (error: unknown) {
+      console.error('Error posting transaction to ledger:', error);
+      setErrorMessage(
+        error instanceof Error
+          ? asErrorDetails(error).message
+          : 'Unable to post transaction to the ledger.',
+      );
+    } finally {
+      setPostingTransactionId(null);
+    }
+  }
+
+  async function handleApproveTransaction(transactionId: string) {
+    if (!selectedClientId) return;
+
+    try {
+      setSavingCategoryId(transactionId);
+      setErrorMessage('');
+      setSuccessMessage('');
+
+      const response = await fetch('/api/transactions/confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          transactionId,
+          clientId: selectedClientId,
+        }),
+      });
+
+      const result = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(result.error || 'Unable to approve transaction.');
+      }
+
+      setTransactions((currentTransactions) =>
+        currentTransactions.map((transaction) =>
+          transaction.id === transactionId
+            ? { ...transaction, status: 'confirmed' }
+            : transaction,
+        ),
+      );
+
+      setSelectedTransactionIds((currentIds) =>
+        currentIds.filter((id) => id !== transactionId),
+      );
+      setSuccessMessage('Transaction approved successfully.');
+    } catch (error: unknown) {
+      console.error('Error approving transaction:', error);
+      setErrorMessage(
+        error instanceof Error
+          ? asErrorDetails(error).message
+          : 'Unable to approve transaction.',
+      );
+    } finally {
+      setSavingCategoryId(null);
+    }
+  }
+
+  function toggleTransactionSelection(transactionId: string) {
+    setSelectedTransactionIds((currentIds) =>
+      currentIds.includes(transactionId)
+        ? currentIds.filter((id) => id !== transactionId)
+        : [...currentIds, transactionId],
+    );
+  }
+
+  function togglePageReviewSelection() {
+    setSelectedTransactionIds((currentIds) => {
+      const currentIdSet = new Set(currentIds);
+      const shouldClearPage = pageReviewTransactionIds.every((id) =>
+        currentIdSet.has(id),
+      );
+
+      if (shouldClearPage) {
+        return currentIds.filter(
+          (id) => !pageReviewTransactionIds.includes(id),
+        );
+      }
+
+      return Array.from(
+        new Set([...currentIds, ...pageReviewTransactionIds]),
+      );
     });
-  }, [transactions, dateFilter, customStartDate, customEndDate]);
+  }
 
-  function exportToCSV() {
-    if (filteredTransactions.length === 0) return;
+  async function handleBulkApprove() {
+    if (!selectedClientId || selectedTransactionIds.length === 0) return;
 
-    const headers = ['#', 'Date', 'Merchant', 'Category', 'Amount'];
-    const rows = filteredTransactions.map((tx, idx) => [
-      idx + 1,
-      tx.date,
-      `"${(tx.merchant_name || tx.name || 'Unknown Merchant').replace(/"/g, '""')}"`,
-      `"${(tx.category || 'Uncategorized').replace(/"/g, '""')}"`,
-      tx.amount < 0
-        ? `+${Math.abs(tx.amount).toFixed(2)}`
-        : `-${tx.amount.toFixed(2)}`,
+    try {
+      setBulkApproving(true);
+      setErrorMessage('');
+      setSuccessMessage('');
+
+      const response = await fetch('/api/transactions/confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          transactionIds: selectedTransactionIds,
+          clientId: selectedClientId,
+        }),
+      });
+
+      const result = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(result.error || 'Unable to approve selected transactions.');
+      }
+
+      const approvedIds = new Set<string>(
+        Array.isArray(result.transactionIds)
+          ? result.transactionIds
+          : selectedTransactionIds,
+      );
+
+      setTransactions((currentTransactions) =>
+        currentTransactions.map((transaction) =>
+          approvedIds.has(transaction.id)
+            ? { ...transaction, status: 'confirmed' }
+            : transaction,
+        ),
+      );
+      setSelectedTransactionIds([]);
+      setSuccessMessage(
+        `${approvedIds.size} transaction${approvedIds.size === 1 ? '' : 's'} approved successfully.`,
+      );
+    } catch (error: unknown) {
+      console.error('Error bulk approving transactions:', error);
+      setErrorMessage(
+        error instanceof Error
+          ? asErrorDetails(error).message
+          : 'Unable to approve selected transactions.',
+      );
+    } finally {
+      setBulkApproving(false);
+    }
+  }
+
+  async function handleLocalCategorize() {
+    if (!selectedClientId) {
+      setErrorMessage('Please select a client first.');
+      return;
+    }
+
+    try {
+      setTransactionsLoading(true);
+      setErrorMessage('');
+      setSuccessMessage('');
+
+      const response = await fetch('/api/categorize-local', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          clientId: selectedClientId,
+        }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          result.error || 'Unable to categorize transactions.',
+        );
+      }
+
+      const { data, error } = await supabase
+        .from('transactions')
+        .select(`
+          *,
+          accounts (
+            id,
+            name,
+            mask,
+            type,
+            subtype,
+            coa_category_id
+          ),
+          canonical_category:categories!transactions_ai_category_id_fkey (
+            id,
+            name,
+            client_id,
+            account_type,
+            normal_balance,
+            is_active,
+            is_posting_account
+          ),
+          journal_entries!left (
+            id,
+            status,
+            reversal_of_journal_entry_id
+          )
+        `)
+        .eq('client_id', selectedClientId)
+        .order('posted_date', {
+          ascending: false,
+        });
+
+      if (error) {
+        throw error;
+      }
+
+      const formattedTransactions = (data || []).map(
+        (transaction) => ({
+          ...transaction,
+          account_name: transaction.accounts?.name || null,
+          account_mask: transaction.accounts?.mask || null,
+          account_coa_category_id: transaction.accounts?.coa_category_id || null,
+        }),
+      );
+
+      setTransactions(formattedTransactions as Transaction[]);
+
+      if (result.categorized > 0) {
+        setSuccessMessage(
+          `${result.categorized} transaction${
+            result.categorized === 1 ? '' : 's'
+          } categorized successfully.${
+            result.skipped > 0
+              ? ` ${result.skipped} left for review.`
+              : ''
+          }`,
+        );
+      } else {
+        setSuccessMessage(
+          result.skipped > 0
+            ? `No additional transactions matched the available local rules. ${result.skipped} left for review.`
+            : 'There are no transactions waiting for local categorization.',
+        );
+      }
+    } catch (error) {
+      console.error('Error categorizing transactions:', error);
+
+      setErrorMessage(
+        asErrorDetails(error).message || 'Unable to categorize transactions.',
+      );
+    } finally {
+      setTransactionsLoading(false);
+    }
+  }
+
+  function answerFinanceQuestion(question: string) {
+    const normalizedQuestion = question.toLowerCase().trim();
+
+    if (!normalizedQuestion) {
+      setAskAnswer('Please enter a question about your finances.');
+      return;
+    }
+
+    if (transactions.length === 0) {
+      setAskAnswer(
+        'There are no transactions available for this client yet.',
+      );
+      return;
+    }
+
+    if (
+      normalizedQuestion.includes('food') &&
+      normalizedQuestion.includes('dining') &&
+      normalizedQuestion.includes('last month')
+    ) {
+      const total = sumTransactionAmounts(
+        getFoodDiningSpending(
+          transactions,
+          getPreviousMonthRange(),
+        ),
+      );
+
+      setAskAnswer(
+        `You spent ${formatCurrency(
+          total,
+        )} on Food & Dining last month.`,
+      );
+      return;
+    }
+
+    if (
+      normalizedQuestion.includes('over $50') ||
+      normalizedQuestion.includes('over 50')
+    ) {
+      const matchingTransactions = getTransactionsOverAmount(
+        transactions,
+        50,
+      );
+
+      if (matchingTransactions.length === 0) {
+        setAskAnswer('There are no transactions over $50.');
+        return;
+      }
+
+      const transactionText = matchingTransactions
+        .slice(0, 10)
+        .map(
+          (transaction) =>
+            `${formatDate(getTransactionDate(transaction))} — ${getMerchantName(
+              transaction,
+            )} — ${formatCurrency(
+              Number(transaction.amount || 0),
+            )}`,
+        )
+        .join('\n');
+
+      const remainingCount = matchingTransactions.length - 10;
+
+      setAskAnswer(
+        `I found ${
+          matchingTransactions.length
+        } transaction${
+          matchingTransactions.length === 1 ? '' : 's'
+        } over $50:\n\n${transactionText}${
+          remainingCount > 0
+            ? `\n\n...and ${remainingCount} more.`
+            : ''
+        }`,
+      );
+      return;
+    }
+
+    if (
+      normalizedQuestion.includes('top 5') &&
+      normalizedQuestion.includes('merchant')
+    ) {
+      const topMerchants = getTopMerchantSpending(transactions)
+        .map(
+          (merchant, index) =>
+            `${index + 1}. ${merchant.merchant} — ${formatCurrency(
+              merchant.total,
+            )}`,
+        )
+        .join('\n');
+
+      setAskAnswer(
+        `Your top 5 merchants by total spend are:\n\n${topMerchants}`,
+      );
+      return;
+    }
+
+    if (
+      normalizedQuestion.includes('total') &&
+      normalizedQuestion.includes('this month')
+    ) {
+      const total = sumTransactionAmounts(
+        getQualifyingSpendingTransactions(
+          transactions,
+          getCurrentMonthRange(),
+        ),
+      );
+
+      setAskAnswer(
+        `You have spent ${formatCurrency(
+          total,
+        )} in total this month.`,
+      );
+      return;
+    }
+
+    setAskAnswer(
+      'I can currently answer questions about Food & Dining spending, transactions over $50, top merchants, and total spending this month.',
+    );
+  }
+
+ async function askQuestion(question: string) {
+  const trimmedQuestion = question.trim();
+
+  if (!trimmedQuestion) {
+    setAskAnswer('Please enter a question about your finances.');
+    return;
+  }
+
+  if (!selectedClientId) {
+    setAskAnswer('Please select a client first.');
+    return;
+  }
+
+  setIsAsking(true);
+  setAskAnswer('');
+
+  try {
+    const response = await fetch('/api/ask', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        question: trimmedQuestion,
+        selectedClientId,
+      }),
+    });
+
+    const result = await response.json();
+
+    if (!response.ok) {
+      setAskAnswer(
+        result.error || 'Unable to answer your question right now.',
+      );
+      return;
+    }
+
+    setAskAnswer(result.answer || 'No answer was returned.');
+  } catch (error) {
+    console.error('Ask question error:', error);
+
+    setAskAnswer(
+      'Unable to connect to the finance assistant. Please try again.',
+    );
+  } finally {
+    setIsAsking(false);
+  }
+}
+
+function handleAskQuestion() {
+  void askQuestion(financeQuestion);
+}
+
+ function handleSuggestedQuestion(question: string) {
+  setFinanceQuestion(question);
+  void askQuestion(question);
+}
+
+  function exportTransactionsToCsv() {
+    const accountingTransactions = filteredTransactions.filter(
+      (transaction) =>
+        transaction.financial_source_status === 'active' &&
+        transaction.provider_source_status === 'active' &&
+        !transaction.duplicate_of_transaction_id &&
+        !transaction.plaid_removed_at,
+    );
+
+    if (accountingTransactions.length === 0) {
+      setErrorMessage('There are no accounting transactions to export.');
+      return;
+    }
+
+    const headers = [
+      'Date',
+      'Merchant',
+      'Amount',
+      'Category',
+      'Account',
+      'Account Mask',
+      'Pending',
+      'Payment Channel',
+      'Currency',
+    ];
+
+    const rows = accountingTransactions.map((transaction) => [
+      getTransactionDate(transaction),
+      getMerchantName(transaction),
+      Number(transaction.amount || 0).toFixed(2),
+      getTransactionCategory(transaction),
+      transaction.account_name || '',
+      transaction.account_mask || '',
+      transaction.pending ? 'Yes' : 'No',
+      transaction.payment_channel || '',
+      transaction.iso_currency_code || 'USD',
     ]);
 
-    const csvContent = [headers.join(','), ...rows.map((r) => r.join(','))].join(
-      '\n'
-    );
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const csvContent = [
+      headers.map(escapeCsvValue).join(','),
+      ...rows.map((row) => row.map(escapeCsvValue).join(',')),
+    ].join('\n');
+
+    const blob = new Blob([csvContent], {
+      type: 'text/csv;charset=utf-8;',
+    });
+
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
-    link.setAttribute('href', url);
+
+    link.href = url;
     link.setAttribute(
       'download',
-      `LedgerAI_Report_${dateFilter}_${new Date().toISOString().split('T')[0]}.csv`
+      `${selectedClient?.name || 'transactions'}-transactions.csv`,
     );
+
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+
+    URL.revokeObjectURL(url);
   }
 
-  const analytics = useMemo(() => {
-    const totalSpend = filteredTransactions
-      .filter((t) => t.amount > 0)
-      .reduce((sum, t) => sum + t.amount, 0);
-
-    const totalIncome = filteredTransactions
-      .filter((t) => t.amount < 0)
-      .reduce((sum, t) => sum + Math.abs(t.amount), 0);
-
-    const netCashFlow = totalIncome - totalSpend;
-
-    const categoryTotals: Record<string, number> = {};
-    filteredTransactions.forEach((t) => {
-      const categoryName = t.category?.trim();
-      if (t.amount > 0 && categoryName && categoryName !== 'Uncategorized') {
-        categoryTotals[categoryName] =
-          (categoryTotals[categoryName] || 0) + t.amount;
-      }
-    });
-
-    const sortedCategories = Object.entries(categoryTotals).sort(
-      (a, b) => b[1] - a[1]
-    );
-    const topCategory =
-      sortedCategories.length > 0 ? sortedCategories[0][0] : 'None';
-
-    return { totalSpend, netCashFlow, topCategory };
-  }, [filteredTransactions]);
+  async function handleSignOut() {
+    await supabase.auth.signOut();
+    window.location.href = '/login';
+  }
 
   if (loading) {
     return (
-      <div
-        style={{
-          display: 'flex',
-          justifyContent: 'center',
-          alignItems: 'center',
-          minHeight: '100vh',
-          backgroundColor: '#070b14',
-          color: '#38bdf8',
-          fontSize: 15,
-          fontWeight: 500,
-          fontFamily:
-            'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-        }}
-      >
-        Initializing LedgerAI Quantum Core...
-      </div>
+      <main className="min-h-screen bg-slate-950 px-6 py-10 text-white">
+        <div className="mx-auto max-w-7xl">
+          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-8">
+            <p className="text-slate-300">Loading dashboard...</p>
+          </div>
+        </div>
+      </main>
     );
   }
 
   return (
-    <div
-      style={{
-        backgroundColor: '#070b14',
-        minHeight: '100vh',
-        padding: '40px 24px',
-        fontFamily:
-          'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-        color: '#f8fafc',
-      }}
-    >
-      <div style={{ maxWidth: 1160, margin: '0 auto' }}>
-        
-        {/* Header Bar with Sophisticated Glowing Unique Logo */}
-        <div
-          style={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            marginBottom: 36,
-            paddingBottom: 24,
-            borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-            {/* Unique Custom Quantum-Ledger Logo with Glowing Neon Border */}
-            <div
-              style={{
-                width: 50,
-                height: 50,
-                borderRadius: 14,
-                background: 'linear-gradient(135deg, #0b1329 0%, #030712 100%)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                boxShadow: '0 0 22px rgba(56, 189, 248, 0.4), inset 0 0 10px rgba(129, 140, 248, 0.2)',
-                border: '1.5px solid rgba(56, 189, 248, 0.6)',
-                position: 'relative',
-              }}
-            >
-              <svg
-                width="28"
-                height="28"
-                viewBox="0 0 32 32"
-                fill="none"
-                xmlns="http://www.w3.org/2000/svg"
-              >
-                <defs>
-                  <linearGradient id="neon-glow" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">
-                    <stop stopColor="#38bdf8" />
-                    <stop offset="0.5" stopColor="#818cf8" />
-                    <stop offset="1" stopColor="#c084fc" />
-                  </linearGradient>
-                  <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
-                    <feGaussianBlur stdDeviation="1.5" result="blur" />
-                    <feComposite in="SourceGraphic" in2="blur" operator="over" />
-                  </filter>
-                </defs>
-                {/* Abstract Quantum Ledger Nodes */}
-                <path
-                  d="M16 3L28 9.5V22.5L16 29L4 22.5V9.5L16 3Z"
-                  stroke="url(#neon-glow)"
-                  strokeWidth="2"
-                  strokeLinejoin="round"
-                  filter="url(#glow)"
-                />
-                <path
-                  d="M16 9L22 12.5V19.5L16 23L10 19.5V12.5L16 9Z"
-                  stroke="#38bdf8"
-                  strokeWidth="1.5"
-                  strokeOpacity="0.7"
-                  strokeLinejoin="round"
-                />
-                <circle cx="16" cy="16" r="3" fill="#818cf8" />
-              </svg>
-            </div>
-            <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <h1
-                  style={{
-                    fontSize: 26,
-                    fontWeight: 800,
-                    letterSpacing: '-0.03em',
-                    color: '#ffffff',
-                    margin: 0,
-                  }}
-                >
-                  Ledger<span style={{ color: '#38bdf8' }}>AI</span>
-                </h1>
-                <span
-                  style={{
-                    fontSize: 10,
-                    fontWeight: 700,
-                    backgroundColor: 'rgba(56, 189, 248, 0.12)',
-                    color: '#38bdf8',
-                    border: '1px solid rgba(56, 189, 248, 0.3)',
-                    padding: '2px 8px',
-                    borderRadius: 6,
-                    letterSpacing: '0.08em',
-                  }}
-                >
-                  ENTERPRISE
-                </span>
-              </div>
-              <p
+    <main className="min-h-screen overflow-x-hidden bg-slate-950 px-4 py-6 text-white sm:px-6 lg:px-8">
+      <div className="mx-auto max-w-7xl space-y-6">
+        <header className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900 shadow-xl">
+          <div className="flex flex-col gap-6 border-b border-slate-800 px-5 py-5 sm:px-6 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex items-center gap-4">
+              <div
+                className="relative flex shrink-0 items-center justify-center"
                 style={{
-                  fontSize: 13,
-                  color: '#94a3b8',
-                  margin: '4px 0 0 0',
-                  fontWeight: 400,
+                  width: 50,
+                  height: 50,
+                  borderRadius: 14,
+                  background:
+                    'linear-gradient(135deg,#0b1329 0%,#030712 100%)',
+                  boxShadow:
+                    '0 0 22px rgba(56,189,248,0.4), inset 0 0 10px rgba(129,140,248,0.2)',
+                  border: '1.5px solid rgba(56,189,248,0.6)',
                 }}
               >
-                Autonomous financial tracking & intelligent multi-account liquidity
-              </p>
+                <svg
+                  width="28"
+                  height="28"
+                  viewBox="0 0 32 32"
+                  fill="none"
+                  aria-hidden="true"
+                  xmlns="http://www.w3.org/2000/svg"
+                >
+                  <defs>
+                    <linearGradient
+                      id="ledgerai-mark"
+                      x1="0"
+                      y1="0"
+                      x2="32"
+                      y2="32"
+                      gradientUnits="userSpaceOnUse"
+                    >
+                      <stop stopColor="#38bdf8" />
+                      <stop offset="0.5" stopColor="#818cf8" />
+                      <stop offset="1" stopColor="#c084fc" />
+                    </linearGradient>
+                  </defs>
+                  <path
+                    d="M16 3L28 9.5V22.5L16 29L4 22.5V9.5L16 3Z"
+                    stroke="url(#ledgerai-mark)"
+                    strokeWidth="2"
+                    strokeLinejoin="round"
+                  />
+                  <circle
+                    cx="16"
+                    cy="16"
+                    r="3"
+                    fill="#818cf8"
+                  />
+                </svg>
+              </div>
+
+              <div>
+                <div className="flex flex-wrap items-center gap-2.5">
+                  <h1 className="text-2xl font-extrabold tracking-[-0.03em] text-white sm:text-3xl">
+                    Ledger<span className="text-sky-400">AI</span>
+                  </h1>
+                  <span className="rounded-md border border-cyan-500/40 bg-cyan-500/10 px-2 py-1 text-[10px] font-bold uppercase tracking-[0.18em] text-cyan-300">
+                    Enterprise
+                  </span>
+                </div>
+                <p className="mt-1 text-sm text-slate-400">
+                  Smarter financial insights. Clearer decisions.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-col items-start gap-2 lg:items-end">
+              {userEmail && (
+                <p className="text-xs text-slate-500">{userEmail}</p>
+              )}
+              <button
+                type="button"
+                onClick={handleSignOut}
+                className="rounded-lg border border-slate-700 px-3.5 py-2 text-sm font-medium text-slate-300 transition hover:border-red-500/60 hover:bg-red-500/10 hover:text-red-300"
+              >
+                Sign out
+              </button>
             </div>
           </div>
 
-          <button
-            onClick={exportToCSV}
-            disabled={filteredTransactions.length === 0}
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 8,
-              padding: '11px 20px',
-              backgroundColor: filteredTransactions.length === 0 ? '#1e293b' : '#0284c7',
-              color: '#ffffff',
-              borderRadius: 10,
-              border: '1px solid rgba(255, 255, 255, 0.1)',
-              fontWeight: 600,
-              cursor: filteredTransactions.length === 0 ? 'not-allowed' : 'pointer',
-              fontSize: 14,
-              boxShadow: '0 4px 14px rgba(2, 132, 199, 0.3)',
-              transition: 'all 0.2s ease',
-            }}
-          >
-            <span>Export CSV Report</span>
-            <span
-              style={{
-                backgroundColor: 'rgba(255, 255, 255, 0.2)',
-                padding: '2px 6px',
-                borderRadius: 4,
-                fontSize: 12,
-              }}
-            >
-              {filteredTransactions.length}
-            </span>
-          </button>
-        </div>
+          <nav className="flex flex-wrap items-center gap-1 border-b border-slate-800 bg-slate-950/35 px-5 py-2 sm:px-6" aria-label="LedgerAI workspace">
+            <a href="#overview" className="rounded-lg bg-cyan-500/10 px-3 py-2 text-sm font-semibold text-cyan-300">Overview</a>
+            <a href="#transactions" className="rounded-lg px-3 py-2 text-sm font-medium text-slate-400 transition hover:bg-slate-800 hover:text-white">Transactions</a>
+            <a href="#transactions" onClick={() => {
+              setReviewFilter('Needs Review');
+              setConfidenceFilter('Active Exceptions');
+            }} className="rounded-lg px-3 py-2 text-sm font-medium text-slate-400 transition hover:bg-slate-800 hover:text-white">Review</a>
+            <a href={selectedClientId ? `/dashboard/banks?clientId=${selectedClientId}` : '/dashboard/banks'} className="rounded-lg px-3 py-2 text-sm font-medium text-slate-400 transition hover:bg-slate-800 hover:text-white">Banking</a>
+            <a href={selectedClientId ? `/dashboard/accounting?clientId=${selectedClientId}` : '/dashboard/accounting'} className="rounded-lg px-3 py-2 text-sm font-medium text-slate-400 transition hover:bg-slate-800 hover:text-white">Accounting</a>
+            <a href={selectedClientId ? `/dashboard/reports?clientId=${selectedClientId}` : '/dashboard/reports'} className="rounded-lg px-3 py-2 text-sm font-medium text-slate-400 transition hover:bg-slate-800 hover:text-white">Reports</a>
+          </nav>
 
-        {/* Filter Controls Bar */}
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            marginBottom: 24,
-            backgroundColor: '#0f172a',
-            padding: '14px 22px',
-            borderRadius: 12,
-            border: '1px solid rgba(255, 255, 255, 0.08)',
-            boxShadow: '0 4px 20px rgba(0, 0, 0, 0.4)',
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-            <span
-              style={{
-                fontSize: 12,
-                fontWeight: 600,
-                color: '#94a3b8',
-                textTransform: 'uppercase',
-                letterSpacing: '0.08em',
-              }}
-            >
-              Timeframe Filter
-            </span>
-            <select
-              value={dateFilter}
-              onChange={(e) =>
-                setDateFilter(e.target.value as DateFilterType)
-              }
-              style={{
-                padding: '8px 14px',
-                borderRadius: 8,
-                border: '1px solid rgba(255, 255, 255, 0.1)',
-                fontSize: 13,
-                backgroundColor: '#1e293b',
-                color: '#f8fafc',
-                fontWeight: 500,
-                outline: 'none',
-                cursor: 'pointer',
-              }}
-            >
-              <option value="all_time">All Time</option>
-              <option value="this_month">This Month</option>
-              <option value="last_30_days">Last 30 Days</option>
-              <option value="custom">Custom Range</option>
-            </select>
+          <div className="grid gap-4 px-5 py-4 sm:px-6 xl:grid-cols-[minmax(260px,1.2fr)_minmax(190px,0.7fr)_auto] xl:items-end">
+            <div>
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <label
+                  htmlFor="client"
+                  className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500"
+                >
+                  Active Client
+                </label>
+                <button
+                  type="button"
+                  onClick={() => {
+                    window.location.href = '/clients/new';
+                  }}
+                  className="text-xs font-semibold text-cyan-400 transition hover:text-cyan-300"
+                >
+                  + Add Client
+                </button>
+              </div>
 
-            {dateFilter === 'custom' && (
-              <div
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 8,
-                  marginLeft: 8,
-                }}
+              <select
+                id="client"
+                value={selectedClientId}
+                onChange={handleClientChange}
+                className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm font-semibold text-white outline-none transition focus:border-cyan-400"
               >
-                <input
-                  type="date"
-                  value={customStartDate}
-                  onChange={(e) => setCustomStartDate(e.target.value)}
-                  style={{
-                    padding: '7px 10px',
-                    borderRadius: 6,
-                    border: '1px solid rgba(255, 255, 255, 0.1)',
-                    fontSize: 13,
-                    backgroundColor: '#1e293b',
-                    color: '#fff',
-                  }}
+                {clients.length === 0 && (
+                  <option value="">No clients available</option>
+                )}
+                {clients.map((client) => (
+                  <option key={client.id} value={client.id}>
+                    {client.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label
+                htmlFor="timeframe"
+                className="mb-2 block text-xs font-semibold uppercase tracking-[0.14em] text-slate-500"
+              >
+                Timeframe
+              </label>
+              <select
+                id="timeframe"
+                value={timeframe}
+                onChange={handleTimeframeChange}
+                className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm font-semibold text-white outline-none transition focus:border-cyan-400"
+              >
+                <option value="all">All Time</option>
+                <option value="this-month">This Month</option>
+                <option value="last-30-days">Last 30 Days</option>
+                <option value="custom">Custom Range</option>
+              </select>
+            </div>
+
+            <div className="flex flex-wrap gap-2 xl:justify-end">
+              <PlaidLinkButton
+                selectedClientId={selectedClientId}
+                onBankConnected={handleBankConnected}
+              />
+
+              <button
+                type="button"
+                onClick={refreshTransactions}
+                disabled={transactionsLoading || !selectedClientId}
+                className="rounded-xl border border-slate-700 px-4 py-3 text-sm font-semibold text-slate-200 transition hover:border-cyan-400 hover:text-cyan-300 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {transactionsLoading ? 'Refreshing...' : 'Refresh'}
+              </button>
+
+              <button
+                type="button"
+                onClick={exportTransactionsToCsv}
+                disabled={filteredTransactions.length === 0}
+                className="rounded-xl border border-slate-700 px-4 py-3 text-sm font-semibold text-slate-200 transition hover:border-emerald-400 hover:text-emerald-300 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Export CSV
+              </button>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-800/80 bg-slate-950/30 px-5 py-3 text-xs text-slate-500 sm:px-6">
+            <span>
+              {selectedClient
+                ? `Viewing ${selectedClient.name}`
+                : 'Select a client workspace'}
+            </span>
+            <span>
+              {memberships.length} connected firm{memberships.length === 1 ? '' : 's'}
+            </span>
+          </div>
+        </header>
+
+        {errorMessage && (
+          <div className="rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+            {errorMessage}
+          </div>
+        )}
+
+        {reauthenticationRequired.length > 0 && (
+          <section className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-4 text-sm text-amber-100">
+            <div className="font-semibold">
+              Bank connection{reauthenticationRequired.length === 1 ? '' : 's'} require reauthentication
+            </div>
+            <p className="mt-1 text-amber-200/80">
+              Existing transactions are still available. Reconnect each affected bank to resume synchronization.
+            </p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {reauthenticationRequired.map((item) => (
+                <PlaidLinkButton
+                  key={item.plaid_item_database_id}
+                  selectedClientId={selectedClientId}
+                  reconnectItemId={item.plaid_item_database_id}
+                  reconnectLabel={`Fix ${
+                    item.institution_name || 'bank connection'
+                  }`}
+                  onReconnected={handleBankReconnected}
                 />
-                <span style={{ fontSize: 13, color: '#64748b' }}>to</span>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {successMessage && (
+          <div className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-300">
+            {successMessage}
+          </div>
+        )}
+
+        {selectedClient &&
+          !transactionsLoading &&
+          transactions.length === 0 && (
+            <section className="rounded-2xl border border-cyan-500/20 bg-slate-900 p-6 shadow-xl sm:p-8">
+              <div className="mx-auto max-w-2xl text-center">
+                <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-cyan-500/10 text-xl">
+                  🏦
+                </div>
+
+                <p className="mt-5 text-sm font-semibold text-cyan-400">
+                  Client workspace ready
+                </p>
+
+                <h2 className="mt-2 text-2xl font-bold tracking-tight text-white">
+                  Connect {selectedClient.name}&apos;s first bank account
+                </h2>
+
+                <p className="mx-auto mt-3 max-w-xl text-sm leading-6 text-slate-400">
+                  This client does not have any transactions yet. Connect a bank
+                  account to securely import transaction history and begin
+                  categorizing and reviewing the books.
+                </p>
+
+                <div className="mt-6 flex justify-center">
+                  <PlaidLinkButton
+                    selectedClientId={selectedClientId}
+                    onBankConnected={handleBankConnected}
+                  />
+                </div>
+
+                <div className="mt-7 grid gap-3 text-left sm:grid-cols-3">
+                  <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      Step 1
+                    </p>
+                    <p className="mt-2 text-sm font-semibold text-slate-200">
+                      Connect bank
+                    </p>
+                  </div>
+
+                  <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      Step 2
+                    </p>
+                    <p className="mt-2 text-sm font-semibold text-slate-200">
+                      Import transactions
+                    </p>
+                  </div>
+
+                  <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      Step 3
+                    </p>
+                    <p className="mt-2 text-sm font-semibold text-slate-200">
+                      Review &amp; categorize
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </section>
+          )}
+
+        <section id="overview" className="scroll-mt-6 space-y-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-cyan-400">Financial overview</p>
+              <h2 className="mt-1 text-xl font-bold text-white">{selectedClient?.name || 'Client'} at a glance</h2>
+              <p className="mt-1 text-sm text-slate-400">Key activity and items that need your attention.</p>
+            </div>
+            <a href="#transactions" onClick={() => {
+              setReviewFilter('Needs Review');
+              setConfidenceFilter('Active Exceptions');
+            }} className="text-sm font-semibold text-cyan-400 transition hover:text-cyan-300">
+              Review transactions →
+            </a>
+          </div>
+
+          <div className="grid gap-4 lg:grid-cols-[1.4fr_1fr]">
+            <div className="rounded-2xl border border-amber-500/20 bg-amber-500/[0.06] p-5">
+              <p className="text-sm font-semibold text-amber-200">Needs your attention</p>
+              <div className="mt-2 flex items-end gap-3">
+                <span className="text-3xl font-bold text-white">{reviewSummary.activeExceptions}</span>
+                <span className="pb-1 text-sm text-slate-400">active exceptions</span>
+              </div>
+              <p className="mt-2 text-xs text-slate-500">
+                {reviewSummary.activeExceptions > 0
+                  ? 'Resolve these exceptions before relying on automated categorization.'
+                  : 'No current categorization exceptions require your attention.'}
+              </p>
+              {(reviewSummary.legacyReview > 0 ||
+                reviewSummary.routineAwaitingSignoff > 0) && (
+                <p className="mt-2 text-xs text-slate-600">
+                  {reviewSummary.legacyReview} legacy review item{reviewSummary.legacyReview === 1 ? '' : 's'}
+                  {' · '}
+                  {reviewSummary.routineAwaitingSignoff} routine item{reviewSummary.routineAwaitingSignoff === 1 ? '' : 's'} awaiting sign-off
+                </p>
+              )}
+            </div>
+            <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
+              <p className="text-sm font-semibold text-white">Workspace shortcuts</p>
+              <p className="mt-2 text-sm leading-6 text-slate-400">Keep operational setup out of the financial overview.</p>
+              <div className="mt-3 flex flex-wrap gap-3">
+                <a href={selectedClientId ? `/dashboard/banks?clientId=${selectedClientId}` : '/dashboard/banks'} className="text-sm font-semibold text-cyan-400 transition hover:text-cyan-300">Banking →</a>
+                <a href={selectedClientId ? `/dashboard/accounting?clientId=${selectedClientId}` : '/dashboard/accounting'} className="text-sm font-semibold text-cyan-400 transition hover:text-cyan-300">Accounting →</a>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
+            <p className="text-sm text-slate-400">Total Spending</p>
+
+            <p className="mt-2 text-2xl font-bold text-white">
+              {formatCurrency(totalSpending)}
+            </p>
+
+            <p className="mt-1 text-xs text-slate-500">
+              Based on current filters
+            </p>
+          </div>
+
+          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
+            <p className="text-sm text-slate-400">Transactions</p>
+
+            <p className="mt-2 text-2xl font-bold text-white">
+              {transactionCount}
+            </p>
+
+            <p className="mt-1 text-xs text-slate-500">
+              Matching current filters
+            </p>
+          </div>
+
+          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
+            <p className="text-sm text-slate-400">
+              Average Spend
+            </p>
+
+            <p className="mt-2 text-2xl font-bold text-white">
+              {formatCurrency(averageTransaction)}
+            </p>
+
+            <p className="mt-1 text-xs text-slate-500">
+              Average operating expense
+            </p>
+          </div>
+
+          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
+            <p className="text-sm text-slate-400">Merchants</p>
+
+            <p className="mt-2 text-2xl font-bold text-white">
+              {merchantSummary.length}
+            </p>
+
+            <p className="mt-1 text-xs text-slate-500">
+              Unique merchants in view
+            </p>
+          </div>
+        </div>
+        </section>
+
+        <section id="assistant" className="scroll-mt-6 rounded-2xl border border-slate-800 bg-slate-900 p-5 shadow-xl">
+          <div className="mb-3 flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-violet-400">LedgerAI intelligence</p>
+            <h2 className="mt-1 text-lg font-semibold text-white">
+              🔍 Ask anything about your finances
+            </h2>
+
+            <p className="mt-1 text-sm text-slate-400">
+              Ask a question about your transaction history and spending.
+            </p>
+            </div>
+            <span className="hidden text-xs text-slate-500 sm:block">Financial copilot</span>
+          </div>
+
+          <div className="flex flex-col gap-3 sm:flex-row">
+            <input
+              type="text"
+              value={financeQuestion}
+              onChange={(event) =>
+                setFinanceQuestion(event.target.value)
+              }
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  handleAskQuestion();
+                }
+              }}
+              placeholder="Ask a question about your finances..."
+              className="flex-1 rounded-lg border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-white outline-none placeholder:text-slate-500 focus:border-cyan-400"
+            />
+
+            <button
+              type="button"
+              onClick={handleAskQuestion}
+              disabled={isAsking || !financeQuestion.trim()}
+              className="rounded-lg bg-cyan-500 px-5 py-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {isAsking ? 'Asking...' : 'Ask'}
+            </button>
+          </div>
+
+          <div className="mt-3 flex flex-wrap gap-2">
+            {SUGGESTED_QUESTIONS.map((question) => (
+              <button
+                key={question}
+                type="button"
+                onClick={() => handleSuggestedQuestion(question)}
+                className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-left text-xs text-slate-300 transition hover:border-cyan-400 hover:text-cyan-300"
+              >
+                {question}
+              </button>
+            ))}
+          </div>
+
+          {askAnswer && (
+            <div className="mt-5 whitespace-pre-line rounded-lg border border-slate-700 bg-slate-950/80 p-4 text-sm leading-6 text-slate-200">
+              {askAnswer}
+            </div>
+          )}
+        </section>
+
+        <section id="transactions" className="scroll-mt-6 rounded-2xl border border-slate-800 bg-slate-900 p-5">
+          <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-cyan-400">Transaction workspace</p>
+              <h2 className="mt-1 text-xl font-bold text-white">Review and organize transactions</h2>
+            </div>
+            <span className="text-sm text-slate-500">{filteredTransactions.length} shown</span>
+          </div>
+          <div className="grid min-w-0 gap-4 2xl:grid-cols-[minmax(260px,0.9fr)_minmax(0,2.1fr)] 2xl:items-end">
+            <div className="flex-1">
+              <label
+                htmlFor="search"
+                className="mb-2 block text-sm font-medium text-slate-300"
+              >
+                Search Transactions
+              </label>
+
+              <QueryBar
+                value={searchTerm}
+                onChange={setSearchTerm}
+                placeholder="Search merchant, category, or account..."
+              />
+            </div>
+
+            <div className="grid min-w-0 gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-[minmax(0,1.1fr)_minmax(0,1.1fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,0.9fr)_minmax(0,0.9fr)_auto] 2xl:items-end">
+              <div>
+                <label
+                  htmlFor="category-filter"
+                  className="mb-2 block text-sm font-medium text-slate-300"
+                >
+                  Category
+                </label>
+
+                <select
+                  id="category-filter"
+                  value={categoryFilter}
+                  onChange={(event) =>
+                    setCategoryFilter(event.target.value)
+                  }
+                  className="w-full min-w-0 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white outline-none transition focus:border-cyan-400"
+                >
+                  {categoryOptions.map((category) => (
+                    <option key={category} value={category}>
+                      {category}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label
+                  htmlFor="account-filter"
+                  className="mb-2 block text-sm font-medium text-slate-300"
+                >
+                  Account
+                </label>
+
+                <select
+                  id="account-filter"
+                  value={accountFilter}
+                  onChange={(event) =>
+                    setAccountFilter(event.target.value)
+                  }
+                  className="w-full min-w-0 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white outline-none transition focus:border-cyan-400"
+                >
+                  {accountOptions.map((account) => (
+                    <option key={account} value={account}>
+                      {account}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label
+                  htmlFor="review-filter"
+                  className="mb-2 block text-sm font-medium text-slate-300"
+                >
+                  Review Status
+                </label>
+
+                <select
+                  id="review-filter"
+                  value={reviewFilter}
+                  onChange={(event) => setReviewFilter(event.target.value)}
+                  className="w-full min-w-0 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white outline-none transition focus:border-cyan-400"
+                >
+                  <option value="Needs Review">Needs Review</option>
+                  <option value="Confirmed">Confirmed</option>
+                  <option value="All Transactions">All Transactions</option>
+                </select>
+              </div>
+
+              <div>
+                <label
+                  htmlFor="confidence-filter"
+                  className="mb-2 block text-sm font-medium text-slate-300"
+                >
+                  Review Decision
+                </label>
+
+                <select
+                  id="confidence-filter"
+                  value={confidenceFilter}
+                  onChange={(event) => setConfidenceFilter(event.target.value)}
+                  className="w-full min-w-0 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white outline-none transition focus:border-cyan-400"
+                >
+                  <option value="Active Exceptions">Active Exceptions</option>
+                  <option value="Legacy Review">Legacy Review</option>
+                  <option value="Routine">Routine</option>
+                  <option value="All Review Decisions">All Review Decisions</option>
+                </select>
+              </div>
+
+              <div>
+                <label
+                  htmlFor="start-date"
+                  className="mb-2 block text-sm font-medium text-slate-300"
+                >
+                  Start Date
+                </label>
+
                 <input
+                  id="start-date"
                   type="date"
-                  value={customEndDate}
-                  onChange={(e) => setCustomEndDate(e.target.value)}
-                  style={{
-                    padding: '7px 10px',
-                    borderRadius: 6,
-                    border: '1px solid rgba(255, 255, 255, 0.1)',
-                    fontSize: 13,
-                    backgroundColor: '#1e293b',
-                    color: '#fff',
+                  value={startDate}
+                  onChange={(event) => {
+                    setStartDate(event.target.value);
+                    setTimeframe('custom');
                   }}
+                  className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white outline-none transition focus:border-cyan-400"
                 />
+              </div>
+
+              <div>
+                <label
+                  htmlFor="end-date"
+                  className="mb-2 block text-sm font-medium text-slate-300"
+                >
+                  End Date
+                </label>
+
+                <input
+                  id="end-date"
+                  type="date"
+                  value={endDate}
+                  onChange={(event) => {
+                    setEndDate(event.target.value);
+                    setTimeframe('custom');
+                  }}
+                  className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white outline-none transition focus:border-cyan-400"
+                />
+              </div>
+
+              <button
+                type="button"
+                onClick={clearFilters}
+                className="rounded-lg border border-slate-700 px-4 py-2.5 text-sm font-medium text-slate-300 transition hover:border-slate-500 hover:text-white"
+              >
+                Clear Filters
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <section className="space-y-6">
+          <div className="rounded-2xl border border-slate-800 bg-slate-900">
+            <div className="flex flex-col gap-3 border-b border-slate-800 p-5 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h2 className="text-lg font-semibold text-white">
+                  Transactions
+                </h2>
+
+                <p className="mt-1 text-sm text-slate-400">
+                  {transactionsLoading
+                    ? 'Loading transactions...'
+                    : filteredTransactions.length > 0
+                      ? `Showing ${transactionPageStart + 1}–${Math.min(
+                          transactionPageStart + dashboardTransactions.length,
+                          filteredTransactions.length,
+                        )} of ${filteredTransactions.length} transactions`
+                      : '0 transactions shown'}
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                {selectedTransactionIds.length > 0 && (
+                  <>
+                    <span className="text-xs font-medium text-slate-400">
+                      {selectedTransactionIds.length} selected
+                    </span>
+                    <button
+                      type="button"
+                      onClick={handleBulkApprove}
+                      disabled={bulkApproving}
+                      className="rounded-lg border border-emerald-500/50 px-3 py-2 text-sm font-semibold text-emerald-300 transition hover:bg-emerald-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {bulkApproving ? 'Approving...' : 'Approve Selected'}
+                    </button>
+                  </>
+                )}
+                <button
+                  type="button"
+                  onClick={handleLocalCategorize}
+                  disabled={
+                    transactionsLoading ||
+                    filteredTransactions.length === 0
+                  }
+                  className="rounded-lg border border-cyan-500/50 px-3 py-2 text-sm font-medium text-cyan-300 transition hover:bg-cyan-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Auto-Categorize
+                </button>
+
+                <button
+                  type="button"
+                  onClick={exportTransactionsToCsv}
+                  disabled={filteredTransactions.length === 0}
+                  className="rounded-lg border border-slate-700 px-3 py-2 text-sm font-medium text-slate-300 transition hover:border-emerald-400 hover:text-emerald-300 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Export CSV
+                </button>
+              </div>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="min-w-full divide-y divide-slate-800">
+                <thead className="bg-slate-950/60">
+                  <tr>
+                    <th className="whitespace-nowrap px-5 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      <input
+                        type="checkbox"
+                        aria-label="Select all review transactions on this page"
+                        checked={allPageReviewTransactionsSelected}
+                        disabled={
+                          pageReviewTransactionIds.length === 0 ||
+                          bulkApproving
+                        }
+                        onChange={togglePageReviewSelection}
+                        className="h-4 w-4 rounded border-slate-600 bg-slate-900"
+                      />
+                    </th>
+                    <th className="whitespace-nowrap px-5 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      #
+                    </th>
+
+                    <th className="whitespace-nowrap px-5 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      Date
+                    </th>
+
+                    <th className="whitespace-nowrap px-5 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      Merchant
+                    </th>
+
+                    <th className="whitespace-nowrap px-5 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      Account
+                    </th>
+
+                    <th className="whitespace-nowrap px-5 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      Category
+                    </th>
+
+                    <th className="whitespace-nowrap px-5 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      Confidence
+                    </th>
+
+                    <th className="whitespace-nowrap px-5 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      Status
+                    </th>
+
+                    <th className="whitespace-nowrap px-5 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      Review
+                    </th>
+
+                    <th className="whitespace-nowrap px-5 py-3 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      Amount
+                    </th>
+                  </tr>
+                </thead>
+
+                <tbody className="divide-y divide-slate-800">
+                  {transactionsLoading ? (
+                    <tr>
+                      <td
+                        colSpan={10}
+                        className="px-5 py-12 text-center text-sm text-slate-400"
+                      >
+                        Loading transactions...
+                      </td>
+                    </tr>
+                  ) : filteredTransactions.length === 0 ? (
+                    <tr>
+                      <td
+                        colSpan={10}
+                        className="px-5 py-12 text-center text-sm text-slate-400"
+                      >
+                        No transactions found for this client and filter
+                        selection.
+                      </td>
+                    </tr>
+                  ) : (
+                    dashboardTransactions.map((transaction, transactionIndex) => {
+                      const category =
+                        getTransactionCategory(transaction);
+
+                      const isEditing =
+                        editingCategoryId === transaction.id;
+
+                      const isSaving =
+                        savingCategoryId === transaction.id;
+
+                      return (
+                        <tr
+                          key={transaction.id}
+                          className="transition hover:bg-slate-800/40"
+                        >
+                          <td className="whitespace-nowrap px-5 py-4">
+                            {transaction.status === 'pending_review' &&
+                            getReviewDecision(transaction).state === 'routine' ? (
+                              <input
+                                type="checkbox"
+                                aria-label={`Select ${getMerchantName(transaction)} for approval`}
+                                checked={selectedTransactionIdSet.has(transaction.id)}
+                                disabled={bulkApproving || isSaving}
+                                onChange={() =>
+                                  toggleTransactionSelection(transaction.id)
+                                }
+                                className="h-4 w-4 rounded border-slate-600 bg-slate-900"
+                              />
+                            ) : (
+                              <span className="text-slate-700">—</span>
+                            )}
+                          </td>
+                          <td className="whitespace-nowrap px-5 py-4 text-sm font-medium text-slate-500">
+                            {transactionPageStart + transactionIndex + 1}
+                          </td>
+
+                          <td className="whitespace-nowrap px-5 py-4 text-sm text-slate-300">
+                            {formatDate(getTransactionDate(transaction))}
+                          </td>
+
+                          <td className="px-5 py-4">
+                            <div className="min-w-[180px]">
+                              <p className="font-medium text-white">
+                                {getMerchantName(transaction)}
+                              </p>
+
+                              {transaction.pending && (
+                                <span className="mt-1 inline-flex rounded-full bg-amber-500/10 px-2 py-0.5 text-xs text-amber-300">
+                                  Pending
+                                </span>
+                              )}
+                              {(providerExceptionsByTransactionId.get(transaction.id) || []).map(
+                                (exception) => {
+                                  const isResolving =
+                                    resolvingProviderExceptionId === exception.id;
+                                  const activeJournal = transaction.journal_entries?.find(
+                                    (journal) =>
+                                      journal.reversal_of_journal_entry_id == null &&
+                                      (journal.status === 'draft' || journal.status === 'posted'),
+                                  );
+                                  const isDraftBlocked = activeJournal?.status === 'draft';
+                                  const proposed = exception.proposed_values || {};
+                                  const proposedAmount =
+                                    typeof proposed.amount === 'number'
+                                      ? proposed.amount
+                                      : Number(proposed.amount);
+                                  const proposedDate =
+                                    typeof proposed.posted_date === 'string'
+                                      ? proposed.posted_date
+                                      : null;
+                                  const proposedMerchant =
+                                    typeof proposed.merchant_name === 'string'
+                                      ? proposed.merchant_name
+                                      : null;
+
+                                  return (
+                                    <div
+                                      key={exception.id}
+                                      className="mt-2 rounded-lg border border-violet-500/30 bg-violet-500/[0.06] p-2 text-xs"
+                                    >
+                                      <p className="font-semibold text-violet-300">
+                                        Bank provider change requires accounting review
+                                      </p>
+                                      <p className="mt-1 text-slate-400">
+                                        {exception.event_type === 'removed'
+                                          ? 'The bank reports that this transaction was removed.'
+                                          : exception.event_type === 'reappeared'
+                                            ? `The bank reports that this previously removed transaction has reappeared${proposedMerchant ? ` as ${proposedMerchant}` : ''}${proposedDate ? ` · ${formatDate(proposedDate)}` : ''}${Number.isFinite(proposedAmount) ? ` · ${formatCurrency(proposedAmount)}` : ''}.`
+                                            : `The bank changed this transaction${proposedMerchant ? ` to ${proposedMerchant}` : ''}${proposedDate ? ` · ${formatDate(proposedDate)}` : ''}${Number.isFinite(proposedAmount) ? ` · ${formatCurrency(proposedAmount)}` : ''}.`}
+                                      </p>
+                                      <p className="mt-1 text-slate-500">
+                                        {isDraftBlocked
+                                          ? 'LedgerAI preserved the active draft journal. Resolve that draft before accepting the provider change; dismissing remains available.'
+                                          : 'LedgerAI preserved the posted accounting record until an authorized accounting user decides how to handle the provider change.'}
+                                      </p>
+                                      {canResolveProviderExceptions ? (
+                                        <div className="mt-2 flex flex-wrap gap-x-3 gap-y-2">
+                                          <button
+                                            type="button"
+                                            onClick={() =>
+                                              handleProviderExceptionResolution(
+                                                exception,
+                                                'accept',
+                                              )
+                                            }
+                                            disabled={isResolving || isDraftBlocked}
+                                            title={
+                                              isDraftBlocked
+                                                ? 'Resolve the active draft journal before accepting this provider change.'
+                                                : undefined
+                                            }
+                                            className="font-semibold text-violet-300 transition hover:text-white disabled:opacity-50"
+                                          >
+                                            {isResolving
+                                              ? 'Resolving...'
+                                              : isDraftBlocked
+                                                ? 'Resolve draft first'
+                                                : 'Accept provider change'}
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() =>
+                                              handleProviderExceptionResolution(
+                                                exception,
+                                                'dismiss',
+                                              )
+                                            }
+                                            disabled={isResolving}
+                                            className="font-semibold text-slate-300 transition hover:text-white disabled:opacity-50"
+                                          >
+                                            Dismiss
+                                          </button>
+                                        </div>
+                                      ) : (
+                                        <p className="mt-2 font-medium text-slate-400">
+                                          Owner, admin, or bookkeeper action required.
+                                        </p>
+                                      )}
+                                    </div>
+                                  );
+                                },
+                              )}
+                              {transaction.duplicate_of_transaction_id && (
+                                <div className="mt-2 rounded-lg border border-slate-600 bg-slate-800/70 p-2 text-xs">
+                                  <p className="font-semibold text-slate-200">
+                                    Excluded duplicate
+                                  </p>
+                                  <p className="mt-1 text-slate-400">
+                                    Preserved for audit history. Excluded from financial totals and accounting exports.
+                                  </p>
+                                </div>
+                              )}
+                              {(duplicateCandidatesByTransactionId.get(transaction.id) || []).map(
+                                (candidate) => {
+                                  const pairedTransactionId =
+                                    candidate.transaction_a_id === transaction.id
+                                      ? candidate.transaction_b_id
+                                      : candidate.transaction_a_id;
+                                  const pairedTransaction = transactions.find(
+                                    (item) => item.id === pairedTransactionId,
+                                  );
+                                  const excludeThisKey = `${candidate.id}:${transaction.id}`;
+                                  const excludePairedKey = `${candidate.id}:${pairedTransactionId}`;
+                                  const isResolving =
+                                    resolvingDuplicateKey === excludeThisKey ||
+                                    resolvingDuplicateKey === excludePairedKey;
+
+                                  return (
+                                    <div
+                                      key={candidate.id}
+                                      className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/[0.06] p-2 text-xs"
+                                    >
+                                      <p className="font-semibold text-amber-300">
+                                        Possible duplicate
+                                      </p>
+                                      <p className="mt-1 text-slate-400">
+                                        {pairedTransaction
+                                          ? `Matches ${getMerchantName(pairedTransaction)} · ${formatDate(getTransactionDate(pairedTransaction))} · ${formatCurrency(Number(pairedTransaction.amount || 0))}`
+                                          : 'A matching transaction was detected for this client.'}
+                                      </p>
+                                      <p className="mt-1 text-slate-500">
+                                        Same account, amount and merchant within one day. Review both records before choosing.
+                                      </p>
+                                      <div className="mt-2 flex flex-wrap gap-x-3 gap-y-2">
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            handleResolveDuplicate(candidate, transaction.id)
+                                          }
+                                          disabled={isResolving}
+                                          className="font-semibold text-rose-300 transition hover:text-white disabled:opacity-50"
+                                        >
+                                          {resolvingDuplicateKey === excludeThisKey
+                                            ? 'Confirming...'
+                                            : 'Exclude this; keep matching'}
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            handleResolveDuplicate(candidate, pairedTransactionId)
+                                          }
+                                          disabled={isResolving}
+                                          className="font-semibold text-cyan-300 transition hover:text-white disabled:opacity-50"
+                                        >
+                                          {resolvingDuplicateKey === excludePairedKey
+                                            ? 'Confirming...'
+                                            : 'Keep this; exclude matching'}
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => handleDismissDuplicate(candidate.id)}
+                                          disabled={
+                                            isResolving ||
+                                            dismissingDuplicateId === candidate.id
+                                          }
+                                          className="font-semibold text-amber-200 transition hover:text-white disabled:opacity-50"
+                                        >
+                                          {dismissingDuplicateId === candidate.id
+                                            ? 'Dismissing...'
+                                            : 'Not a duplicate — dismiss'}
+                                        </button>
+                                      </div>
+                                    </div>
+                                  );
+                                },
+                              )}
+                            </div>
+                          </td>
+
+                          <td className="px-5 py-4 text-sm text-slate-400">
+                            <div className="min-w-[140px]">
+                              <p>
+                                {transaction.account_name ||
+                                  'Unknown account'}
+                              </p>
+
+                              {transaction.account_mask && (
+                                <p className="mt-1 text-xs text-slate-500">
+                                  •••• {transaction.account_mask}
+                                </p>
+                              )}
+                            </div>
+                          </td>
+
+                          <td className="px-5 py-4">
+                            {isEditing ? (
+                              <select
+                                value={transaction.ai_category_id || ''}
+                                disabled={isSaving}
+                                onChange={(event) =>
+                                  handleCategoryChange(
+                                    transaction.id,
+                                    event.target.value,
+                                  )
+                                }
+                                onBlur={() =>
+                                  setEditingCategoryId(null)
+                                }
+                                autoFocus
+                                className="rounded-lg border border-cyan-400 bg-slate-950 px-2 py-1.5 text-sm text-white outline-none"
+                              >
+                                {!transaction.ai_category_id && (
+                                  <option value="" disabled>
+                                    Select category
+                                  </option>
+                                )}
+
+                                {categories.map((categoryOption) => (
+                                  <option
+                                    key={categoryOption.id}
+                                    value={categoryOption.id}
+                                  >
+                                    {categoryOption.coa_code
+                                      ? `${categoryOption.coa_code} — ${categoryOption.name}`
+                                      : categoryOption.name}
+                                  </option>
+                                ))}
+                              </select>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setEditingCategoryId(
+                                    transaction.id,
+                                  )
+                                }
+                                className="rounded-full bg-slate-800 px-3 py-1 text-left text-xs text-slate-300 transition hover:bg-cyan-500/10 hover:text-cyan-300"
+                              >
+                                {category}
+                              </button>
+                            )}
+                            {(correctionCounts[transaction.id] || 0) > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => loadCorrectionHistory(transaction.id)}
+                                disabled={historyLoading}
+                                className="ml-2 text-xs font-medium text-cyan-400 transition hover:text-cyan-300 disabled:opacity-50"
+                              >
+                                {historyTransactionId === transaction.id
+                                  ? 'Hide history'
+                                  : `${correctionCounts[transaction.id]} correction${correctionCounts[transaction.id] === 1 ? '' : 's'}`}
+                              </button>
+                            )}
+                            {historyTransactionId === transaction.id && (
+                              <div className="mt-2 min-w-[240px] rounded-lg border border-slate-700 bg-slate-950 p-3 text-xs">
+                                {historyLoading ? (
+                                  <p className="text-slate-400">Loading history...</p>
+                                ) : correctionHistory.length === 0 ? (
+                                  <p className="text-slate-500">No category corrections recorded.</p>
+                                ) : (
+                                  <div className="space-y-2">
+                                    {correctionHistory.map((correction) => (
+                                      <div key={correction.id} className="border-b border-slate-800 pb-2 last:border-0 last:pb-0">
+                                        <p className="text-slate-300">
+                                          {correction.from_category?.name || 'Uncategorized'} → {correction.to_category?.name || 'Unknown category'}
+                                        </p>
+                                        <p className="mt-1 text-slate-500">
+                                          {new Date(correction.corrected_at).toLocaleString()}
+                                        </p>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </td>
+
+                          <td className="px-5 py-4 text-sm text-slate-300">
+                            {(() => {
+                              const decision = getReviewDecision(transaction);
+                              const confidence =
+                                transaction.ai_confidence == null
+                                  ? null
+                                  : Number(transaction.ai_confidence);
+
+                              return (
+                                <div>
+                                  <p>
+                                    {confidence == null
+                                      ? '—'
+                                      : `${Math.round(confidence * 100)}%`}
+                                  </p>
+                                  <p
+                                    className={`mt-1 text-xs ${
+                                      decision.state === 'needs_attention'
+                                        ? 'font-medium text-amber-300'
+                                        : 'text-slate-500'
+                                    }`}
+                                  >
+                                    {getReviewDecisionMessage(decision)}
+                                  </p>
+                                </div>
+                              );
+                            })()}
+                          </td>
+
+                          <td className="whitespace-nowrap px-5 py-4">
+                            <span
+                              className={`inline-flex rounded-full px-2.5 py-1 text-xs font-medium ${
+                                transaction.status === 'confirmed'
+                                  ? 'bg-emerald-500/10 text-emerald-300'
+                                  : 'bg-amber-500/10 text-amber-300'
+                              }`}
+                            >
+                              {transaction.status === 'confirmed'
+                                ? 'Confirmed'
+                                : getReviewDecision(transaction).reason === 'unknown_provenance'
+                                  ? 'Legacy review'
+                                  : getReviewDecision(transaction).state === 'needs_attention'
+                                    ? 'Needs attention'
+                                    : 'Awaiting sign-off'}
+                            </span>
+                          </td>
+
+                          <td className="whitespace-nowrap px-5 py-4">
+                            {transaction.status === 'confirmed' ? (() => {
+                              const activeJournal =
+                                transaction.journal_entries?.find(
+                                  (journal) =>
+                                    journal.reversal_of_journal_entry_id == null &&
+                                    (journal.status === 'draft' ||
+                                      journal.status === 'posted'),
+                                );
+
+                              const categoryPostingReady =
+                                transaction.canonical_category?.client_id ===
+                                  selectedClientId &&
+                                !!transaction.canonical_category?.account_type &&
+                                !!transaction.canonical_category?.normal_balance &&
+                                transaction.canonical_category?.is_active === true &&
+                                transaction.canonical_category
+                                  ?.is_posting_account === true;
+
+                              const sourcePostingReady =
+                                transaction.financial_source_status === 'active' &&
+                                transaction.provider_source_status === 'active';
+
+                              const postingReady =
+                                sourcePostingReady &&
+                                !transaction.duplicate_of_transaction_id &&
+                                !transaction.plaid_removed_at &&
+                                !!transaction.account_coa_category_id &&
+                                categoryPostingReady &&
+                                !activeJournal;
+
+                              const isPosting =
+                                postingTransactionId === transaction.id;
+
+                              return (
+                                <div className="flex flex-col items-start gap-1.5">
+                                  {activeJournal?.status === 'posted' ? (
+                                    <span className="text-xs font-semibold text-cyan-300">
+                                      Posted to ledger
+                                    </span>
+                                  ) : activeJournal?.status === 'draft' ? (
+                                    <span className="text-xs font-medium text-amber-300">
+                                      Draft journal requires resolution
+                                    </span>
+                                  ) : postingReady &&
+                                    canResolveProviderExceptions ? (
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        void handlePostTransaction(transaction)
+                                      }
+                                      disabled={!!postingTransactionId}
+                                      className="rounded-lg border border-cyan-500/50 px-3 py-1.5 text-xs font-semibold text-cyan-300 transition hover:bg-cyan-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+                                    >
+                                      {isPosting
+                                        ? 'Posting...'
+                                        : 'Post to ledger'}
+                                    </button>
+                                  ) : (
+                                    <span className="text-xs font-medium text-slate-400">
+                                      {!canResolveProviderExceptions
+                                        ? 'Accounting role required'
+                                        : !sourcePostingReady
+                                          ? transaction.financial_source_status === 'superseded'
+                                            ? 'Superseded source'
+                                            : transaction.financial_source_status === 'pending_review'
+                                              ? 'Source review required'
+                                              : 'Inactive bank source'
+                                          : transaction.duplicate_of_transaction_id
+                                          ? 'Duplicate excluded'
+                                          : transaction.plaid_removed_at
+                                            ? 'Provider-removed'
+                                            : !transaction.account_coa_category_id
+                                              ? 'Map bank account first'
+                                              : !categoryPostingReady
+                                                ? 'Posting category required'
+                                                : 'Not ready to post'}
+                                    </span>
+                                  )}
+                                </div>
+                              );
+                            })() : (() => {
+                              const decision = getReviewDecision(transaction);
+
+                              return (
+                                <div className="flex flex-col items-start gap-1.5">
+                                  {decision.state === 'routine' ? (
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        handleApproveTransaction(transaction.id)
+                                      }
+                                      disabled={isSaving || bulkApproving}
+                                      className="rounded-lg border border-emerald-500/50 px-3 py-1.5 text-xs font-semibold text-emerald-300 transition hover:bg-emerald-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+                                    >
+                                      {isSaving ? 'Confirming...' : 'Confirm category'}
+                                    </button>
+                                  ) : (
+                                    <span className="text-xs font-medium text-amber-300">
+                                      {decision.reason === 'unknown_provenance'
+                                        ? 'Legacy review'
+                                        : 'Resolve exception'}
+                                    </span>
+                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={() => setEditingCategoryId(transaction.id)}
+                                    disabled={isSaving || bulkApproving}
+                                    className="text-xs font-medium text-cyan-400 transition hover:text-cyan-300 disabled:cursor-not-allowed disabled:opacity-50"
+                                  >
+                                    {decision.state === 'needs_attention'
+                                      ? 'Review category'
+                                      : 'Change category'}
+                                  </button>
+                                </div>
+                              );
+                            })()}
+                          </td>
+
+                          <td className="whitespace-nowrap px-5 py-4 text-right text-sm font-semibold text-white">
+                            {formatCurrency(
+                              Number(transaction.amount || 0),
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            {filteredTransactions.length > transactionsPerPage && (
+              <div className="flex flex-col gap-3 border-t border-slate-800 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+                <p className="text-xs text-slate-500">
+                  Page {safeTransactionPage} of {transactionPageCount}
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedTransactionIds([]);
+                      setTransactionPage((page) => Math.max(1, page - 1));
+                    }}
+                    disabled={safeTransactionPage === 1}
+                    className="rounded-lg border border-slate-700 px-3 py-2 text-xs font-semibold text-slate-300 transition hover:border-cyan-400 hover:text-cyan-300 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Previous
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedTransactionIds([]);
+                      setTransactionPage((page) =>
+                        Math.min(transactionPageCount, page + 1),
+                      );
+                    }}
+                    disabled={safeTransactionPage === transactionPageCount}
+                    className="rounded-lg border border-slate-700 px-3 py-2 text-xs font-semibold text-slate-300 transition hover:border-cyan-400 hover:text-cyan-300 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Next
+                  </button>
+                </div>
               </div>
             )}
           </div>
 
-          <div style={{ fontSize: 13, color: '#94a3b8', fontWeight: 500 }}>
-            Active View: <strong style={{ color: '#38bdf8' }}>{filteredTransactions.length} records</strong>
-          </div>
-        </div>
+          <div className="grid items-start gap-6 lg:grid-cols-2">
+            <section className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-lg font-semibold text-white">
+                    Merchant Summary
+                  </h2>
 
-        {/* Analytics Cards with Rich Color Highlights */}
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(3, 1fr)',
-            gap: 20,
-            marginBottom: 28,
-          }}
-        >
-          {/* Total Spend Card */}
-          <div
-            style={{
-              padding: '22px 24px',
-              backgroundColor: '#0f172a',
-              borderRadius: 14,
-              border: '1px solid rgba(56, 189, 248, 0.3)',
-              backgroundImage: 'linear-gradient(135deg, rgba(56, 189, 248, 0.08) 0%, rgba(15, 23, 42, 0) 100%)',
-              boxShadow: '0 8px 24px rgba(0, 0, 0, 0.3)',
-            }}
-          >
-            <div
-              style={{
-                fontSize: 12,
-                color: '#38bdf8',
-                fontWeight: 700,
-                letterSpacing: '0.08em',
-                marginBottom: 10,
-              }}
-            >
-              TOTAL SPEND
-            </div>
-            <div
-              style={{
-                fontSize: 30,
-                fontWeight: 800,
-                color: '#ffffff',
-                letterSpacing: '-0.02em',
-              }}
-            >
-              ${analytics.totalSpend.toFixed(2)}
-            </div>
-          </div>
-
-          {/* Top Spending Category Card */}
-          <div
-            style={{
-              padding: '22px 24px',
-              backgroundColor: '#0f172a',
-              borderRadius: 14,
-              border: '1px solid rgba(129, 140, 248, 0.3)',
-              backgroundImage: 'linear-gradient(135deg, rgba(129, 140, 248, 0.08) 0%, rgba(15, 23, 42, 0) 100%)',
-              boxShadow: '0 8px 24px rgba(0, 0, 0, 0.3)',
-            }}
-          >
-            <div
-              style={{
-                fontSize: 12,
-                color: '#818cf8',
-                fontWeight: 700,
-                letterSpacing: '0.08em',
-                marginBottom: 10,
-              }}
-            >
-              TOP SPENDING CATEGORY
-            </div>
-            <div
-              style={{
-                fontSize: 26,
-                fontWeight: 800,
-                color: '#ffffff',
-                letterSpacing: '-0.01em',
-              }}
-            >
-              {analytics.topCategory}
-            </div>
-          </div>
-
-          {/* Net Cash Flow Card */}
-          <div
-            style={{
-              padding: '22px 24px',
-              backgroundColor: '#0f172a',
-              borderRadius: 14,
-              border: `1px solid ${analytics.netCashFlow >= 0 ? 'rgba(74, 222, 128, 0.35)' : 'rgba(248, 113, 113, 0.35)'}`,
-              backgroundImage: analytics.netCashFlow >= 0 
-                ? 'linear-gradient(135deg, rgba(74, 222, 128, 0.08) 0%, rgba(15, 23, 42, 0) 100%)'
-                : 'linear-gradient(135deg, rgba(248, 113, 113, 0.08) 0%, rgba(15, 23, 42, 0) 100%)',
-              boxShadow: '0 8px 24px rgba(0, 0, 0, 0.3)',
-            }}
-          >
-            <div
-              style={{
-                fontSize: 12,
-                color: analytics.netCashFlow >= 0 ? '#4ade80' : '#f87171',
-                fontWeight: 700,
-                letterSpacing: '0.08em',
-                marginBottom: 10,
-              }}
-            >
-              NET CASH FLOW
-            </div>
-            <div
-              style={{
-                fontSize: 30,
-                fontWeight: 800,
-                color: analytics.netCashFlow >= 0 ? '#4ade80' : '#f87171',
-                letterSpacing: '-0.02em',
-              }}
-            >
-              ${analytics.netCashFlow.toFixed(2)}
-            </div>
-          </div>
-        </div>
-
-        {/* Natural Language AI Query Bar */}
-        <div style={{ marginBottom: 28 }}>
-          <QueryBar clientId={userId} />
-        </div>
-
-        {/* Transaction Table Card */}
-        <div
-          style={{
-            backgroundColor: '#0f172a',
-            borderRadius: 14,
-            border: '1px solid rgba(255, 255, 255, 0.08)',
-            boxShadow: '0 12px 32px rgba(0, 0, 0, 0.4)',
-            overflow: 'hidden',
-          }}
-        >
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: '60px 140px 1fr 220px 140px',
-              padding: '16px 24px',
-              backgroundColor: '#111827',
-              borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
-              fontSize: 12,
-              fontWeight: 700,
-              color: '#94a3b8',
-              textTransform: 'uppercase',
-              letterSpacing: '0.08em',
-            }}
-          >
-            <div>#</div>
-            <div>Date</div>
-            <div>Merchant</div>
-            <div>Category</div>
-            <div style={{ textAlign: 'right' }}>Amount</div>
-          </div>
-
-          {filteredTransactions.length === 0 ? (
-            <div
-              style={{
-                padding: '56px 24px',
-                textAlign: 'center',
-                color: '#64748b',
-                fontSize: 14,
-              }}
-            >
-              No matching transactions found for this period.
-            </div>
-          ) : (
-            filteredTransactions.map((tx, index) => {
-              const displayName =
-                tx.merchant_name || tx.name || 'Unknown Merchant';
-              const isIncome = tx.amount < 0;
-
-              return (
-                <div
-                  key={tx.id}
-                  style={{
-                    display: 'grid',
-                    gridTemplateColumns: '60px 140px 1fr 220px 140px',
-                    alignItems: 'center',
-                    padding: '16px 24px',
-                    borderBottom:
-                      index === filteredTransactions.length - 1
-                        ? 'none'
-                        : '1px solid rgba(255, 255, 255, 0.04)',
-                    fontSize: 14,
-                    transition: 'background-color 0.15s ease',
-                  }}
-                >
-                  <div style={{ color: '#64748b', fontSize: 13, fontWeight: 500 }}>
-                    {index + 1}
-                  </div>
-                  <div style={{ color: '#94a3b8', fontWeight: 500 }}>
-                    {tx.date}
-                  </div>
-                  <div style={{ fontWeight: 600, color: '#f8fafc' }}>
-                    {displayName}
-                  </div>
-                  <div>
-                    <select
-                      value={tx.category || 'Uncategorized'}
-                      onChange={(e) =>
-                        handleCategoryChange(
-                          tx.id,
-                          displayName,
-                          e.target.value
-                        )
-                      }
-                      style={{
-                        padding: '7px 12px',
-                        borderRadius: 8,
-                        border: '1px solid rgba(255, 255, 255, 0.1)',
-                        fontSize: 13,
-                        fontWeight: 500,
-                        color: '#f8fafc',
-                        backgroundColor: '#1e293b',
-                        cursor: 'pointer',
-                        outline: 'none',
-                        width: '90%',
-                      }}
-                    >
-                      <option value="Uncategorized">Uncategorized</option>
-                      <option value="Food & Dining">Food & Dining</option>
-                      <option value="Transportation">Transportation</option>
-                      <option value="Software & Tech">Software & Tech</option>
-                      <option value="Transfer / Income">Transfer / Income</option>
-                      <option value="Shopping">Shopping</option>
-                      <option value="Bills & Utilities">Bills & Utilities</option>
-                    </select>
-                  </div>
-                  <div style={{ textAlign: 'right' }}>
-                    <span
-                      style={{
-                        display: 'inline-block',
-                        padding: '5px 12px',
-                        borderRadius: 20,
-                        fontSize: 13,
-                        fontWeight: 700,
-                        backgroundColor: isIncome ? 'rgba(74, 222, 128, 0.1)' : 'rgba(255, 255, 255, 0.05)',
-                        color: isIncome ? '#4ade80' : '#f8fafc',
-                        border: `1px solid ${isIncome ? 'rgba(74, 222, 128, 0.2)' : 'rgba(255, 255, 255, 0.08)'}`,
-                      }}
-                    >
-                      {isIncome
-                        ? `+$${Math.abs(tx.amount).toFixed(2)}`
-                        : `$${tx.amount.toFixed(2)}`}
-                    </span>
-                  </div>
+                  <p className="mt-1 text-sm text-slate-400">
+                    Spending grouped by merchant
+                  </p>
                 </div>
-              );
-            })
-          )}
-        </div>
+              </div>
+
+              <div className="mt-5 space-y-4">
+                {merchantSummary.length === 0 ? (
+                  <p className="text-sm text-slate-500">
+                    No merchant data available.
+                  </p>
+                ) : (
+                  merchantSummary.slice(0, 5).map((merchant) => (
+                    <div key={merchant.merchant}>
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="truncate text-sm font-medium text-slate-200">
+                          {merchant.merchant}
+                        </p>
+
+                        <p className="whitespace-nowrap text-sm font-semibold text-white">
+                          {formatCurrency(merchant.total)}
+                        </p>
+                      </div>
+
+                      <div className="mt-1 flex items-center justify-between text-xs text-slate-500">
+                        <span>
+                          {merchant.count} transaction
+                          {merchant.count === 1 ? '' : 's'}
+                        </span>
+
+                        <span>
+                          {totalSpending > 0
+                            ? `${(
+                                (merchant.total / totalSpending) *
+                                100
+                              ).toFixed(1)}%`
+                            : '0%'}
+                        </span>
+                      </div>
+
+                      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-800">
+                        <div
+                          className="h-full rounded-full bg-cyan-400"
+                          style={{
+                            width:
+                              totalSpending > 0
+                                ? `${Math.min(
+                                    (merchant.total / totalSpending) *
+                                      100,
+                                    100,
+                                  )}%`
+                                : '0%',
+                          }}
+                        />
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </section>
+
+            <section className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
+              <h2 className="text-lg font-semibold text-white">
+                Category Summary
+              </h2>
+
+              <p className="mt-1 text-sm text-slate-400">
+                Spending grouped by category
+              </p>
+
+              <div className="mt-5 space-y-3">
+                {categorySummary.length === 0 ? (
+                  <p className="text-sm text-slate-500">
+                    No category data available.
+                  </p>
+                ) : (
+                  categorySummary.slice(0, 5).map((item) => (
+                    <div
+                      key={item.category}
+                      className="flex items-center justify-between gap-3"
+                    >
+                      <p className="text-sm text-slate-300">
+                        {item.category}
+                      </p>
+
+                      <p className="text-sm font-semibold text-white">
+                        {formatCurrency(item.total)}
+                      </p>
+                    </div>
+                  ))
+                )}
+              </div>
+            </section>
+          </div>
+        </section>
       </div>
-    </div>
+    </main>
   );
 }
