@@ -15,6 +15,7 @@ interface Connection {
   label: string;
   status: string;
   financialSourceStatus: string;
+  canGenerateSandboxUpdate?: boolean;
   supersededByConnectionRef: string | null;
   accountCount: number;
   accounts: ConnectionAccount[];
@@ -59,6 +60,8 @@ export default function ConnectedBanksPanel({ clientId, refreshKey, onTransactio
   const [retainedReferences, setRetainedReferences] = useState<Record<string, string>>({});
   const [resolutionMessage, setResolutionMessage] = useState('');
   const [refreshStates, setRefreshStates] = useState<Record<string, RefreshState>>({});
+  const [sandboxMessage, setSandboxMessage] = useState('');
+  const [generatingSandbox, setGeneratingSandbox] = useState(false);
   const [expandedClientId, setExpandedClientId] = useState<string | null>(null);
   const refreshingReferences = useRef(new Set<string>());
   const [loadState, setLoadState] = useState<ConnectionLoadState>({
@@ -120,6 +123,23 @@ export default function ConnectedBanksPanel({ clientId, refreshKey, onTransactio
     }
   }
 
+
+  async function generateTestUpdate(connection: Connection) {
+    if (!loadState.clientRef || generatingSandbox) return;
+    setGeneratingSandbox(true);
+    setSandboxMessage('');
+    try {
+      const response = await fetch('/api/plaid/connections/refresh', {
+        method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clientRef: loadState.clientRef, connectionRef: connection.connectionRef, action: 'sandbox_update' }),
+      });
+      const result = await response.json();
+      if (!response.ok || result.outcome !== 'requested') throw new Error();
+      setSandboxMessage('Test update requested. Wait for Plaid, then refresh to collect the changes.');
+    } catch {
+      setSandboxMessage('Unable to request a test update. Check the sandbox configuration before trying again.');
+    } finally { setGeneratingSandbox(false); }
+  }
 
   async function supersedeConnection(connection: Connection) {
     const retainedConnectionRef = retainedReferences[connection.connectionRef];
@@ -183,6 +203,7 @@ export default function ConnectedBanksPanel({ clientId, refreshKey, onTransactio
             <span className="text-xs text-slate-500">{connections.length} connection{connections.length === 1 ? '' : 's'}</span>
           </div>
           {resolutionMessage && <p role="status" className="mt-4 text-sm text-slate-300">{resolutionMessage}</p>}
+          {sandboxMessage && <p role="status" className="mt-4 text-sm text-slate-300">{sandboxMessage}</p>}
           <ul className="mt-4 grid min-w-0 gap-3 sm:grid-cols-2 2xl:grid-cols-3">
             {visibleConnections.map((connection) => {
               const status = getStatusPresentation(connection.status);
@@ -215,6 +236,7 @@ export default function ConnectedBanksPanel({ clientId, refreshKey, onTransactio
                 </dl>
                 <div className="mt-3 text-xs text-slate-400">Financial source: <span className="font-semibold text-slate-200">{connection.financialSourceStatus === 'active' ? 'Active' : connection.financialSourceStatus === 'pending_review' ? 'Review required' : 'Superseded'}</span></div>
                 <div className="mt-4 flex flex-wrap items-center gap-3">
+                  {connection.canGenerateSandboxUpdate && <button type="button" disabled={generatingSandbox || refreshDisabled} onClick={() => void generateTestUpdate(connection)} className="rounded-lg border border-slate-700 px-3 py-2 text-xs font-semibold text-slate-200 disabled:opacity-50">{generatingSandbox ? 'Requesting...' : 'Generate test update'}</button>}
                   {reconnectRequired && loadState.clientRef ? (
                     <PlaidLinkButton reconnectClientRef={loadState.clientRef} reconnectConnectionRef={connection.connectionRef} reconnectLabel="Reconnect" onReconnected={() => handleReconnected(connection)} />
                   ) : (

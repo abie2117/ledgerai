@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { createRouteHandlerClient } from '@/lib/supabase-server';
+import { canGenerateSandboxUpdate } from '@/lib/plaid-sandbox-refresh';
 import {
   createPlaidClientReference,
   createPlaidConnectionReference,
@@ -197,6 +198,7 @@ export async function GET(request: Request) {
         label: institutionName || `Bank connection ${index + 1}`,
         status: item.status,
         financialSourceStatus: item.financial_source_status,
+        canGenerateSandboxUpdate: canGenerateSandboxUpdate(authorizedClient.id, item.id, item.status, item.financial_source_status),
         supersededByConnectionRef: item.superseded_by_plaid_item_id
           ? createPlaidConnectionReference(authorizedClient.id, item.superseded_by_plaid_item_id)
           : null,

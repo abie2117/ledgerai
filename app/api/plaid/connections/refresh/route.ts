@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { createRouteHandlerClient } from '@/lib/supabase-server';
+import { canGenerateSandboxUpdate, generateSandboxUpdate } from '@/lib/plaid-sandbox-refresh';
 import {
   createPlaidClientReference,
   createPlaidConnectionReference,
@@ -53,10 +54,11 @@ export async function POST(request: Request) {
     const body = await request.json().catch(() => ({}));
     const clientRef = body?.clientRef;
     const connectionRef = body?.connectionRef;
+    const action = body?.action ?? 'sync';
 
     if (
       typeof clientRef !== 'string' ||
-      typeof connectionRef !== 'string'
+      typeof connectionRef !== 'string' || !['sync', 'sandbox_update'].includes(action)
     ) {
       return failedResponse(400);
     }
@@ -113,6 +115,7 @@ export async function POST(request: Request) {
         token_key_version,
         institution_name,
         status,
+        financial_source_status,
         cursor,
         last_synced_at
       `)
@@ -149,6 +152,19 @@ export async function POST(request: Request) {
 
     if (item.status !== 'active') {
       return failedResponse(409);
+    }
+
+    if (action === 'sandbox_update') {
+      if (!canGenerateSandboxUpdate(item.client_id, item.id, item.status, item.financial_source_status)) {
+        return failedResponse(403);
+      }
+      await generateSandboxUpdate(item);
+      console.info('[plaid/sandbox-update] Provider update requested.', {
+        userId: user.id, clientId: selectedClient.id, connectionId: item.id,
+      });
+      // Provider refresh is asynchronous. Webhooks use the existing ingestion
+      // boundary; do not race it with an immediate manual sync here.
+      return NextResponse.json({ outcome: 'requested' });
     }
 
     const result = await syncPlaidItem({
