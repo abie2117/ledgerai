@@ -90,6 +90,16 @@ export default function AccountingSetupPanel({ clientId, canManage }: Props) {
     return () => { cancelled = true; };
   }, [load]);
 
+  useEffect(() => {
+    const refresh = (event: Event) => {
+      if ((event as CustomEvent<{ clientId: string }>).detail?.clientId === clientId) {
+        void load();
+      }
+    };
+    window.addEventListener('ledgerai:accounting-setup-changed', refresh);
+    return () => window.removeEventListener('ledgerai:accounting-setup-changed', refresh);
+  }, [clientId, load]);
+
   const categoryById = useMemo(
     () => new Map(categories.map((category) => [category.id, category])),
     [categories],

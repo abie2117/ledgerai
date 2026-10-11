@@ -170,7 +170,7 @@ export async function POST(request: Request) {
       error: categoryError,
     } = await admin
       .from('categories')
-      .select('id, name, client_id')
+      .select('id, name, client_id, account_type, normal_balance, is_active, is_posting_account')
       .eq('id', toCategoryId)
       .or(
         `client_id.eq.${clientId},client_id.is.null`,
@@ -203,10 +203,7 @@ export async function POST(request: Request) {
         success: true,
         unchanged: true,
         transactionId,
-        category: {
-          id: category.id,
-          name: category.name,
-        },
+        category,
       });
     }
 
@@ -252,10 +249,7 @@ export async function POST(request: Request) {
       unchanged: false,
       transactionId,
       clientId,
-      category: {
-        id: category.id,
-        name: category.name,
-      },
+      category,
     });
   } catch (error) {
     console.error(

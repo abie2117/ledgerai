@@ -45,20 +45,12 @@ export async function proxy(req: NextRequest) {
     }
   );
 
-  console.log(
-    '🔥 MIDDLEWARE:',
-    req.nextUrl.pathname
-  );
 
   const {
     data: { user },
     error,
   } = await supabase.auth.getUser();
 
-  console.log(
-    '🔐 MIDDLEWARE USER:',
-    user?.id ?? 'NO USER'
-  );
 
   if (error) {
     console.error(
@@ -78,9 +70,6 @@ export async function proxy(req: NextRequest) {
     );
 
   if (isProtected && !user) {
-    console.log(
-      '🚨 MIDDLEWARE: No authenticated user. Redirecting to /login'
-    );
 
     const redirectUrl = new URL(
       '/login',
@@ -97,9 +86,6 @@ export async function proxy(req: NextRequest) {
     );
   }
 
-  console.log(
-    '✅ MIDDLEWARE: Authenticated request allowed'
-  );
 
   return response;
 }

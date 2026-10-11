@@ -1318,10 +1318,8 @@ export default function DashboardPage() {
                 ai_category_id: result.category.id,
                 category: result.category.name,
                 status: 'confirmed',
-                canonical_category: {
-                  id: result.category.id,
-                  name: result.category.name,
-                },
+                canonical_category: result.category,
+                categorization_source: 'manual',
               }
             : transaction,
         ),
@@ -1337,6 +1335,7 @@ export default function DashboardPage() {
         }));
       }
       setEditingCategoryId(null);
+      setTransactionsRefreshKey((current) => current + 1);
       setSuccessMessage(
         result.unchanged
           ? 'Category is already up to date.'
