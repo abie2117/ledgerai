@@ -82,6 +82,8 @@ function ReportsContent() {
 
       setLoading(true);
       setError('');
+      setEntries([]);
+      setCashFlow(null);
       try {
         const { data, error: queryError } = await supabase
           .from('journal_entries')
@@ -107,7 +109,18 @@ function ReportsContent() {
           setCashFlow(cashFlowRows[0] || null);
         }
       } catch (loadError) {
-        if (!cancelled) setError(loadError instanceof Error ? loadError.message : 'Unable to load ledger reports.');
+        if (!cancelled) {
+          const message = typeof loadError === 'object' && loadError !== null && 'message' in loadError
+            ? String(loadError.message)
+            : '';
+          setEntries([]);
+          setCashFlow(null);
+          setError(message === 'User is not authorized to view reports for this client.'
+            ? 'You do not have access to reports for this client.'
+            : message === 'Authentication required.'
+              ? 'Please sign in to view ledger reports.'
+              : 'Unable to load ledger reports. Please try again.');
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -255,7 +268,7 @@ function ReportsContent() {
             </section>
 
             {error && <div className="rounded-xl border border-red-900/60 bg-red-950/30 px-4 py-3 text-sm text-red-300">{error}</div>}
-            {loading ? <section className="rounded-2xl border border-slate-800 bg-slate-900 p-6 text-sm text-slate-400">Loading ledger reports…</section> : (
+            {loading ? <section className="rounded-2xl border border-slate-800 bg-slate-900 p-6 text-sm text-slate-400">Loading ledger reports…</section> : error ? null : (
               <>
                 <div className="grid gap-6 xl:grid-cols-2">
                   <section className="rounded-2xl border border-slate-800 bg-slate-900 p-6">
@@ -369,3 +382,4 @@ function ReportsContent() {
 export default function ReportsPage() {
   return <Suspense fallback={<main className="min-h-screen bg-slate-950" />}><ReportsContent /></Suspense>;
 }
+
