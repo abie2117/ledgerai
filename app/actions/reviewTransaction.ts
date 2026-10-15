@@ -3,8 +3,8 @@ import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
 import { revalidatePath } from "next/cache";
 
-function getSupabase() {
-  const cookieStore = cookies();
+async function getSupabase() {
+  const cookieStore = await cookies();
   return createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
@@ -19,7 +19,7 @@ function getSupabase() {
 }
 
 export async function confirmTransaction({ transactionId, clientId }: { transactionId: string; clientId: string }) {
-  const supabase = getSupabase();
+  const supabase = await getSupabase();
   const { data: { user } } = await supabase.auth.getUser();
   console.log(`[confirmTransaction] auth.getUser(): ${user?.id ?? "null"}`);
   if (!user) return { success: false, error: "Not authenticated" };
@@ -38,7 +38,7 @@ export async function confirmTransaction({ transactionId, clientId }: { transact
 }
 
 export async function correctTransaction({ transactionId, clientId, fromCategoryId, toCategoryId }: { transactionId: string; clientId: string; fromCategoryId: string | null; toCategoryId: string }) {
-  const supabase = getSupabase();
+  const supabase = await getSupabase();
   const { data: { user } } = await supabase.auth.getUser();
   console.log(`[correctTransaction] auth.getUser(): ${user?.id ?? "null"}`);
   if (!user) return { success: false, error: "Not authenticated" };

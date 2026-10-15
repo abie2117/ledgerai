@@ -1,0 +1,240 @@
+-- ============================================================
+-- MIGRATION 024
+-- CONTROLLED PROVIDER EXCEPTION RESOLUTION
+--
+-- Provider evidence cannot be edited directly by browser users.
+-- Accounting roles resolve an open exception through controlled RPCs.
+-- Accepting is atomic with the journal/source lifecycle.
+-- ============================================================
+
+revoke update on provider_transaction_exceptions from authenticated;
+
+drop policy if exists
+  "accounting roles can update provider transaction exceptions"
+on provider_transaction_exceptions;
+
+create or replace function resolve_provider_transaction_exception(
+  p_exception_id uuid,
+  p_client_id uuid,
+  p_action text,
+  p_resolution_note text default null
+)
+returns table (
+  exception_id uuid,
+  transaction_id uuid,
+  event_type text,
+  resolution_status text,
+  journal_reposted boolean
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_user_id uuid := auth.uid();
+  v_exception provider_transaction_exceptions%rowtype;
+  v_transaction transactions%rowtype;
+  v_active_journal journal_entries%rowtype;
+  v_new_account_id uuid;
+  v_new_posted_date date;
+  v_new_amount numeric;
+  v_new_merchant_name text;
+  v_new_raw_plaid_category text;
+  v_reposted boolean := false;
+begin
+  if v_user_id is null then
+    raise exception 'Authentication required.';
+  end if;
+
+  if p_action not in ('accept', 'dismiss') then
+    raise exception 'Resolution action must be accept or dismiss.';
+  end if;
+
+  if not exists (
+    select 1
+    from clients c
+    join firm_users fu on fu.firm_id = c.firm_id
+    where c.id = p_client_id
+      and fu.user_id = v_user_id
+      and fu.role in ('owner', 'admin', 'bookkeeper')
+  ) then
+    raise exception 'User is not authorized to resolve provider exceptions for this client.';
+  end if;
+
+  select *
+    into v_exception
+  from provider_transaction_exceptions
+  where id = p_exception_id
+    and client_id = p_client_id
+  for update;
+
+  if not found then
+    raise exception 'Provider transaction exception not found.';
+  end if;
+
+  if v_exception.status <> 'open' then
+    raise exception 'Provider transaction exception is no longer open.';
+  end if;
+
+  select *
+    into v_transaction
+  from transactions
+  where id = v_exception.transaction_id
+    and client_id = p_client_id
+    and plaid_transaction_id = v_exception.plaid_transaction_id
+  for update;
+
+  if not found then
+    raise exception 'Provider exception transaction not found.';
+  end if;
+
+  if p_action = 'dismiss' then
+    update provider_transaction_exceptions
+    set
+      status = 'dismissed',
+      resolved_at = now(),
+      resolved_by = v_user_id,
+      resolution_note = nullif(btrim(p_resolution_note), '')
+    where id = v_exception.id;
+
+    insert into audit_log (actor_id, client_id, action, detail)
+    values (
+      v_user_id,
+      p_client_id,
+      'provider_transaction_exception_dismissed',
+      jsonb_build_object(
+        'provider_exception_id', v_exception.id,
+        'transaction_id', v_transaction.id,
+        'event_type', v_exception.event_type,
+        'resolution_note', nullif(btrim(p_resolution_note), '')
+      )
+    );
+
+    return query
+      select v_exception.id, v_transaction.id, v_exception.event_type,
+             'dismissed'::text, false;
+    return;
+  end if;
+
+  select je.*
+    into v_active_journal
+  from journal_entries je
+  where je.transaction_id = v_transaction.id
+    and je.client_id = p_client_id
+    and je.reversal_of_journal_entry_id is null
+    and je.status in ('draft', 'posted')
+  for update;
+
+  if not found then
+    raise exception 'Transaction no longer has the active journal required for provider resolution.';
+  end if;
+
+  if v_active_journal.status = 'draft' then
+    raise exception 'Transaction has an active draft journal that must be resolved first.';
+  end if;
+
+  perform reverse_journal_entry(v_active_journal.id, p_client_id);
+
+  if v_exception.event_type = 'modified' then
+    if not (
+      v_exception.proposed_values ? 'account_id'
+      and v_exception.proposed_values ? 'posted_date'
+      and v_exception.proposed_values ? 'amount'
+      and v_exception.proposed_values ? 'merchant_name'
+      and v_exception.proposed_values ? 'raw_plaid_category'
+    ) then
+      raise exception 'Modified provider exception does not contain the required provider values.';
+    end if;
+
+    begin
+      v_new_account_id := (v_exception.proposed_values ->> 'account_id')::uuid;
+      v_new_posted_date := (v_exception.proposed_values ->> 'posted_date')::date;
+      v_new_amount := (v_exception.proposed_values ->> 'amount')::numeric;
+      v_new_merchant_name := v_exception.proposed_values ->> 'merchant_name';
+      v_new_raw_plaid_category := v_exception.proposed_values ->> 'raw_plaid_category';
+    exception when others then
+      raise exception 'Modified provider exception contains invalid provider values.';
+    end;
+
+    if not exists (
+      select 1
+      from accounts a
+      join plaid_items pi on pi.id = a.plaid_item_id
+      where a.id = v_new_account_id
+        and pi.id = v_exception.plaid_item_id
+        and pi.client_id = p_client_id
+    ) then
+      raise exception 'Provider modification references an account outside the selected Plaid Item.';
+    end if;
+
+    update transactions
+    set
+      account_id = v_new_account_id,
+      posted_date = v_new_posted_date,
+      amount = v_new_amount,
+      merchant_name = v_new_merchant_name,
+      raw_plaid_category = v_new_raw_plaid_category,
+      updated_at = now()
+    where id = v_transaction.id
+      and client_id = p_client_id;
+
+    perform post_transaction_to_journal(v_transaction.id, p_client_id);
+    v_reposted := true;
+
+  elsif v_exception.event_type = 'removed' then
+    update transactions
+    set
+      plaid_removed_at = now(),
+      updated_at = now()
+    where id = v_transaction.id
+      and client_id = p_client_id;
+
+  else
+    raise exception 'Unsupported provider exception event type.';
+  end if;
+
+  update provider_transaction_exceptions
+  set
+    status = 'resolved',
+    resolved_at = now(),
+    resolved_by = v_user_id,
+    resolution_note = nullif(btrim(p_resolution_note), '')
+  where id = v_exception.id;
+
+  insert into audit_log (actor_id, client_id, action, detail)
+  values (
+    v_user_id,
+    p_client_id,
+    'provider_transaction_exception_accepted',
+    jsonb_build_object(
+      'provider_exception_id', v_exception.id,
+      'transaction_id', v_transaction.id,
+      'event_type', v_exception.event_type,
+      'reversed_journal_entry_id', v_active_journal.id,
+      'journal_reposted', v_reposted,
+      'resolution_note', nullif(btrim(p_resolution_note), '')
+    )
+  );
+
+  return query
+    select v_exception.id, v_transaction.id, v_exception.event_type,
+           'resolved'::text, v_reposted;
+end;
+$$;
+
+revoke all on function resolve_provider_transaction_exception(
+  uuid, uuid, text, text
+) from public;
+
+revoke all on function resolve_provider_transaction_exception(
+  uuid, uuid, text, text
+) from anon;
+
+grant execute on function resolve_provider_transaction_exception(
+  uuid, uuid, text, text
+) to authenticated;
+
+comment on function resolve_provider_transaction_exception(
+  uuid, uuid, text, text
+) is
+  'Controlled accounting resolution for captured Plaid provider changes. Dismiss leaves financial state untouched. Accept atomically reverses the active posting, applies whitelisted provider state, and reposts modified transactions when valid; provider removals remain reversed and are marked removed.';
